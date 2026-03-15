@@ -1,0 +1,23 @@
+{
+  "name": "session-monitor-tui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone Bun TypeScript OpenTUI monitor scaffold",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun run --watch src/index.ts",
+    "typecheck": "bun x tsc --noEmit",
+    "build": "bun x tsc --noEmit",
+    "lint": "bunx @biomejs/biome check src"
+  },
+  "dependencies": {
+    "@opentui/core": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "*"
+  },
+  "engines": {
+    "bun": ">=1.1"
+  }
+}
