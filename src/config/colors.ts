@@ -15,8 +15,32 @@ type AgentName =
 
 export type AgentColorOverrides = Partial<Record<string, `#${string}`>>;
 
-const normalizeAgentName = (agentName?: string): string => {
-	return (agentName ?? "").trim().toLowerCase();
+const AGENT_DISPLAY_NAME_MAP: Readonly<Record<AgentName, string>> = {
+	atlas: "Atlas",
+	build: "Build",
+	explore: "Explore",
+	hephaestus: "Hephaestus",
+	librarian: "Librarian",
+	metis: "Metis",
+	momus: "Momus",
+	oracle: "Oracle",
+	quick: "Quick",
+	prometheus: "Prometheus",
+	sisyphus: "Sisyphus",
+	"sisyphus-junior": "Sisyphus-Junior",
+	unknown: "Unknown",
+};
+
+const stripAgentSuffix = (agentName?: string): string => {
+	return (agentName ?? "").replace(/\s*\([^)]*\)\s*$/u, "").trim();
+};
+
+const normalizeAgentLookup = (agentName?: string): string => {
+	return stripAgentSuffix(agentName)
+		.toLowerCase()
+		.replace(/[_\s]+/gu, "-")
+		.replace(/-+/gu, "-")
+		.trim();
 };
 
 export const AGENT_COLOR_MAP: Readonly<Record<AgentName, `#${string}`>> = {
@@ -45,7 +69,7 @@ export const createAgentColorMap = (
 	}
 
 	for (const [key, value] of Object.entries(overrides)) {
-		const normalized = normalizeAgentName(key);
+		const normalized = normalizeAgentLookup(key);
 
 		if (!normalized || !value) {
 			continue;
@@ -57,14 +81,31 @@ export const createAgentColorMap = (
 	return merged;
 };
 
+export const mergeAgentColorOverrides = createAgentColorMap;
+
 const isAgentName = (agentName: string): agentName is AgentName =>
 	Object.hasOwn(AGENT_COLOR_MAP, agentName);
 
-export const getAgentColor = (agentName?: string): `#${string}` => {
-	const normalized = normalizeAgentName(agentName);
+export const getCanonicalAgentName = (agentName?: string): AgentName => {
+	const normalized = normalizeAgentLookup(agentName);
 	if (!isAgentName(normalized)) {
-		return AGENT_COLOR_MAP.unknown;
+		return "unknown";
 	}
 
-	return AGENT_COLOR_MAP[normalized];
+	return normalized;
+};
+
+export const getAgentDisplayName = (agentName?: string): string => {
+	const canonical = getCanonicalAgentName(agentName);
+	if (canonical !== "unknown") {
+		return AGENT_DISPLAY_NAME_MAP[canonical];
+	}
+
+	const stripped = stripAgentSuffix(agentName);
+	return stripped.length > 0 ? stripped : AGENT_DISPLAY_NAME_MAP.unknown;
+};
+
+export const getAgentColor = (agentName?: string): `#${string}` => {
+	const canonical = getCanonicalAgentName(agentName);
+	return AGENT_COLOR_MAP[canonical];
 };

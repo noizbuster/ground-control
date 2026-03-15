@@ -17,6 +17,13 @@ export interface MessageTokens {
 	output: number;
 }
 
+export interface MessageTools {
+	question?: boolean;
+	task?: boolean;
+	call_omo_agent?: boolean;
+	[key: string]: boolean | undefined;
+}
+
 export interface MessageData {
 	role: "user" | "assistant";
 	agent?: string;
@@ -24,6 +31,7 @@ export interface MessageData {
 	time: MessageTimeData;
 	finish?: "stop" | "tool-calls" | "error";
 	tokens?: MessageTokens;
+	tools?: MessageTools;
 }
 
 export interface SessionRecord {
@@ -31,6 +39,9 @@ export interface SessionRecord {
 	title: string;
 	directory: string;
 	project_id: string;
+	project_name?: string | null;
+	project_worktree?: string | null;
+	project_label: string;
 	parent_id: string | null;
 	time_created: number;
 	time_updated: number;

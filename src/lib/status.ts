@@ -69,6 +69,18 @@ const isValidMessageData = (value: unknown): value is MessageData => {
 		}
 	}
 
+	if (value.tools !== undefined) {
+		if (!isRecord(value.tools)) {
+			return false;
+		}
+
+		for (const toolValue of Object.values(value.tools)) {
+			if (toolValue !== undefined && typeof toolValue !== "boolean") {
+				return false;
+			}
+		}
+	}
+
 	return true;
 };
 
@@ -86,6 +98,14 @@ const hasFailedMarker = (message: MessageData): boolean => {
 };
 
 const hasQuestionToolSignal = (message: MessageData): boolean => {
+	if (message.tools?.question === true) {
+		return true;
+	}
+
+	if (message.tools && message.tools.question === false) {
+		return false;
+	}
+
 	const mode = message.mode?.trim().toLowerCase();
 	const agent = message.agent?.trim().toLowerCase();
 

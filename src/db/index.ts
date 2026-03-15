@@ -5,10 +5,20 @@ import type { MessageData, SessionRecord, SessionStatus } from "../types";
 const DB_PATH = "/home/noiz/.local/share/opencode/opencode.db";
 
 export const ACTIVE_SESSION_QUERY = `
-SELECT id, project_id, title, directory, parent_id, time_created, time_updated
+SELECT
+  session.id,
+  session.project_id,
+  session.title,
+  session.directory,
+  project.name AS project_name,
+  project.worktree AS project_worktree,
+  session.parent_id,
+  session.time_created,
+  session.time_updated
 FROM session
-WHERE time_archived IS NULL
-ORDER BY time_updated DESC
+LEFT JOIN project ON project.id = session.project_id
+WHERE session.time_archived IS NULL
+ORDER BY session.time_updated DESC
 `;
 
 export const LATEST_MESSAGE_QUERY = `
@@ -17,6 +27,43 @@ FROM message
 WHERE session_id = ?
 ORDER BY time_created DESC LIMIT 1
 `;
+
+const buildLatestUserMessageTimesQuery = (sessionCount: number): string => {
+	const placeholders = Array.from({ length: sessionCount }, () => "?").join(
+		", ",
+	);
+
+	return `
+SELECT session_id, MAX(time_created) AS latest_user_time
+FROM message
+WHERE session_id IN (${placeholders})
+  AND data LIKE '%"role":"user"%'
+GROUP BY session_id
+`;
+};
+
+const buildLatestQuestionToolPartsQuery = (sessionCount: number): string => {
+	const placeholders = Array.from({ length: sessionCount }, () => "?").join(
+		", ",
+	);
+
+	return `
+SELECT part.session_id, part.time_created, part.data
+FROM part
+WHERE part.session_id IN (${placeholders})
+  AND part.data LIKE '%"type":"tool"%'
+  AND part.data LIKE '%"tool":"question"%'
+  AND part.rowid = (
+    SELECT latest.rowid
+    FROM part AS latest
+    WHERE latest.session_id = part.session_id
+      AND latest.data LIKE '%"type":"tool"%'
+      AND latest.data LIKE '%"tool":"question"%'
+    ORDER BY latest.time_created DESC, latest.rowid DESC
+    LIMIT 1
+  )
+`;
+};
 
 const buildLatestMessagesQuery = (sessionCount: number): string => {
 	const placeholders = Array.from({ length: sessionCount }, () => "?").join(
@@ -81,6 +128,11 @@ export interface LatestMessageRow {
 	data: string | null;
 }
 
+interface ActiveSessionRow extends SessionRecord {
+	project_name: string | null;
+	project_worktree: string | null;
+}
+
 export interface LatestMessageResult {
 	sessionId: string;
 	message: MessageParseResult;
@@ -96,6 +148,25 @@ interface MessageCountRow {
 	session_id: string;
 	message_count: number;
 }
+
+interface LatestUserMessageTimeRow {
+	session_id: string;
+	latest_user_time: number;
+}
+
+interface LatestQuestionToolPartRow {
+	session_id: string;
+	time_created: number;
+	data: string;
+}
+
+export interface WaitingSignal {
+	latestUserMessageTime?: number;
+	latestQuestionToolTime?: number;
+	questionToolRunning: boolean;
+}
+
+export type WaitingSignalsBySessionId = Partial<Record<string, WaitingSignal>>;
 
 const normalizeDatabaseError = (
 	cause: unknown,
@@ -136,6 +207,38 @@ const normalizeDatabaseError = (
 		message: "Unknown database failure while opening OpenCode database.",
 		cause: typeof cause === "string" ? cause : "Unknown error object",
 	};
+};
+
+const getLastPathSegment = (value?: string | null): string | null => {
+	if (!value) {
+		return null;
+	}
+
+	const trimmed = value.trim().replace(/[\\/]+$/gu, "");
+	if (!trimmed) {
+		return null;
+	}
+
+	const parts = trimmed.split(/[\\/]/u).filter(Boolean);
+	return parts.at(-1) ?? null;
+};
+
+const getProjectLabel = (session: {
+	project_id: string;
+	project_name?: string | null;
+	project_worktree?: string | null;
+}): string => {
+	const projectName = session.project_name?.trim();
+	if (projectName) {
+		return projectName;
+	}
+
+	const worktreeName = getLastPathSegment(session.project_worktree);
+	if (worktreeName) {
+		return worktreeName;
+	}
+
+	return session.project_id;
 };
 
 const openReadOnlyDatabase = (path = DB_PATH): DatabaseResult<Database> => {
@@ -208,8 +311,13 @@ export const detectSessionStatus = (
 
 export const getActiveSessions = (): DatabaseResult<SessionRecord[]> =>
 	withDatabase((database) => {
-		const statement = database.query<SessionRecord, []>(ACTIVE_SESSION_QUERY);
-		return statement.all() as SessionRecord[];
+		const statement = database.query<ActiveSessionRow, []>(
+			ACTIVE_SESSION_QUERY,
+		);
+		return (statement.all() as ActiveSessionRow[]).map((session) => ({
+			...session,
+			project_label: getProjectLabel(session),
+		}));
 	});
 
 export const getLatestMessages = (
@@ -254,6 +362,67 @@ export const getMessageCounts = (
 			results[row.session_id] = row.message_count;
 			return results;
 		}, {});
+	});
+};
+
+const isQuestionToolRunning = (raw: string): boolean => {
+	try {
+		const parsed = JSON.parse(raw) as {
+			type?: string;
+			tool?: string;
+			state?: { status?: string };
+		};
+
+		return (
+			parsed.type === "tool" &&
+			parsed.tool === "question" &&
+			parsed.state?.status === "running"
+		);
+	} catch {
+		return false;
+	}
+};
+
+export const getWaitingSignals = (
+	sessionIds: string[],
+): DatabaseResult<WaitingSignalsBySessionId> => {
+	if (sessionIds.length === 0) {
+		return { ok: true, value: {} };
+	}
+
+	return withDatabase((database) => {
+		const waitingSignals: WaitingSignalsBySessionId = {};
+
+		const userTimesStatement = database.query<
+			LatestUserMessageTimeRow,
+			string[]
+		>(buildLatestUserMessageTimesQuery(sessionIds.length));
+		const userTimeRows = userTimesStatement.all(
+			...sessionIds,
+		) as LatestUserMessageTimeRow[];
+		for (const row of userTimeRows) {
+			waitingSignals[row.session_id] = {
+				...(waitingSignals[row.session_id] ?? { questionToolRunning: false }),
+				latestUserMessageTime: row.latest_user_time,
+			};
+		}
+
+		const questionPartsStatement = database.query<
+			LatestQuestionToolPartRow,
+			string[]
+		>(buildLatestQuestionToolPartsQuery(sessionIds.length));
+		const questionPartRows = questionPartsStatement.all(
+			...sessionIds,
+		) as LatestQuestionToolPartRow[];
+		for (const row of questionPartRows) {
+			waitingSignals[row.session_id] = {
+				...(waitingSignals[row.session_id] ?? { questionToolRunning: false }),
+				latestQuestionToolTime: row.time_created,
+				questionToolRunning: isQuestionToolRunning(row.data),
+			};
+		}
+
+		return waitingSignals;
 	});
 };
 

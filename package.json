@@ -1,16 +1,35 @@
 {
-  "name": "session-monitor-tui",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Standalone Bun TypeScript OpenTUI monitor scaffold",
+  "name": "gctrl",
+  "version": "0.1.1",
+  "description": "Real-time OpenCode session monitor TUI built with Bun, OpenTUI, and read-only SQLite access.",
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun run --watch src/index.ts",
     "typecheck": "bun x tsc --noEmit",
-    "build": "bun x tsc --noEmit",
-    "lint": "bunx @biomejs/biome check src"
+    "build": "bun x tsc --project tsconfig.build.json",
+    "lint": "bunx @biomejs/biome check src",
+    "check": "bun run lint && bun run typecheck",
+    "prepack": "bun run build"
   },
+  "bin": {
+    "gctrl": "./bin/gctrl.js"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "keywords": [
+    "opencode",
+    "tui",
+    "bun",
+    "opentui",
+    "sqlite",
+    "monitor"
+  ],
+  "author": "NoizBuster <noizbuster@noizbuster.com>",
+  "license": "MIT",
+  "repository": "https://github.com/noizbuster/ground-control",
   "dependencies": {
     "@opentui/core": "*"
   },
