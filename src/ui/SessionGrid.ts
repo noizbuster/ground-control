@@ -35,9 +35,10 @@ const GRID_COLORS = {
 const MIN_CARD_WIDTH = 30;
 const DEFAULT_CARD_WIDTH = 38;
 const MAX_COLUMNS = 4;
-const GRID_GAP = 1;
-const GRID_HORIZONTAL_INSET = 4;
-export const SESSION_GRID_ROW_GAP = GRID_GAP;
+const GRID_COLUMN_GAP = 1;
+const GRID_ROW_GAP = 0;
+const GRID_HORIZONTAL_INSET = 3;
+export const SESSION_GRID_ROW_GAP = GRID_ROW_GAP;
 export const SESSION_GRID_VIEWPORT_VERTICAL_INSET = 4;
 
 const isFiniteNumber = (value: GridSize | undefined): value is number => {
@@ -58,7 +59,9 @@ export const getGridColumnCount = (width?: GridSize): number => {
 		1,
 		Math.min(
 			MAX_COLUMNS,
-			Math.floor((availableWidth + GRID_GAP) / (MIN_CARD_WIDTH + GRID_GAP)),
+			Math.floor(
+				(availableWidth + GRID_COLUMN_GAP) / (MIN_CARD_WIDTH + GRID_COLUMN_GAP),
+			),
 		),
 	);
 };
@@ -76,7 +79,9 @@ const getCardWidth = (width?: GridSize): number => {
 
 	return Math.max(
 		MIN_CARD_WIDTH,
-		Math.floor((availableWidth - GRID_GAP * (columnCount - 1)) / columnCount),
+		Math.floor(
+			(availableWidth - GRID_COLUMN_GAP * (columnCount - 1)) / columnCount,
+		),
 	);
 };
 
@@ -122,7 +127,8 @@ export const createSessionGridContent = ({
 					width: "100%",
 					flexDirection: "row",
 					flexWrap: "wrap",
-					gap: GRID_GAP,
+					rowGap: GRID_ROW_GAP,
+					columnGap: GRID_COLUMN_GAP,
 				},
 				...sessions.map((session, index) =>
 					SessionCard({
@@ -158,7 +164,10 @@ export const SessionGrid = ({
 			border: true,
 			borderColor: GRID_COLORS.border,
 			backgroundColor: GRID_COLORS.surface,
-			padding: 1,
+			paddingTop: 1,
+			paddingBottom: 1,
+			paddingLeft: 1,
+			paddingRight: 0,
 		},
 		createSessionGridContent({
 			sessions,

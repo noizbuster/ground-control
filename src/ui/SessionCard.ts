@@ -14,7 +14,6 @@ const CARD_COLORS = {
 	recentCompletedBackground: "#11241A",
 	recentCompletedSelectedBackground: "#183527",
 	title: "#E2E8F0",
-	selectedTitle: "#F8FAFC",
 	meta: "#94A3B8",
 	selectedAccent: "#F59E0B",
 	waitingEdge: "#FBBF24",
@@ -289,9 +288,7 @@ export function SessionCard(props: SessionCardProps) {
 	const statusColor = STATUS_COLORS[status];
 	const waitingEdge = buildWaitingEdge(contentWidth);
 
-	const idLine = isActiveSelection
-		? t`${dim(shortId)} ${bold(fg(CARD_COLORS.selectedAccent)("[selected]"))}`
-		: t`${dim(shortId)}`;
+	const idLine = t`${dim(shortId)}`;
 
 	const statusLine = t`${dim("status  ")}${bold(fg(statusColor)(statusLabel))}`;
 
@@ -352,7 +349,7 @@ export function SessionCard(props: SessionCardProps) {
 				]
 			: []),
 		Text({
-			content: t`${bold(fg(isActiveSelection ? CARD_COLORS.selectedTitle : CARD_COLORS.title)(title))}`,
+			content: t`${bold(fg(isActiveSelection ? CARD_COLORS.selectedAccent : CARD_COLORS.title)(title))}`,
 			width: contentWidth,
 		}),
 		Text({

@@ -161,25 +161,59 @@ const getGridWidth = (
 	return Math.max(terminalWidth - detailWidth - 1, 1);
 };
 
+const getRenderedGridColumnCount = (
+	gridContentRenderable: Renderable | undefined,
+	fallbackColumnCount: number,
+): number => {
+	if (!isBoxRenderable(gridContentRenderable)) {
+		return Math.max(1, fallbackColumnCount);
+	}
+
+	const [gridRowsRenderable] = gridContentRenderable.getChildren();
+	if (!isRenderable(gridRowsRenderable)) {
+		return Math.max(1, fallbackColumnCount);
+	}
+
+	const visibleCards = gridRowsRenderable
+		.getChildren()
+		.filter((renderable) => renderable.visible);
+
+	if (visibleCards.length === 0) {
+		return Math.max(1, fallbackColumnCount);
+	}
+
+	const firstRowY = visibleCards[0].y;
+	let inferredColumnCount = 0;
+
+	for (const card of visibleCards) {
+		if (card.y !== firstRowY) {
+			break;
+		}
+
+		inferredColumnCount += 1;
+	}
+
+	if (inferredColumnCount <= 0) {
+		return Math.max(1, fallbackColumnCount);
+	}
+
+	return inferredColumnCount;
+};
+
 const moveSelectionInGrid = (params: {
 	sessions: Session[];
 	selectedIndex: number;
-	terminalWidth: number;
-	isSideviewMode: boolean;
+	columnCount: number;
 	direction: "left" | "right" | "up" | "down";
 }): number => {
-	const { sessions, selectedIndex, terminalWidth, isSideviewMode, direction } =
-		params;
+	const { sessions, selectedIndex, columnCount, direction } = params;
 
 	if (sessions.length === 0) {
 		return -1;
 	}
 
 	const currentIndex = clampSelection(sessions, selectedIndex);
-	const columnCount = Math.max(
-		1,
-		getGridColumnCount(getGridWidth(terminalWidth, isSideviewMode)),
-	);
+	const safeColumnCount = Math.max(1, Math.floor(columnCount));
 
 	switch (direction) {
 		case "left":
@@ -187,18 +221,18 @@ const moveSelectionInGrid = (params: {
 		case "right":
 			return Math.min(sessions.length - 1, currentIndex + 1);
 		case "up":
-			return currentIndex < columnCount
+			return currentIndex < safeColumnCount
 				? currentIndex
-				: currentIndex - columnCount;
+				: currentIndex - safeColumnCount;
 		case "down": {
-			const nextIndex = currentIndex + columnCount;
+			const nextIndex = currentIndex + safeColumnCount;
 			if (nextIndex < sessions.length) {
 				return nextIndex;
 			}
 
-			const currentColumn = currentIndex % columnCount;
+			const currentColumn = currentIndex % safeColumnCount;
 			const lastRowStart = Math.max(
-				Math.floor((sessions.length - 1) / columnCount) * columnCount,
+				Math.floor((sessions.length - 1) / safeColumnCount) * safeColumnCount,
 				0,
 			);
 			return Math.min(lastRowStart + currentColumn, sessions.length - 1);
@@ -475,6 +509,7 @@ interface AppState {
 	detailReturnToSideview: boolean;
 	gridScrollTop: number;
 	gridFollowSelectionOnRender: boolean;
+	renderedGridColumnCount: number;
 	detailScrollTop: number;
 	detailScrollTopBySessionId: Partial<Record<string, number>>;
 	statusBySessionId: SessionStatusById;
@@ -661,14 +696,14 @@ const getGridVisibleRowCount = (gridHeight: number): number => {
 const getSelectionAwareGridScrollTop = (params: {
 	currentScrollTop: number;
 	gridHeight: number;
-	gridWidth: number;
+	columnCount: number;
 	selectedIndex: number;
 	sessionCount: number;
 }): number => {
 	const {
 		currentScrollTop,
 		gridHeight,
-		gridWidth,
+		columnCount,
 		selectedIndex,
 		sessionCount,
 	} = params;
@@ -681,8 +716,8 @@ const getSelectionAwareGridScrollTop = (params: {
 		return 0;
 	}
 
-	const columnCount = Math.max(1, getGridColumnCount(gridWidth));
-	const selectedRow = Math.floor(selectedIndex / columnCount);
+	const safeColumnCount = Math.max(1, Math.floor(columnCount));
+	const selectedRow = Math.floor(selectedIndex / safeColumnCount);
 	const rowStride = SESSION_CARD_MAX_HEIGHT + SESSION_GRID_ROW_GAP;
 	const visibleRowCount = getGridVisibleRowCount(gridHeight);
 	const currentTopRow = Math.max(Math.floor(currentScrollTop / rowStride), 0);
@@ -800,6 +835,7 @@ const main = async () => {
 		detailReturnToSideview: false,
 		gridScrollTop: 0,
 		gridFollowSelectionOnRender: false,
+		renderedGridColumnCount: 1,
 		detailScrollTop: 0,
 		detailScrollTopBySessionId: {},
 		statusBySessionId: {},
@@ -930,7 +966,10 @@ const main = async () => {
 							border: true,
 							borderColor: "#334155",
 							backgroundColor: "#020617",
-							padding: 1,
+							paddingTop: 1,
+							paddingBottom: 1,
+							paddingLeft: 1,
+							paddingRight: 0,
 							onMouseDown: (event) => {
 								event.preventDefault();
 								event.stopPropagation();
@@ -1091,6 +1130,22 @@ const main = async () => {
 		const detailOnlyMode = state.isDetailMode && !state.isSideviewMode;
 		const showGrid = !detailOnlyMode;
 		const showDetail = state.isSideviewMode || detailOnlyMode;
+		const gridVerticalScrollbarInset =
+			showGrid && existingGridScrollBox.verticalScrollBar.visible
+				? Math.max(
+						getSafeNumber(existingGridScrollBox.verticalScrollBar.width, 1),
+						1,
+					)
+				: 0;
+		const gridLayoutWidth = Math.max(gridWidth - gridVerticalScrollbarInset, 1);
+		const fallbackGridColumnCount = Math.max(
+			1,
+			getGridColumnCount(gridLayoutWidth),
+		);
+		state.renderedGridColumnCount = getRenderedGridColumnCount(
+			gridContent,
+			fallbackGridColumnCount,
+		);
 		const canSwitchFocus = showGrid && showDetail;
 		const deletePromptActive = Boolean(state.pendingDeleteSessionId);
 		state.focusedPane = getFocusedPane(showGrid, showDetail, state.focusedPane);
@@ -1126,7 +1181,10 @@ const main = async () => {
 			state.gridScrollTop = getSelectionAwareGridScrollTop({
 				currentScrollTop: state.gridScrollTop,
 				gridHeight: contentHeight,
-				gridWidth,
+				columnCount: Math.max(
+					1,
+					state.renderedGridColumnCount || fallbackGridColumnCount,
+				),
 				selectedIndex: state.selectedIndex,
 				sessionCount: state.sessions.length,
 			});
@@ -1214,7 +1272,7 @@ const main = async () => {
 				isFocusedPane: state.focusedPane === "grid",
 				statusBySessionId: state.statusBySessionId,
 				onSelectSession: selectSessionById,
-				width: showGrid ? gridWidth : innerWidth,
+				width: showGrid ? gridLayoutWidth : innerWidth,
 			}),
 		]);
 
@@ -1454,11 +1512,43 @@ const main = async () => {
 			return;
 		}
 
+		const fallbackInnerWidth = Math.max(
+			getSafeNumber(renderer.width, 80) - ROOT_PADDING_X,
+			1,
+		);
+		const fallbackGridWidth = getGridWidth(
+			fallbackInnerWidth,
+			state.isSideviewMode,
+		);
+		const gridScrollBox = renderer.root.findDescendantById(GRID_SCROLLBOX_ID);
+		const measuredGridWidth =
+			isScrollBoxRenderable(gridScrollBox) && gridScrollBox.visible
+				? Math.max(getSafeNumber(gridScrollBox.width, fallbackGridWidth), 1)
+				: fallbackGridWidth;
+		const measuredGridVerticalScrollbarInset =
+			isScrollBoxRenderable(gridScrollBox) &&
+			gridScrollBox.visible &&
+			gridScrollBox.verticalScrollBar.visible
+				? Math.max(getSafeNumber(gridScrollBox.verticalScrollBar.width, 1), 1)
+				: 0;
+		const measuredGridLayoutWidth = Math.max(
+			measuredGridWidth - measuredGridVerticalScrollbarInset,
+			1,
+		);
+		const fallbackColumnCount = Math.max(
+			1,
+			getGridColumnCount(measuredGridLayoutWidth),
+		);
+		const renderedColumnCount = getRenderedGridColumnCount(
+			renderer.root.findDescendantById(GRID_CONTENT_ID),
+			fallbackColumnCount,
+		);
+		state.renderedGridColumnCount = renderedColumnCount;
+
 		const nextIndex = moveSelectionInGrid({
 			sessions: state.sessions,
 			selectedIndex: state.selectedIndex < 0 ? 0 : state.selectedIndex,
-			terminalWidth: getSafeNumber(renderer.width, 80),
-			isSideviewMode: state.isSideviewMode,
+			columnCount: renderedColumnCount,
 			direction,
 		});
 
