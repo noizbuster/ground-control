@@ -1,7 +1,7 @@
 {
   "name": "gctrl",
   "version": "0.1.1",
-  "description": "Real-time OpenCode session monitor TUI built with Bun, OpenTUI, and read-only SQLite access.",
+  "description": "Real-time OpenCode session monitor CLI with Node.js built-in SQLite access.",
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
@@ -22,7 +22,7 @@
   "keywords": [
     "opencode",
     "tui",
-    "bun",
+    "node",
     "opentui",
     "sqlite",
     "monitor"
@@ -37,6 +37,6 @@
     "@types/bun": "*"
   },
   "engines": {
-    "bun": ">=1.1"
+    "node": ">=22.13.0"
   }
 }
