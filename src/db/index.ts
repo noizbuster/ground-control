@@ -1,5 +1,5 @@
-import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { getSessionStatus } from "../lib/status";
 import type { MessageData, SessionRecord, SessionStatus } from "../types";
 
@@ -271,9 +271,9 @@ export const getProjectLabel = (session: {
 
 export const openReadOnlyDatabase = (
 	path = DB_PATH,
-): DatabaseResult<Database> => {
+): DatabaseResult<DatabaseSync> => {
 	try {
-		const db = new Database(path, { readonly: true });
+		const db = new DatabaseSync(path);
 		return { ok: true, value: db };
 	} catch (error) {
 		return { ok: false, error: normalizeDatabaseError(error, path) };
@@ -281,7 +281,7 @@ export const openReadOnlyDatabase = (
 };
 
 const withDatabase = <T>(
-	callback: (database: Database) => T,
+	callback: (database: DatabaseSync) => T,
 ): DatabaseResult<T> => {
 	const opened = openReadOnlyDatabase();
 	if (!opened.ok) {
@@ -334,10 +334,10 @@ export const detectSessionStatus = (
 
 export const getActiveSessions = (): DatabaseResult<SessionRecord[]> =>
 	withDatabase((database) => {
-		const statement = database.query<ActiveSessionRow, []>(
-			ACTIVE_SESSION_QUERY,
-		);
-		return (statement.all() as ActiveSessionRow[]).map((session) => ({
+		const statement = database.prepare(ACTIVE_SESSION_QUERY);
+		const rows = statement.all() as ActiveSessionRow[];
+
+		return rows.map((session) => ({
 			...session,
 			project_label: getProjectLabel(session),
 		}));
@@ -351,7 +351,7 @@ export const getLatestMessages = (
 	}
 
 	return withDatabase((database) => {
-		const statement = database.query<LatestMessageRow, string[]>(
+		const statement = database.prepare(
 			buildLatestMessagesQuery(sessionIds.length),
 		);
 		const rows = statement.all(...sessionIds) as LatestMessageRow[];
@@ -376,7 +376,7 @@ export const getMessageCounts = (
 	}
 
 	return withDatabase((database) => {
-		const statement = database.query<MessageCountRow, string[]>(
+		const statement = database.prepare(
 			buildMessageCountsQuery(sessionIds.length),
 		);
 		const rows = statement.all(...sessionIds) as MessageCountRow[];
@@ -416,10 +416,9 @@ export const getWaitingSignals = (
 	return withDatabase((database) => {
 		const waitingSignals: WaitingSignalsBySessionId = {};
 
-		const userTimesStatement = database.query<
-			LatestUserMessageTimeRow,
-			string[]
-		>(buildLatestUserMessageTimesQuery(sessionIds.length));
+		const userTimesStatement = database.prepare(
+			buildLatestUserMessageTimesQuery(sessionIds.length),
+		);
 		const userTimeRows = userTimesStatement.all(
 			...sessionIds,
 		) as LatestUserMessageTimeRow[];
@@ -430,10 +429,9 @@ export const getWaitingSignals = (
 			};
 		}
 
-		const questionPartsStatement = database.query<
-			LatestQuestionToolPartRow,
-			string[]
-		>(buildLatestQuestionToolPartsQuery(sessionIds.length));
+		const questionPartsStatement = database.prepare(
+			buildLatestQuestionToolPartsQuery(sessionIds.length),
+		);
 		const questionPartRows = questionPartsStatement.all(
 			...sessionIds,
 		) as LatestQuestionToolPartRow[];
@@ -453,10 +451,8 @@ export const getLatestMessage = (
 	sessionId: string,
 ): DatabaseResult<LatestMessageResult | null> =>
 	withDatabase((database) => {
-		const statement = database.query<LatestMessageRow, [string]>(
-			LATEST_MESSAGE_QUERY,
-		);
-		const row = statement.get(sessionId);
+		const statement = database.prepare(LATEST_MESSAGE_QUERY);
+		const row = statement.get(sessionId) as LatestMessageRow | undefined;
 
 		if (!row) {
 			return null;

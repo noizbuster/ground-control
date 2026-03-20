@@ -5,17 +5,18 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "skipLibCheck": true,
-    "types": [
-      "bun"
-    ],
+	"types": [
+	  "node"
+	],
     "noEmit": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx"
-  ],
+	"include": [
+	  "src/**/*.ts",
+	  "src/**/*.tsx",
+	  "src/**/*.d.ts"
+	],
   "exclude": [
     "node_modules"
   ]

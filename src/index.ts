@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import {
 	Box,
@@ -62,6 +63,67 @@ const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
 const FOOTER_INLINE_GAP = 1;
 const CLEAR_TERMINAL_SEQUENCE = "\u001B[2J\u001B[3J\u001B[H";
+
+type CommandResult = {
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+};
+
+type CommandRunOptions = {
+	cwd?: string;
+	stdio?: "pipe" | "inherit";
+};
+
+const runCommand = (
+	command: string,
+	args: string[],
+	options: CommandRunOptions = {},
+) => {
+	const child = spawn(command, args, {
+		cwd: options.cwd,
+		stdio: options.stdio ?? "pipe",
+	});
+
+	let stdout = "";
+	let stderr = "";
+	let finished = false;
+
+	if (child.stdout) {
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk.toString();
+		});
+	}
+
+	if (child.stderr) {
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk.toString();
+		});
+	}
+
+	return new Promise<CommandResult>((resolve) => {
+		const settle = (exitCode: number, reason?: string) => {
+			if (finished) {
+				return;
+			}
+			finished = true;
+			resolve({
+				exitCode,
+				stdout,
+				stderr: reason ? `${stderr}${reason}` : stderr,
+			});
+		};
+
+		child.on("error", (error) => {
+			settle(1, error.message);
+		});
+
+		child.on("close", (code) => {
+			const exitCode = typeof code === "number" ? code : 1;
+			settle(exitCode);
+		});
+	});
+};
 
 type FocusPane = "grid" | "detail";
 type SessionFilterMode = "latest" | "active" | "all";
@@ -737,7 +799,6 @@ const main = async () => {
 	const refreshCoordinator = createRefreshCoordinator();
 	const refreshWorker = new Worker(
 		new URL("./db/refresh-worker.ts", import.meta.url).href,
-		{ smol: true },
 	);
 	(refreshWorker as Worker & { unref(): void }).unref();
 	const isResizeDebouncing: { value: ReturnType<typeof setTimeout> | null } = {
@@ -1577,7 +1638,7 @@ const main = async () => {
 		}
 
 		const sessionId = state.pendingDeleteSessionId;
-		const opencodeExecutable = Bun.which("opencode") ?? "opencode";
+		const opencodeExecutable = "opencode";
 		state.isDeletingSession = true;
 		state.deleteConfirmationError = null;
 		stopPolling();
@@ -1585,27 +1646,15 @@ const main = async () => {
 		renderer.intermediateRender();
 
 		try {
-			const child = Bun.spawn({
-				cmd: [opencodeExecutable, "session", "delete", sessionId],
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			const stdoutPromise = child.stdout
-				? new Response(child.stdout).text()
-				: Promise.resolve("");
-			const stderrPromise = child.stderr
-				? new Response(child.stderr).text()
-				: Promise.resolve("");
-			const [stdoutText, stderrText, exitCode] = await Promise.all([
-				stdoutPromise,
-				stderrPromise,
-				child.exited,
-			]);
+			const { exitCode, stdout, stderr } = await runCommand(
+				opencodeExecutable,
+				["session", "delete", sessionId],
+			);
 
 			if (exitCode !== 0) {
 				state.isDeletingSession = false;
 				state.deleteConfirmationError = sanitizeText(
-					stderrText || stdoutText,
+					stderr || stdout,
 					`opencode session delete exited with code ${exitCode}.`,
 				);
 				render();
@@ -1642,7 +1691,7 @@ const main = async () => {
 			return;
 		}
 
-		const opencodeExecutable = Bun.which("opencode") ?? "opencode";
+		const opencodeExecutable = "opencode";
 		state.isAttachingSession = true;
 		render();
 		renderer.intermediateRender();
@@ -1656,15 +1705,10 @@ const main = async () => {
 			renderer.suspend();
 			clearTerminalScreen();
 
-			const child = Bun.spawn({
-				cmd: [opencodeExecutable, "--session", selectedSession.id],
+			await runCommand(opencodeExecutable, ["--session", selectedSession.id], {
 				cwd: sanitizeText(selectedSession.directory, process.cwd()),
-				stdin: "inherit",
-				stdout: "inherit",
-				stderr: "inherit",
+				stdio: "inherit",
 			});
-
-			await child.exited;
 		} finally {
 			state.isAttachingSession = false;
 			clearTerminalScreen();

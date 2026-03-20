@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { buildSessionSnapshot } from "../lib/sessionSnapshot";
 import type { SessionRecord } from "../types";
 import {
@@ -87,8 +87,8 @@ const isQuestionToolRunning = (raw: string): boolean => {
 	}
 };
 
-const readActiveSessions = (database: Database): SessionRecord[] => {
-	const statement = database.query<ActiveSessionRow, []>(ACTIVE_SESSION_QUERY);
+const readActiveSessions = (database: DatabaseSync): SessionRecord[] => {
+	const statement = database.prepare(ACTIVE_SESSION_QUERY);
 	const rows = statement.all() as ActiveSessionRow[];
 
 	return rows.map((session) => ({
@@ -98,14 +98,14 @@ const readActiveSessions = (database: Database): SessionRecord[] => {
 };
 
 const readLatestMessages = (
-	database: Database,
+	database: DatabaseSync,
 	sessionIds: string[],
 ): LatestMessageResultsBySessionId => {
 	if (sessionIds.length === 0) {
 		return {};
 	}
 
-	const statement = database.query<LatestMessageRow, string[]>(
+	const statement = database.prepare(
 		buildLatestMessagesQuery(sessionIds.length),
 	);
 	const rows = statement.all(...sessionIds) as LatestMessageRow[];
@@ -122,14 +122,14 @@ const readLatestMessages = (
 };
 
 const readMessageCounts = (
-	database: Database,
+	database: DatabaseSync,
 	sessionIds: string[],
 ): MessageCountsBySessionId => {
 	if (sessionIds.length === 0) {
 		return {};
 	}
 
-	const statement = database.query<MessageCountRow, string[]>(
+	const statement = database.prepare(
 		buildMessageCountsQuery(sessionIds.length),
 	);
 	const rows = statement.all(...sessionIds) as MessageCountRow[];
@@ -141,7 +141,7 @@ const readMessageCounts = (
 };
 
 const readWaitingSignals = (
-	database: Database,
+	database: DatabaseSync,
 	sessionIds: string[],
 ): WaitingSignalsBySessionId => {
 	if (sessionIds.length === 0) {
@@ -150,7 +150,7 @@ const readWaitingSignals = (
 
 	const waitingSignals: WaitingSignalsBySessionId = {};
 
-	const userTimesStatement = database.query<LatestUserMessageTimeRow, string[]>(
+	const userTimesStatement = database.prepare(
 		buildLatestUserMessageTimesQuery(sessionIds.length),
 	);
 	const userTimeRows = userTimesStatement.all(
@@ -163,10 +163,9 @@ const readWaitingSignals = (
 		};
 	}
 
-	const questionPartsStatement = database.query<
-		LatestQuestionToolPartRow,
-		string[]
-	>(buildLatestQuestionToolPartsQuery(sessionIds.length));
+	const questionPartsStatement = database.prepare(
+		buildLatestQuestionToolPartsQuery(sessionIds.length),
+	);
 	const questionPartRows = questionPartsStatement.all(
 		...sessionIds,
 	) as LatestQuestionToolPartRow[];
@@ -181,7 +180,7 @@ const readWaitingSignals = (
 	return waitingSignals;
 };
 
-const readSnapshot = (database: Database) => {
+const readSnapshot = (database: DatabaseSync) => {
 	const rawSessions = readActiveSessions(database);
 	const sessionIds = rawSessions.map((session) => session.id);
 	const latestMessages = readLatestMessages(database, sessionIds);

@@ -1,88 +1,31 @@
-import { Box, bold, dim, fg, MouseButton, Text, t } from "@opentui/core";
-
 import { getAgentColor, getAgentDisplayName } from "../config/colors";
 import { type Session, SessionStatus } from "../types";
 
 const CARD_WIDTH = 38;
 const MIN_CARD_WIDTH = 30;
-const CONTENT_WIDTH_OFFSET = 4;
+const CONTENT_PADDING = 2;
+const CONTENT_WIDTH_OFFSET = 2;
 export const SESSION_CARD_MAX_HEIGHT = 15;
 
 const CARD_COLORS = {
-	background: "#0F1720",
-	selectedBackground: "#18253A",
-	recentCompletedBackground: "#11241A",
-	recentCompletedSelectedBackground: "#183527",
-	title: "#E2E8F0",
-	meta: "#94A3B8",
-	selectedAccent: "#F59E0B",
-	waitingEdge: "#FBBF24",
-	recentCompletedEdge: "#4ADE80",
+	selected: "*",
+	normal: " ",
+	danger: "!",
+	recent: "#",
+	waiting: "^",
 } as const;
 
 const WAITING_PULSE_INTERVAL_MS = 2200;
 const RECENT_COMPLETION_WINDOW_MS = 5 * 60 * 1000;
 
-const STATUS_COLORS: Record<SessionStatus, string> = {
-	[SessionStatus.pending]: "#94A3B8",
-	[SessionStatus.running]: "#60A5FA",
-	[SessionStatus.waiting]: "#FBBF24",
-	[SessionStatus.completed]: "#34D399",
-	[SessionStatus.failed]: "#F87171",
-	[SessionStatus.unknown]: "#94A3B8",
+const STATUS_LABELS: Record<SessionStatus, string> = {
+	[SessionStatus.pending]: "pending",
+	[SessionStatus.running]: "running",
+	[SessionStatus.waiting]: "awaiting user",
+	[SessionStatus.completed]: "completed",
+	[SessionStatus.failed]: "failed",
+	[SessionStatus.unknown]: "unknown",
 };
-
-const clampChannel = (value: number): number =>
-	Math.max(0, Math.min(255, Math.round(value)));
-
-const parseHexColor = (value: string): [number, number, number] => {
-	const normalized = value.replace("#", "");
-	const hex =
-		normalized.length === 3
-			? normalized
-					.split("")
-					.map((segment) => `${segment}${segment}`)
-					.join("")
-			: normalized;
-
-	return [
-		Number.parseInt(hex.slice(0, 2), 16),
-		Number.parseInt(hex.slice(2, 4), 16),
-		Number.parseInt(hex.slice(4, 6), 16),
-	];
-};
-
-const interpolateHexColor = (
-	fromColor: string,
-	toColor: string,
-	strength: number,
-): `#${string}` => {
-	const [fromR, fromG, fromB] = parseHexColor(fromColor);
-	const [toR, toG, toB] = parseHexColor(toColor);
-	const mix = Math.max(0, Math.min(1, strength));
-
-	const red = clampChannel(fromR + (toR - fromR) * mix)
-		.toString(16)
-		.padStart(2, "0");
-	const green = clampChannel(fromG + (toG - fromG) * mix)
-		.toString(16)
-		.padStart(2, "0");
-	const blue = clampChannel(fromB + (toB - fromB) * mix)
-		.toString(16)
-		.padStart(2, "0");
-
-	return `#${red}${green}${blue}`;
-};
-
-export interface SessionCardProps {
-	session: Session;
-	status?: SessionStatus;
-	isSelected?: boolean;
-	isActivePane?: boolean;
-	isWaiting?: boolean;
-	width?: number;
-	onSelect?: (sessionId: string) => void;
-}
 
 const clampWidth = (width?: number): number => {
 	if (typeof width !== "number" || !Number.isFinite(width)) {
@@ -93,12 +36,16 @@ const clampWidth = (width?: number): number => {
 };
 
 const truncateText = (value: string, maxLength: number): string => {
-	if (maxLength <= 3) {
-		return value.slice(0, Math.max(maxLength, 0));
+	if (maxLength <= 0) {
+		return "";
 	}
 
 	if (value.length <= maxLength) {
 		return value;
+	}
+
+	if (maxLength <= 3) {
+		return value.slice(0, maxLength);
 	}
 
 	return `${value.slice(0, maxLength - 3)}...`;
@@ -147,9 +94,79 @@ const normalizeTimestamp = (value: number): number | null => {
 	return value < 1_000_000_000_000 ? value * 1000 : value;
 };
 
-const pad2 = (value: number): string => value.toString().padStart(2, "0");
+const padField = (label: string, value: string, width: number): string => {
+	const line = `${label}: ${value}`;
+	return truncateText(line, width).padEnd(width, " ");
+};
 
-const formatTimestamp = (value: number): string => {
+const buildLine = (label: string, value: string, width: number): string => {
+	return `| ${padField(label, value, width - CONTENT_PADDING)} |`;
+};
+
+const buildHeader = (text: string, width: number): string => {
+	const contentWidth = Math.max(width - 2, 0);
+	return `+${"-".repeat(contentWidth)}+`;
+};
+
+const normalizeAgentLabel = (value: string): string => {
+	return truncateText(value.trim(), 20);
+};
+
+const normalizeSessionTitle = (value: string): string => {
+	return truncateText(value.trim() || "Untitled session", 30);
+};
+
+const buildAgentLine = (session: Session, width: number): string => {
+	const agent = normalizeAgentLabel(getAgentDisplayName(session.currentAgent));
+	return buildLine("agent", agent, width);
+};
+
+const buildSubagentSummary = (session: Session, width: number): string => {
+	const subagents = session.subagentSessions ?? [];
+	if (subagents.length === 0) {
+		return buildLine("subagents", "none", width);
+	}
+
+	const labels = subagents.map((subagent) => {
+		const agent = getAgentDisplayName(subagent.currentAgent);
+		return agent && agent.length > 0 ? agent : subagent.title.trim() || "unknown";
+	});
+
+	return buildLine("nested", truncateText(labels.join(", "), Math.max(width - 14, 1)), width);
+};
+
+const formatStatus = (status: SessionStatus): string =>
+	status === SessionStatus.waiting ? "awaiting user" : STATUS_LABELS[status];
+
+const getRunningSubagentCount = (session: Session): number => {
+	return (session.subagentSessions ?? []).filter(
+		(subagent) => subagent.status === SessionStatus.running,
+	).length;
+};
+
+const statusToMarker = (params: {
+	status?: SessionStatus;
+	isWaiting?: boolean;
+	isSelected: boolean;
+	isRecentlyCompleted: boolean;
+	waitingPulse: number;
+}): string => {
+	if (params.isSelected) {
+		return CARD_COLORS.selected;
+	}
+
+	if (params.isWaiting) {
+		return params.waitingPulse >= 0.5 ? CARD_COLORS.waiting : CARD_COLORS.normal;
+	}
+
+	if (params.isRecentlyCompleted) {
+		return CARD_COLORS.recent;
+	}
+
+	return CARD_COLORS.normal;
+};
+
+const normalizeTimestampLabel = (value: number): string => {
 	const normalized = normalizeTimestamp(value);
 	if (normalized === null) {
 		return "--";
@@ -160,234 +177,169 @@ const formatTimestamp = (value: number): string => {
 		return "--";
 	}
 
-	return [
-		date.getFullYear(),
-		"-",
-		pad2(date.getMonth() + 1),
-		"-",
-		pad2(date.getDate()),
-		" ",
-		pad2(date.getHours()),
-		":",
-		pad2(date.getMinutes()),
-	].join("");
+	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+		date.getDate(),
+	).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(
+		date.getMinutes(),
+	).padStart(2, "0")}`;
 };
 
-const formatStatus = (status: SessionStatus): string =>
-	status === SessionStatus.waiting ? "AWAITING USER" : status.toUpperCase();
+export interface SessionCardProps {
+	session: Session;
+	status?: SessionStatus;
+	isSelected?: boolean;
+	isActivePane?: boolean;
+	isWaiting?: boolean;
+	width?: number;
+}
 
-const buildWaitingEdge = (contentWidth: number): string => {
-	const edgeWidth = Math.max(contentWidth, 11);
-	const label = "[awaiting user]";
+export interface SessionCardRenderResult {
+	width: number;
+	lines: string[];
+}
 
-	if (edgeWidth <= label.length + 2) {
-		return truncateText(label, edgeWidth);
-	}
+export interface SessionCardRenderOptions {
+	session: Session;
+	status?: SessionStatus;
+	isSelected?: boolean;
+	isActivePane?: boolean;
+	isWaiting?: boolean;
+	width?: number;
+}
 
-	return `${label}${"-".repeat(edgeWidth - label.length)}`;
-};
-
-const buildRecentCompletionEdge = (contentWidth: number): string => {
-	const edgeWidth = Math.max(contentWidth, 18);
-	const label = "[recently completed]";
-
-	if (edgeWidth <= label.length + 2) {
-		return truncateText(label, edgeWidth);
-	}
-
-	return `${label}${"+".repeat(edgeWidth - label.length)}`;
-};
-
-const buildSubagentSummary = (session: Session, maxLength: number): string => {
-	const subagents = session.subagentSessions ?? [];
-	if (subagents.length === 0) {
-		return "none";
-	}
-
-	const labels = subagents.map((subagent) => {
-		const agent = getAgentDisplayName(subagent.currentAgent);
-		return agent && agent.length > 0
-			? agent
-			: subagent.title.trim() || "unknown";
-	});
-
-	return truncateText(labels.join(", "), maxLength);
-};
-
-const getRunningSubagentCount = (session: Session): number => {
-	return (session.subagentSessions ?? []).filter(
-		(subagent) => subagent.status === SessionStatus.running,
-	).length;
-};
-
-export function SessionCard(props: SessionCardProps) {
-	const width = clampWidth(props.width);
-	const contentWidth = width - CONTENT_WIDTH_OFFSET;
-
-	const session = props.session;
-	const currentAgent = getAgentDisplayName(session.currentAgent);
-	const resolvedStatus: SessionStatus =
+const normalizeCardStatus = (session: Session, props: SessionCardRenderOptions) => {
+	const baseStatus =
 		props.status ??
 		session.status ??
 		(props.isWaiting ? SessionStatus.waiting : SessionStatus.unknown);
-	const isWaiting = props.isWaiting ?? resolvedStatus === SessionStatus.waiting;
-	const status: SessionStatus = isWaiting
-		? SessionStatus.waiting
-		: resolvedStatus;
-	const agentColor = getAgentColor(session.currentAgent);
-	const waitingPulsePhase = isWaiting
-		? (Date.now() % WAITING_PULSE_INTERVAL_MS) / WAITING_PULSE_INTERVAL_MS
-		: 0;
-	const waitingPulseStrength = isWaiting
-		? (1 - Math.cos(waitingPulsePhase * Math.PI * 2)) / 2
-		: 0;
+
+	const isWaiting = props.isWaiting ?? baseStatus === SessionStatus.waiting;
+	const resolvedStatus = isWaiting ? SessionStatus.waiting : baseStatus;
 	const updatedAt = normalizeTimestamp(session.time_updated);
-	const isRecentlyCompleted =
-		status === SessionStatus.completed &&
+	const recentlyCompleted =
+		resolvedStatus === SessionStatus.completed &&
 		updatedAt !== null &&
 		Date.now() - updatedAt <= RECENT_COMPLETION_WINDOW_MS;
-	const borderColor = isWaiting
-		? interpolateHexColor(
-				agentColor,
-				CARD_COLORS.waitingEdge,
-				waitingPulseStrength,
-			)
-		: isRecentlyCompleted
-			? CARD_COLORS.recentCompletedEdge
-			: agentColor;
-	const isActiveSelection = props.isSelected && (props.isActivePane ?? true);
-	const borderStyle =
-		isActiveSelection || isRecentlyCompleted ? "heavy" : "rounded";
 
-	const title = truncateText(
-		session.title.trim() || "Untitled session",
-		contentWidth,
-	);
-	const shortId = shortenMiddle(
-		session.id || "unknown-session",
-		Math.min(contentWidth, 18),
-	);
+	return {
+		resolvedStatus,
+		isWaiting,
+		recentlyCompleted,
+		updatedAt,
+	};
+};
+
+const buildCardLines = (params: {
+	width: number;
+	session: Session;
+	status: SessionStatus;
+	isSelected: boolean;
+	isWaiting: boolean;
+	isRecentlyCompleted: boolean;
+	waitingPulse: number;
+}): string[] => {
+	const cardWidth = params.width;
+	const contentWidth = Math.max(params.width - CONTENT_WIDTH_OFFSET, 1);
+	const marker = statusToMarker({
+		status: params.status,
+		isWaiting: params.isWaiting,
+		isSelected: params.isSelected,
+		isRecentlyCompleted: params.isRecentlyCompleted,
+		waitingPulse: params.waitingPulse,
+	});
+
+	const title = normalizeSessionTitle(params.session.title);
+	const shortId = shortenMiddle(params.session.id || "unknown-session", 22);
+	const agentColorHint = getAgentColor(params.session.currentAgent);
 	const projectLabel =
-		session.project_label || session.project_id || "unknown-project";
-	const shortProjectLabel = shortenMiddle(
-		projectLabel,
-		Math.min(contentWidth, 22),
+		params.session.project_label || params.session.project_id || "unknown-project";
+	const directory = shortenDirectoryPath(
+		params.session.directory,
+		Math.max(contentWidth - 14, 8),
 	);
-	const directoryLabel = shortenDirectoryPath(
-		session.directory,
-		Math.max(contentWidth - 7, 8),
-	);
-	const agentLabel = truncateText(currentAgent, Math.max(contentWidth - 7, 8));
-	const runningSubagentCount = getRunningSubagentCount(session);
-	const subagentCount = session.subagentSessions?.length ?? 0;
-	const subagentLabel = buildSubagentSummary(
-		session,
-		Math.max(contentWidth - 10, 8),
-	);
-	const statusLabel = formatStatus(status);
-	const statusColor = STATUS_COLORS[status];
-	const waitingEdge = buildWaitingEdge(contentWidth);
 
-	const idLine = t`${dim(shortId)}`;
+	const runningSubagentCount = getRunningSubagentCount(params.session);
+	const subagentCount = params.session.subagentSessions?.length ?? 0;
+	const statusLine = `${formatStatus(params.status)} (${params.status})`;
+	const subagentSummary = `${runningSubagentCount} / ${subagentCount}`;
 
-	const statusLine = t`${dim("status  ")}${bold(fg(statusColor)(statusLabel))}`;
+	const rows: string[] = [
+		params.isWaiting
+			? buildLine("watch", "[awaiting user]".padStart(15, marker), cardWidth)
+			: `| ${" ".repeat(contentWidth - 1)} |`,
+		params.isRecentlyCompleted
+			? buildLine("state", "[recently completed]", cardWidth)
+			: `| ${" ".repeat(contentWidth - 1)} |`,
+		buildLine(`${marker} ${title}`, ``, cardWidth),
+		buildLine("id", shortId, cardWidth),
+		buildLine("status", statusLine, cardWidth),
+		buildLine("project", projectLabel, cardWidth),
+		buildLine("dir", directory, cardWidth),
+		buildAgentLine(params.session, cardWidth),
+		buildSubagentSummary(params.session, cardWidth),
+		buildLine(
+			"created",
+			normalizeTimestampLabel(params.session.time_created),
+			cardWidth,
+		),
+		buildLine(
+			"updated",
+			normalizeTimestampLabel(params.session.time_updated),
+			cardWidth,
+		),
+		buildLine("subagents", subagentSummary, cardWidth),
+		buildLine("color", agentColorHint, cardWidth),
+	];
 
-	const waitingEdgeLine = isWaiting
-		? t`${bold(fg(interpolateHexColor(CARD_COLORS.meta, CARD_COLORS.waitingEdge, waitingPulseStrength))(waitingEdge))}`
-		: undefined;
-	const recentCompletionEdgeLine = isRecentlyCompleted
-		? t`${bold(fg(CARD_COLORS.recentCompletedEdge)(buildRecentCompletionEdge(contentWidth)))}`
-		: undefined;
-	const agentLine = t`${dim("agent   ")}${fg(agentColor)(agentLabel)}`;
-	const subagentLine = t`${dim("subagents ")}${fg(CARD_COLORS.title)(`${runningSubagentCount} / ${subagentCount}`)}`;
-	const subagentAgentsLine = t`${dim("nested  ")}${fg(CARD_COLORS.title)(subagentLabel)}`;
-	const directoryLine = t`${dim("dir     ")}${fg(CARD_COLORS.title)(directoryLabel)}`;
-	const projectLine = t`${dim("project ")}${fg(CARD_COLORS.title)(shortProjectLabel)}`;
-	const createdLine = t`${dim("created ")}${fg(CARD_COLORS.title)(formatTimestamp(session.time_created))}`;
-	const updatedLine = t`${dim("updated ")}${fg(CARD_COLORS.title)(formatTimestamp(session.time_updated))}`;
+	const maxContentRows = SESSION_CARD_MAX_HEIGHT - 2;
+	const clipped = rows.slice(0, maxContentRows);
+	const filled = [
+		...clipped,
+		...Array.from({ length: Math.max(0, maxContentRows - clipped.length) }, () =>
+			buildLine("", "", cardWidth),
+		),
+	];
 
-	return Box(
-		{
+	return [
+		buildHeader("", cardWidth),
+		...filled,
+		buildHeader("", cardWidth),
+	];
+};
+
+export const buildSessionCard = (params: SessionCardRenderOptions): SessionCardRenderResult => {
+	const width = clampWidth(params.width);
+	const state = normalizeCardStatus(params.session, params);
+	const waitingPulse = state.isWaiting
+		? (1 - Math.cos((Date.now() % WAITING_PULSE_INTERVAL_MS) / WAITING_PULSE_INTERVAL_MS * Math.PI * 2)) / 2
+		: 0;
+
+	return {
+		width,
+		lines: buildCardLines({
 			width,
-			border: true,
-			borderStyle,
-			borderColor,
-			backgroundColor: isActiveSelection
-				? isRecentlyCompleted
-					? CARD_COLORS.recentCompletedSelectedBackground
-					: CARD_COLORS.selectedBackground
-				: isRecentlyCompleted
-					? CARD_COLORS.recentCompletedBackground
-					: CARD_COLORS.background,
-			padding: 1,
-			flexDirection: "column",
-			gap: 0,
-			onMouseDown: (event) => {
-				if (event.button !== MouseButton.LEFT || event.isDragging) {
-					return;
-				}
+			session: params.session,
+			status: state.resolvedStatus,
+			isSelected: (params.isSelected ?? false) && (params.isActivePane ?? true),
+			isWaiting: state.isWaiting,
+			isRecentlyCompleted: state.recentlyCompleted,
+			waitingPulse,
+		}),
+	};
+};
 
-				event.preventDefault();
-				event.stopPropagation();
-				props.onSelect?.(session.id);
-			},
-		},
-		...(waitingEdgeLine
-			? [
-					Text({
-						content: waitingEdgeLine,
-						width: contentWidth,
-					}),
-				]
-			: []),
-		...(recentCompletionEdgeLine
-			? [
-					Text({
-						content: recentCompletionEdgeLine,
-						width: contentWidth,
-					}),
-				]
-			: []),
-		Text({
-			content: t`${bold(fg(isActiveSelection ? CARD_COLORS.selectedAccent : CARD_COLORS.title)(title))}`,
-			width: contentWidth,
-		}),
-		Text({
-			content: idLine,
-			width: contentWidth,
-			fg: CARD_COLORS.meta,
-		}),
-		Text({
-			content: statusLine,
-			width: contentWidth,
-		}),
-		Text({
-			content: agentLine,
-			width: contentWidth,
-		}),
-		Text({
-			content: subagentLine,
-			width: contentWidth,
-		}),
-		Text({
-			content: subagentAgentsLine,
-			width: contentWidth,
-		}),
-		Text({
-			content: projectLine,
-			width: contentWidth,
-		}),
-		Text({
-			content: directoryLine,
-			width: contentWidth,
-		}),
-		Text({
-			content: createdLine,
-			width: contentWidth,
-		}),
-		Text({
-			content: updatedLine,
-			width: contentWidth,
-		}),
-	);
+export interface SessionCardPropsLegacy {
+	session: Session;
+	status?: SessionStatus;
+	isSelected?: boolean;
+	isActivePane?: boolean;
+	isWaiting?: boolean;
+	width?: number;
+	onSelect?: (sessionId: string) => void;
 }
+
+export const SessionCard = (props: SessionCardPropsLegacy) => {
+	return buildSessionCard(props);
+};
+
+export default SessionCard;

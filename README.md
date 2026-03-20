@@ -14,18 +14,20 @@ Make sure these are available before running `gctrl`:
 - OpenCode installed and used on the same machine
 - `~/.local/share/opencode/opencode.db` exists
 
-### Run with `bunx`
-
-```bash
-bunx gctrl
-```
-
-`bunx` works by relaunching the CLI with Node under the hood.
-
 ### Run with `npx`
 
 ```bash
 npx gctrl
+```
+
+`npx gctrl` is supported as the default launch path and uses Node for runtime.
+
+Install and run with npm:
+
+```bash
+npm install
+npm run build
+npm start
 ```
 
 <p align="center">
@@ -58,7 +60,6 @@ After launch, use these shortcuts to navigate and control the monitor:
 ## Requirements
 
 - Node.js 22.13.0+ is required for built-in `node:sqlite`.
-- `bun` is optional and only used as an alternate launcher (`bunx gctrl`).
 - The monitor reads session data from `~/.local/share/opencode/opencode.db`.
 - Override the database path with `GCTRL_DB_PATH=/custom/path/opencode.db`.
 - Attach and delete actions use the `opencode` CLI, so `opencode` should be available in your `PATH`.
@@ -67,19 +68,19 @@ After launch, use these shortcuts to navigate and control the monitor:
 ## Local Development
 
 ```bash
-bun install
-bun run dev
+npm install
+npm run dev
 ```
 
 Useful scripts:
 
 ```bash
-bun run start
-bun run dev
-bun run build
-bun run typecheck
-bun run lint
-bun run check
+npm run start
+npm run dev
+npm run build
+npm run typecheck
+npm run lint
+npm run check
 ```
 
 ## Project Structure
