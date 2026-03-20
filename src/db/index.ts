@@ -1,8 +1,21 @@
 import { Database } from "bun:sqlite";
+import { homedir } from "node:os";
 import { getSessionStatus } from "../lib/status";
 import type { MessageData, SessionRecord, SessionStatus } from "../types";
 
-const DB_PATH = "/home/noiz/.local/share/opencode/opencode.db";
+const DEFAULT_DB_PATH = `${homedir()}/.local/share/opencode/opencode.db`;
+
+const resolveDatabasePath = (): string => {
+	const overridePath = process.env.GCTRL_DB_PATH?.trim();
+
+	if (overridePath && overridePath.length > 0) {
+		return overridePath;
+	}
+
+	return DEFAULT_DB_PATH;
+};
+
+export const DB_PATH = resolveDatabasePath();
 
 export const ACTIVE_SESSION_QUERY = `
 SELECT
@@ -28,7 +41,9 @@ WHERE session_id = ?
 ORDER BY time_created DESC LIMIT 1
 `;
 
-const buildLatestUserMessageTimesQuery = (sessionCount: number): string => {
+export const buildLatestUserMessageTimesQuery = (
+	sessionCount: number,
+): string => {
 	const placeholders = Array.from({ length: sessionCount }, () => "?").join(
 		", ",
 	);
@@ -42,7 +57,9 @@ GROUP BY session_id
 `;
 };
 
-const buildLatestQuestionToolPartsQuery = (sessionCount: number): string => {
+export const buildLatestQuestionToolPartsQuery = (
+	sessionCount: number,
+): string => {
 	const placeholders = Array.from({ length: sessionCount }, () => "?").join(
 		", ",
 	);
@@ -65,7 +82,7 @@ WHERE part.session_id IN (${placeholders})
 `;
 };
 
-const buildLatestMessagesQuery = (sessionCount: number): string => {
+export const buildLatestMessagesQuery = (sessionCount: number): string => {
 	const placeholders = Array.from({ length: sessionCount }, () => "?").join(
 		", ",
 	);
@@ -84,7 +101,7 @@ WHERE message.session_id IN (${placeholders})
 `;
 };
 
-const buildMessageCountsQuery = (sessionCount: number): string => {
+export const buildMessageCountsQuery = (sessionCount: number): string => {
 	const placeholders = Array.from({ length: sessionCount }, () => "?").join(
 		", ",
 	);
@@ -209,6 +226,17 @@ const normalizeDatabaseError = (
 	};
 };
 
+export const createQueryFailedDatabaseError = (
+	error: unknown,
+	message = "Query execution failed.",
+): DatabaseError => {
+	return {
+		code: "query_failed",
+		message,
+		cause: error instanceof Error ? error.message : String(error),
+	};
+};
+
 const getLastPathSegment = (value?: string | null): string | null => {
 	if (!value) {
 		return null;
@@ -223,7 +251,7 @@ const getLastPathSegment = (value?: string | null): string | null => {
 	return parts.at(-1) ?? null;
 };
 
-const getProjectLabel = (session: {
+export const getProjectLabel = (session: {
 	project_id: string;
 	project_name?: string | null;
 	project_worktree?: string | null;
@@ -241,7 +269,9 @@ const getProjectLabel = (session: {
 	return session.project_id;
 };
 
-const openReadOnlyDatabase = (path = DB_PATH): DatabaseResult<Database> => {
+export const openReadOnlyDatabase = (
+	path = DB_PATH,
+): DatabaseResult<Database> => {
 	try {
 		const db = new Database(path, { readonly: true });
 		return { ok: true, value: db };
@@ -262,14 +292,7 @@ const withDatabase = <T>(
 	try {
 		return { ok: true, value: callback(db) };
 	} catch (error) {
-		return {
-			ok: false,
-			error: {
-				code: "query_failed",
-				message: "Query execution failed.",
-				cause: error instanceof Error ? error.message : String(error),
-			},
-		};
+		return { ok: false, error: createQueryFailedDatabaseError(error) };
 	} finally {
 		db.close();
 	}

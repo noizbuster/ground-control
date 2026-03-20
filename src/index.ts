@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import {
 	Box,
 	type BoxRenderable,
@@ -17,15 +18,16 @@ import {
 } from "@opentui/core";
 
 import {
-	detectSessionStatus,
-	getActiveSessions,
-	getLatestMessages,
-	getMessageCounts,
-	getWaitingSignals,
-	type LatestMessageResultsBySessionId,
-	type MessageCountsBySessionId,
-	type WaitingSignalsBySessionId,
-} from "./db";
+	createRequest,
+	isRefreshResponse,
+	type RefreshResponse,
+	type RefreshSnapshotPayload,
+} from "./db/refresh-worker-protocol";
+import {
+	createRefreshCoordinator,
+	type RefreshRequestId,
+} from "./lib/refreshCoordinator";
+import type { SessionStatusById } from "./lib/sessionSnapshot";
 import { type Session, SessionStatus } from "./types";
 import { createDetailPanelContent } from "./ui/DetailPanel";
 import { SESSION_CARD_MAX_HEIGHT } from "./ui/SessionCard";
@@ -61,20 +63,12 @@ const ROOT_CONTENT_GAP = 1;
 const FOOTER_INLINE_GAP = 1;
 const CLEAR_TERMINAL_SEQUENCE = "\u001B[2J\u001B[3J\u001B[H";
 
-type SessionStatusById = Partial<Record<string, SessionStatus>>;
 type FocusPane = "grid" | "detail";
 type SessionFilterMode = "latest" | "active" | "all";
 type SessionSortMode = "status" | "update" | "create";
 
 const SESSION_FILTER_CYCLE: SessionFilterMode[] = ["latest", "active", "all"];
 const SESSION_SORT_CYCLE: SessionSortMode[] = ["status", "update", "create"];
-
-interface SessionSnapshot {
-	sessions: Session[];
-	statusBySessionId: SessionStatusById;
-	messageCountBySessionId: Partial<Record<string, number>>;
-	sessionIssues: Partial<Record<string, string>>;
-}
 
 interface SessionFilterResult {
 	sessions: Session[];
@@ -85,28 +79,6 @@ interface SelectionSnapshot {
 	selectedRenderables: Renderable[];
 	getSelectedText(): string;
 }
-
-const resolveRootSession = (
-	session: Session,
-	sessionsById: Map<string, Session>,
-): Session | null => {
-	const visited = new Set<string>();
-	let current: Session | undefined = session;
-
-	while (current?.parent_id) {
-		if (visited.has(current.id)) {
-			return null;
-		}
-
-		visited.add(current.id);
-		current = sessionsById.get(current.parent_id);
-		if (!current) {
-			return null;
-		}
-	}
-
-	return current ?? null;
-};
 
 const APP_PALETTE = {
 	bg: "#020617",
@@ -238,93 +210,6 @@ const moveSelectionInGrid = (params: {
 			return Math.min(lastRowStart + currentColumn, sessions.length - 1);
 		}
 	}
-};
-
-const buildSessionSnapshot = (params: {
-	rawSessions: Session[];
-	latestMessages: LatestMessageResultsBySessionId;
-	messageCounts: MessageCountsBySessionId;
-	waitingSignals: WaitingSignalsBySessionId;
-}): SessionSnapshot => {
-	const nextSessionsById = new Map<string, Session>();
-	const nextStatusBySessionId: SessionStatusById = {};
-	const nextMessageCountBySessionId: Partial<Record<string, number>> = {};
-	const nextSessionIssues: Partial<Record<string, string>> = {};
-	const orderedSessions: Session[] = [];
-
-	for (const rawSession of params.rawSessions) {
-		const session: Session = {
-			...rawSession,
-			subagentSessions: [],
-		};
-
-		const latestMessageResult = params.latestMessages[session.id];
-		const messageCount = params.messageCounts[session.id];
-
-		if (typeof messageCount === "number") {
-			nextMessageCountBySessionId[session.id] = messageCount;
-		}
-
-		if (latestMessageResult) {
-			const parseResult = latestMessageResult.message;
-			const waitingSignal = params.waitingSignals[session.id];
-			const latestUserMessageTime = waitingSignal?.latestUserMessageTime ?? 0;
-			const latestQuestionToolTime = waitingSignal?.latestQuestionToolTime ?? 0;
-			const isAwaitingUser =
-				waitingSignal?.questionToolRunning === true &&
-				latestQuestionToolTime > latestUserMessageTime;
-			const detectedStatus = detectSessionStatus(parseResult);
-			const status =
-				isAwaitingUser &&
-				detectedStatus !== SessionStatus.failed &&
-				detectedStatus !== SessionStatus.completed
-					? SessionStatus.waiting
-					: detectedStatus;
-			session.status = status;
-			nextStatusBySessionId[session.id] = status;
-
-			if (parseResult.ok && parseResult.value.agent) {
-				session.currentAgent = parseResult.value.agent;
-			}
-
-			if (!parseResult.ok) {
-				nextSessionIssues[session.id] =
-					`Data error: ${parseResult.error.message}`;
-			}
-		} else {
-			session.status = SessionStatus.unknown;
-			nextStatusBySessionId[session.id] = SessionStatus.unknown;
-		}
-
-		nextSessionsById.set(session.id, session);
-		orderedSessions.push(session);
-	}
-
-	const rootSessions = orderedSessions.filter((session) => !session.parent_id);
-
-	for (const session of orderedSessions) {
-		if (!session.parent_id) {
-			continue;
-		}
-
-		const rootSession = resolveRootSession(session, nextSessionsById);
-		if (!rootSession || rootSession.id === session.id) {
-			nextSessionIssues[session.id] = "Parent session not found for subagent.";
-			continue;
-		}
-
-		rootSession.subagentSessions = [
-			...(rootSession.subagentSessions ?? []),
-			session,
-		];
-	}
-
-	return {
-		sessions: rootSessions,
-		statusBySessionId: nextStatusBySessionId,
-		messageCountBySessionId: nextMessageCountBySessionId,
-		sessionIssues: nextSessionIssues,
-	};
 };
 
 const normalizeDirectoryKey = (directory: string): string =>
@@ -849,13 +734,27 @@ const main = async () => {
 		dbError: null,
 	};
 
-	const isRefreshing: { value: boolean } = { value: false };
-	const hasQueuedRefresh: { value: boolean } = { value: false };
+	const refreshCoordinator = createRefreshCoordinator();
+	const refreshWorker = new Worker(
+		new URL("./db/refresh-worker.ts", import.meta.url).href,
+		{ smol: true },
+	);
+	(refreshWorker as Worker & { unref(): void }).unref();
 	const isResizeDebouncing: { value: ReturnType<typeof setTimeout> | null } = {
 		value: null,
 	};
 	let interval: ReturnType<typeof setInterval> | null = null;
 	let isWaitingPulseLive = false;
+	let isRefreshApplying = false;
+
+	const renderStatsPath = process.env.GCTRL_RENDER_STATS || "";
+	const renderStats = renderStatsPath
+		? {
+				applyTriggeredRenders: 0,
+				liveFrameRenders: 0,
+				liveFrameSkippedDuringApply: 0,
+			}
+		: null;
 
 	const getStateForSession = (
 		sessionId?: string,
@@ -1343,128 +1242,159 @@ const main = async () => {
 		state.gridFollowSelectionOnRender = false;
 	};
 
-	const refreshSessions = () => {
-		if (isRefreshing.value) {
-			hasQueuedRefresh.value = true;
+	const applyRefreshErrorState = (errorMessage: string) => {
+		state.sessions = [];
+		state.statusBySessionId = {};
+		state.gridScrollTop = 0;
+		state.gridFollowSelectionOnRender = false;
+		state.detailScrollTop = 0;
+		state.detailScrollTopBySessionId = {};
+		state.messageCountBySessionId = {};
+		state.sessionIssues = {};
+		state.hiddenCompletedCount = 0;
+		state.selectedIndex = -1;
+		state.selectedSessionId = null;
+		state.renderedDetailSessionId = null;
+		state.detailReturnToSideview = false;
+		state.dbError = errorMessage;
+
+		if (state.isDetailMode && state.sessions.length === 0) {
+			state.isDetailMode = false;
+		}
+
+		render();
+	};
+
+	const applyRefreshSnapshotState = (snapshot: RefreshSnapshotPayload) => {
+		state.dbError = null;
+		state.detailScrollTopBySessionId = pruneDetailScrollState(
+			state.detailScrollTopBySessionId,
+			snapshot.sessions,
+		);
+
+		const filterResult = applySessionFilter(
+			snapshot.sessions,
+			state.sessionFilterMode,
+		);
+		state.sessions = applySessionSort(
+			filterResult.sessions,
+			state.sessionSortMode,
+		);
+		state.hiddenCompletedCount = filterResult.hiddenCompletedCount;
+		state.statusBySessionId = snapshot.statusBySessionId;
+		state.messageCountBySessionId = snapshot.messageCountBySessionId;
+		state.sessionIssues = snapshot.sessionIssues;
+		state.selectedIndex = getSelectedIndexById(
+			state.sessions,
+			state.selectedSessionId,
+			state.selectedIndex,
+		);
+		state.selectedSessionId =
+			state.selectedIndex >= 0
+				? (state.sessions[state.selectedIndex]?.id ?? null)
+				: null;
+
+		if (state.sessions.length === 0 && state.isDetailMode) {
+			state.isDetailMode = false;
+		}
+
+		render();
+	};
+
+	const dispatchRefreshRequest = (requestId: RefreshRequestId) => {
+		refreshWorker.postMessage(createRequest(requestId));
+	};
+
+	const completeRefreshRequest = (requestId: RefreshRequestId) => {
+		const nextRequestId = refreshCoordinator.completeRefresh(requestId);
+
+		if (nextRequestId !== null) {
+			dispatchRefreshRequest(nextRequestId);
+		}
+	};
+
+	const handleRefreshResponse = (response: RefreshResponse) => {
+		try {
+			if (!refreshCoordinator.shouldApplyResponse(response.requestId)) {
+				return;
+			}
+
+			isRefreshApplying = true;
+			if (renderStats) renderStats.applyTriggeredRenders++;
+			try {
+				if (!response.ok) {
+					applyRefreshErrorState(response.error.message);
+					return;
+				}
+
+				applyRefreshSnapshotState(response.snapshot);
+			} finally {
+				isRefreshApplying = false;
+			}
+		} finally {
+			completeRefreshRequest(response.requestId);
+		}
+	};
+
+	const failActiveRefreshRequest = (errorMessage: string) => {
+		const activeRequestId = refreshCoordinator.getSnapshot().activeRequestId;
+		if (activeRequestId === null) {
+			state.dbError = errorMessage;
+			render();
 			return;
 		}
 
-		isRefreshing.value = true;
+		try {
+			if (refreshCoordinator.shouldApplyResponse(activeRequestId)) {
+				isRefreshApplying = true;
+				if (renderStats) renderStats.applyTriggeredRenders++;
+				try {
+					applyRefreshErrorState(errorMessage);
+				} finally {
+					isRefreshApplying = false;
+				}
+			}
+		} finally {
+			completeRefreshRequest(activeRequestId);
+		}
+	};
+
+	refreshWorker.onmessage = (event) => {
+		if (!isRefreshResponse(event.data)) {
+			return;
+		}
+
+		handleRefreshResponse(event.data);
+	};
+
+	refreshWorker.onmessageerror = () => {
+		failActiveRefreshRequest(
+			"Failed to deserialize refresh worker response payload.",
+		);
+	};
+
+	refreshWorker.onerror = (event) => {
+		event.preventDefault();
+		const workerErrorMessage = event.error?.message ?? event.message;
+		failActiveRefreshRequest(
+			workerErrorMessage || "Refresh worker encountered an unexpected error.",
+		);
+	};
+
+	const refreshSessions = () => {
+		const requestId = refreshCoordinator.requestRefresh();
+		if (requestId === null) {
+			return;
+		}
 
 		try {
-			const activeSessionsResult = getActiveSessions();
-			if (!activeSessionsResult.ok) {
-				state.sessions = [];
-				state.statusBySessionId = {};
-				state.gridScrollTop = 0;
-				state.gridFollowSelectionOnRender = false;
-				state.detailScrollTop = 0;
-				state.detailScrollTopBySessionId = {};
-				state.messageCountBySessionId = {};
-				state.sessionIssues = {};
-				state.hiddenCompletedCount = 0;
-				state.selectedIndex = -1;
-				state.selectedSessionId = null;
-				state.renderedDetailSessionId = null;
-				state.detailReturnToSideview = false;
-				state.dbError = activeSessionsResult.error.message;
-
-				if (state.isDetailMode && state.sessions.length === 0) {
-					state.isDetailMode = false;
-				}
-
-				render();
-				return;
-			}
-
-			state.dbError = null;
-
-			const sessionIds = activeSessionsResult.value.map(
-				(session) => session.id,
+			dispatchRefreshRequest(requestId);
+		} catch (error) {
+			failActiveRefreshRequest(
+				error instanceof Error
+					? error.message
+					: "Failed to dispatch refresh request to worker.",
 			);
-			const latestMessagesResult = getLatestMessages(sessionIds);
-			const messageCountsResult = getMessageCounts(sessionIds);
-			const waitingSignalsResult = getWaitingSignals(sessionIds);
-
-			if (
-				!latestMessagesResult.ok ||
-				!messageCountsResult.ok ||
-				!waitingSignalsResult.ok
-			) {
-				state.sessions = [];
-				state.statusBySessionId = {};
-				state.gridScrollTop = 0;
-				state.gridFollowSelectionOnRender = false;
-				state.detailScrollTop = 0;
-				state.detailScrollTopBySessionId = {};
-				state.messageCountBySessionId = {};
-				state.sessionIssues = {};
-				state.hiddenCompletedCount = 0;
-				state.selectedIndex = -1;
-				state.selectedSessionId = null;
-				state.renderedDetailSessionId = null;
-				state.detailReturnToSideview = false;
-				state.dbError = !latestMessagesResult.ok
-					? latestMessagesResult.error.message
-					: !messageCountsResult.ok
-						? messageCountsResult.error.message
-						: !waitingSignalsResult.ok
-							? waitingSignalsResult.error.message
-							: "Unknown database failure";
-
-				if (state.isDetailMode && state.sessions.length === 0) {
-					state.isDetailMode = false;
-				}
-
-				render();
-				return;
-			}
-
-			const nextSnapshot = buildSessionSnapshot({
-				rawSessions: activeSessionsResult.value,
-				latestMessages: latestMessagesResult.value,
-				messageCounts: messageCountsResult.value,
-				waitingSignals: waitingSignalsResult.value,
-			});
-			state.detailScrollTopBySessionId = pruneDetailScrollState(
-				state.detailScrollTopBySessionId,
-				nextSnapshot.sessions,
-			);
-
-			const filterResult = applySessionFilter(
-				nextSnapshot.sessions,
-				state.sessionFilterMode,
-			);
-			state.sessions = applySessionSort(
-				filterResult.sessions,
-				state.sessionSortMode,
-			);
-			state.hiddenCompletedCount = filterResult.hiddenCompletedCount;
-			state.statusBySessionId = nextSnapshot.statusBySessionId;
-			state.messageCountBySessionId = nextSnapshot.messageCountBySessionId;
-			state.sessionIssues = nextSnapshot.sessionIssues;
-			state.selectedIndex = getSelectedIndexById(
-				state.sessions,
-				state.selectedSessionId,
-				state.selectedIndex,
-			);
-			state.selectedSessionId =
-				state.selectedIndex >= 0
-					? (state.sessions[state.selectedIndex]?.id ?? null)
-					: null;
-
-			if (state.sessions.length === 0 && state.isDetailMode) {
-				state.isDetailMode = false;
-			}
-
-			render();
-		} finally {
-			isRefreshing.value = false;
-
-			if (hasQueuedRefresh.value) {
-				hasQueuedRefresh.value = false;
-				refreshSessions();
-			}
 		}
 	};
 
@@ -1769,7 +1699,40 @@ const main = async () => {
 		render();
 	};
 
+	const flushRenderStats = () => {
+		if (renderStats && renderStatsPath) {
+			try {
+				writeFileSync(
+					renderStatsPath,
+					JSON.stringify(
+						{
+							source: "actual-worker-app",
+							applyTriggeredRenders: renderStats.applyTriggeredRenders,
+							liveFrameRenders: renderStats.liveFrameRenders,
+							liveFrameSkippedDuringApply:
+								renderStats.liveFrameSkippedDuringApply,
+							totalLiveCallbacks:
+								renderStats.liveFrameRenders +
+								renderStats.liveFrameSkippedDuringApply,
+							guardActive:
+								renderStats.liveFrameSkippedDuringApply > 0 ||
+								renderStats.applyTriggeredRenders > 0,
+							capturedAt: new Date().toISOString(),
+						},
+						null,
+						2,
+					),
+				);
+			} catch {}
+		}
+	};
+
 	const shutdown = () => {
+		try {
+			refreshWorker.terminate();
+		} catch {}
+
+		flushRenderStats();
 		renderer.destroy();
 		process.exit(0);
 	};
@@ -1980,9 +1943,17 @@ const main = async () => {
 	});
 
 	renderer.setFrameCallback(async () => {
-		if (isWaitingPulseLive) {
-			render();
+		if (!isWaitingPulseLive) {
+			return;
 		}
+
+		if (isRefreshApplying) {
+			if (renderStats) renderStats.liveFrameSkippedDuringApply++;
+			return;
+		}
+
+		if (renderStats) renderStats.liveFrameRenders++;
+		render();
 	});
 
 	await renderer.start();
@@ -1992,7 +1963,12 @@ const main = async () => {
 	render();
 
 	process.on("exit", () => {
+		try {
+			refreshWorker.terminate();
+		} catch {}
+
 		stopPolling();
+		flushRenderStats();
 	});
 };
 
