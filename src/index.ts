@@ -735,8 +735,9 @@ const main = async () => {
 	};
 
 	const refreshCoordinator = createRefreshCoordinator();
+	const workerExtension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
 	const refreshWorker = new Worker(
-		new URL("./db/refresh-worker.ts", import.meta.url).href,
+		new URL(`./db/refresh-worker${workerExtension}`, import.meta.url).href,
 		{ smol: true },
 	);
 	(refreshWorker as Worker & { unref(): void }).unref();
