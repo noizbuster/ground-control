@@ -55,6 +55,18 @@ After launch, use these shortcuts to navigate and control the monitor:
 | `Esc` / `q` | Cancel prompt or quit |
 | `Ctrl+C` | Quit immediately |
 
+### Hierarchy View (`c`)
+
+Press `c` on a selected session to open the agent hierarchy view. This shows the session's subagent tree with status, timing, and metadata.
+
+| Key | Action |
+| --- | --- |
+| `v` | Cycle view mode (tree / flow) |
+| `x` | Cycle info mode (standard / detailed) |
+| `f` | Cycle filter mode (all / active / latest) |
+| `j` / `k` / `Up` / `Down` | Scroll |
+| `Esc` / `q` | Close hierarchy view |
+
 ## Requirements
 
 - Node.js 22.13.0+ is required for built-in `node:sqlite`.

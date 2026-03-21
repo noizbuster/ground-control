@@ -28,8 +28,15 @@ import {
 	type RefreshRequestId,
 } from "./lib/refreshCoordinator";
 import type { SessionStatusById } from "./lib/sessionSnapshot";
-import { type Session, SessionStatus } from "./types";
+import {
+	type HierarchyFilterMode,
+	type HierarchyInfoMode,
+	type HierarchyViewMode,
+	type Session,
+	SessionStatus,
+} from "./types";
 import { createDetailPanelContent } from "./ui/DetailPanel";
+import { createHierarchyViewContent } from "./ui/HierarchyView";
 import { SESSION_CARD_MAX_HEIGHT } from "./ui/SessionCard";
 import {
 	createSessionGridContent,
@@ -48,6 +55,8 @@ const GRID_SCROLLBOX_ID = "session-grid-scrollbox";
 const GRID_CONTENT_ID = "session-grid-content";
 const DETAIL_SCROLLBOX_ID = "session-detail-scrollbox";
 const DETAIL_CONTENT_ID = "session-detail-content";
+const HIERARCHY_SCROLLBOX_ID = "session-hierarchy-scrollbox";
+const HIERARCHY_CONTENT_ID = "session-hierarchy-content";
 const POLL_INTERVAL_MS = 2000;
 const RESIZE_DEBOUNCE_MS = 150;
 const DETAIL_SCROLL_STEP = 3;
@@ -57,6 +66,8 @@ const ATTACH_SHORTCUT_LABEL = "a";
 const COPY_ID_SHORTCUT_LABEL = "i";
 const DELETE_SHORTCUT_LABEL = "d";
 const SORT_SHORTCUT_LABEL = "s";
+const HIERARCHY_NARROW_THRESHOLD = 56;
+const HIERARCHY_SHORTCUT_LABEL = "c";
 const ROOT_PADDING_TOP = 1;
 const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
@@ -69,6 +80,13 @@ type SessionSortMode = "status" | "update" | "create";
 
 const SESSION_FILTER_CYCLE: SessionFilterMode[] = ["latest", "active", "all"];
 const SESSION_SORT_CYCLE: SessionSortMode[] = ["status", "update", "create"];
+const HIERARCHY_FILTER_CYCLE: HierarchyFilterMode[] = [
+	"latest",
+	"active",
+	"all",
+];
+const HIERARCHY_VIEW_CYCLE: HierarchyViewMode[] = ["tree", "flow"];
+const HIERARCHY_INFO_CYCLE: HierarchyInfoMode[] = ["standard", "detailed"];
 
 interface SessionFilterResult {
 	sessions: Session[];
@@ -358,6 +376,41 @@ const getNextSessionSortMode = (
 	return SESSION_SORT_CYCLE[(currentIndex + 1) % SESSION_SORT_CYCLE.length];
 };
 
+const getNextHierarchyFilterMode = (
+	currentMode: HierarchyFilterMode,
+): HierarchyFilterMode => {
+	const currentIndex = HIERARCHY_FILTER_CYCLE.indexOf(currentMode);
+	if (currentIndex < 0) {
+		return HIERARCHY_FILTER_CYCLE[0];
+	}
+
+	return HIERARCHY_FILTER_CYCLE[
+		(currentIndex + 1) % HIERARCHY_FILTER_CYCLE.length
+	];
+};
+
+const getNextHierarchyViewMode = (
+	currentMode: HierarchyViewMode,
+): HierarchyViewMode => {
+	const currentIndex = HIERARCHY_VIEW_CYCLE.indexOf(currentMode);
+	if (currentIndex < 0) {
+		return HIERARCHY_VIEW_CYCLE[0];
+	}
+
+	return HIERARCHY_VIEW_CYCLE[(currentIndex + 1) % HIERARCHY_VIEW_CYCLE.length];
+};
+
+const getNextHierarchyInfoMode = (
+	currentMode: HierarchyInfoMode,
+): HierarchyInfoMode => {
+	const currentIndex = HIERARCHY_INFO_CYCLE.indexOf(currentMode);
+	if (currentIndex < 0) {
+		return HIERARCHY_INFO_CYCLE[0];
+	}
+
+	return HIERARCHY_INFO_CYCLE[(currentIndex + 1) % HIERARCHY_INFO_CYCLE.length];
+};
+
 const formatFilterBadge = (
 	mode: SessionFilterMode,
 	activeMode: SessionFilterMode,
@@ -406,6 +459,13 @@ interface AppState {
 	isAttachingSession: boolean;
 	isDeletingSession: boolean;
 	dbError: string | null;
+	isHierarchyMode: boolean;
+	hierarchyViewMode: HierarchyViewMode;
+	hierarchyInfoMode: HierarchyInfoMode;
+	hierarchyFilterMode: HierarchyFilterMode;
+	hierarchyScrollTop: number;
+	hierarchyScrollTopBySessionId: Partial<Record<string, number>>;
+	hierarchyOrigin: FocusPane;
 }
 
 const isScrollBoxRenderable = (
@@ -732,6 +792,13 @@ const main = async () => {
 		isAttachingSession: false,
 		isDeletingSession: false,
 		dbError: null,
+		isHierarchyMode: false,
+		hierarchyViewMode: "tree",
+		hierarchyInfoMode: "standard",
+		hierarchyFilterMode: "all",
+		hierarchyScrollTop: 0,
+		hierarchyScrollTopBySessionId: {},
+		hierarchyOrigin: "grid",
 	};
 
 	const refreshCoordinator = createRefreshCoordinator();
@@ -922,6 +989,39 @@ const main = async () => {
 							flexDirection: "column",
 						}),
 					),
+					ScrollBox(
+						{
+							id: HIERARCHY_SCROLLBOX_ID,
+							width: 0,
+							height: "100%",
+							border: true,
+							borderColor: "#334155",
+							backgroundColor: "#0F172A",
+							padding: 1,
+							visible: false,
+							onMouseDown: (event) => {
+								event.preventDefault();
+								event.stopPropagation();
+							},
+							onMouseScroll: (event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								const direction = event.scroll?.direction;
+								if (direction === "up" || direction === "down") {
+									scrollHierarchy(
+										direction === "up"
+											? -DETAIL_SCROLL_STEP
+											: DETAIL_SCROLL_STEP,
+									);
+								}
+							},
+						},
+						Box({
+							id: HIERARCHY_CONTENT_ID,
+							width: "100%",
+							flexDirection: "column",
+						}),
+					),
 				),
 				Box(
 					{
@@ -990,6 +1090,11 @@ const main = async () => {
 			renderer.root.findDescendantById(CONTENT_CONTAINER_ID);
 		const gridContent = renderer.root.findDescendantById(GRID_CONTENT_ID);
 		const detailContent = renderer.root.findDescendantById(DETAIL_CONTENT_ID);
+		const existingHierarchyScrollBox = renderer.root.findDescendantById(
+			HIERARCHY_SCROLLBOX_ID,
+		);
+		const hierarchyContent =
+			renderer.root.findDescendantById(HIERARCHY_CONTENT_ID);
 		const deleteConfirmationOverlay = renderer.root.findDescendantById(
 			DELETE_CONFIRMATION_OVERLAY_ID,
 		);
@@ -999,12 +1104,14 @@ const main = async () => {
 			!isBoxRenderable(existingRoot) ||
 			!isScrollBoxRenderable(existingGridScrollBox) ||
 			!isScrollBoxRenderable(existingDetailScrollBox) ||
+			!isScrollBoxRenderable(existingHierarchyScrollBox) ||
 			!isBoxRenderable(footerContainer) ||
 			!isTextRenderable(statusText) ||
 			!isTextRenderable(controlText) ||
 			!isBoxRenderable(contentContainer) ||
 			!isBoxRenderable(gridContent) ||
 			!isBoxRenderable(detailContent) ||
+			!isBoxRenderable(hierarchyContent) ||
 			!isBoxRenderable(deleteConfirmationOverlay)
 		) {
 			return;
@@ -1020,6 +1127,14 @@ const main = async () => {
 			}
 		}
 
+		if (existingHierarchyScrollBox.visible) {
+			state.hierarchyScrollTop = existingHierarchyScrollBox.scrollTop;
+			if (state.selectedSessionId) {
+				state.hierarchyScrollTopBySessionId[state.selectedSessionId] =
+					existingHierarchyScrollBox.scrollTop;
+			}
+		}
+
 		const width = getSafeNumber(renderer.width, 80);
 		const height = getSafeNumber(renderer.height, 24);
 		const innerWidth = Math.max(width - ROOT_PADDING_X, 1);
@@ -1028,8 +1143,10 @@ const main = async () => {
 		const detailWidth = Math.max(Math.floor(innerWidth * 0.34), 22);
 		const gridWidth = getGridWidth(innerWidth, state.isSideviewMode);
 		const detailOnlyMode = state.isDetailMode && !state.isSideviewMode;
-		const showGrid = !detailOnlyMode;
-		const showDetail = state.isSideviewMode || detailOnlyMode;
+		const showGrid = !detailOnlyMode && !state.isHierarchyMode;
+		const showDetail =
+			(state.isSideviewMode || detailOnlyMode) && !state.isHierarchyMode;
+		const showHierarchy = state.isHierarchyMode;
 		const gridVerticalScrollbarInset =
 			showGrid && existingGridScrollBox.verticalScrollBar.visible
 				? Math.max(
@@ -1065,9 +1182,11 @@ const main = async () => {
 			? state.isDeletingSession
 				? "Deleting selected session..."
 				: "Delete selected session? y: confirm | Esc/n: cancel"
-			: state.focusedPane === "detail"
-				? `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}↑/↓/j/k: scroll detail | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`
-				: `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/j/k: move grid | Enter: detail | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`;
+			: state.isHierarchyMode
+				? `v: view(${state.hierarchyViewMode}) | x: info(${state.hierarchyInfoMode}) | f: filter(${state.hierarchyFilterMode}) | ↑/↓/j/k: scroll | q/Esc: close`
+				: state.focusedPane === "detail"
+					? `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}↑/↓/j/k: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`
+					: `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/j/k: move grid | Enter: detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`;
 		const footerAvailableWidth = innerWidth;
 		const footerWraps =
 			shortcutGuide.length + focusSummary.length + FOOTER_INLINE_GAP >
@@ -1165,6 +1284,13 @@ const main = async () => {
 				? APP_PALETTE.accent
 				: "#334155";
 
+		existingHierarchyScrollBox.visible = showHierarchy;
+		existingHierarchyScrollBox.width = showHierarchy ? innerWidth : 0;
+		existingHierarchyScrollBox.height = contentHeight;
+		existingHierarchyScrollBox.borderColor = showHierarchy
+			? APP_PALETTE.accent
+			: "#334155";
+
 		replaceChildren(gridContent, [
 			createSessionGridContent({
 				sessions: state.sessions,
@@ -1202,6 +1328,18 @@ const main = async () => {
 			}),
 		]);
 
+		replaceChildren(hierarchyContent, [
+			createHierarchyViewContent({
+				session: selectedSession,
+				messageCountBySessionId: state.messageCountBySessionId,
+				viewMode: state.hierarchyViewMode,
+				infoMode: state.hierarchyInfoMode,
+				filterMode: state.hierarchyFilterMode,
+				width: showHierarchy ? innerWidth : innerWidth,
+				narrowMode: showHierarchy && innerWidth < HIERARCHY_NARROW_THRESHOLD,
+			}),
+		]);
+
 		deleteConfirmationOverlay.visible = deletePromptActive;
 		deleteConfirmationOverlay.width = width;
 		deleteConfirmationOverlay.height = height;
@@ -1229,6 +1367,16 @@ const main = async () => {
 
 		if (showDetail && shouldRestoreDetailScroll) {
 			existingDetailScrollBox.scrollTo({ x: 0, y: nextDetailScrollTop });
+		}
+
+		if (showHierarchy && selectedSession?.id) {
+			const savedHierarchyScroll =
+				state.hierarchyScrollTopBySessionId[selectedSession.id] ?? 0;
+			existingHierarchyScrollBox.scrollTo({
+				x: 0,
+				y: savedHierarchyScroll,
+			});
+			state.hierarchyScrollTop = savedHierarchyScroll;
 		}
 
 		state.detailScrollTop = showDetail
@@ -1425,6 +1573,25 @@ const main = async () => {
 		}
 	};
 
+	const scrollHierarchy = (delta: number) => {
+		const hierarchyScrollBox = renderer.root.findDescendantById(
+			HIERARCHY_SCROLLBOX_ID,
+		);
+		if (
+			!isScrollBoxRenderable(hierarchyScrollBox) ||
+			!hierarchyScrollBox.visible
+		) {
+			return;
+		}
+
+		hierarchyScrollBox.scrollBy({ x: 0, y: delta });
+		state.hierarchyScrollTop = hierarchyScrollBox.scrollTop;
+		if (state.selectedSessionId) {
+			state.hierarchyScrollTopBySessionId[state.selectedSessionId] =
+				hierarchyScrollBox.scrollTop;
+		}
+	};
+
 	const toggleFocusedPane = () => {
 		const detailOnlyMode = state.isDetailMode && !state.isSideviewMode;
 		const showGrid = !detailOnlyMode;
@@ -1515,6 +1682,27 @@ const main = async () => {
 		render();
 	};
 
+	const openHierarchyView = () => {
+		if (state.sessions.length === 0 || !state.selectedSessionId) {
+			return;
+		}
+
+		state.hierarchyOrigin = state.isDetailMode ? "detail" : "grid";
+		state.isHierarchyMode = true;
+		render();
+	};
+
+	const closeHierarchyView = () => {
+		if (!state.isHierarchyMode) {
+			return;
+		}
+
+		state.isHierarchyMode = false;
+		state.focusedPane = state.hierarchyOrigin;
+		state.hierarchyOrigin = "grid";
+		render();
+	};
+
 	const cycleSessionFilterMode = () => {
 		state.sessionFilterMode = getNextSessionFilterMode(state.sessionFilterMode);
 		state.gridFollowSelectionOnRender = true;
@@ -1525,6 +1713,23 @@ const main = async () => {
 		state.sessionSortMode = getNextSessionSortMode(state.sessionSortMode);
 		state.gridFollowSelectionOnRender = true;
 		refreshSessions();
+	};
+
+	const cycleHierarchyFilterMode = () => {
+		state.hierarchyFilterMode = getNextHierarchyFilterMode(
+			state.hierarchyFilterMode,
+		);
+		render();
+	};
+
+	const cycleHierarchyViewMode = () => {
+		state.hierarchyViewMode = getNextHierarchyViewMode(state.hierarchyViewMode);
+		render();
+	};
+
+	const cycleHierarchyInfoMode = () => {
+		state.hierarchyInfoMode = getNextHierarchyInfoMode(state.hierarchyInfoMode);
+		render();
 	};
 
 	const copySelectedSessionId = () => {
@@ -1816,6 +2021,59 @@ const main = async () => {
 			return;
 		}
 
+		// Hierarchy mode key handling
+		if (state.isHierarchyMode) {
+			if (
+				matchesPhysicalKey(key, {
+					names: ["v"],
+					codes: ["keyv"],
+					sequences: ["v"],
+				})
+			) {
+				cycleHierarchyViewMode();
+				return;
+			}
+
+			if (
+				matchesPhysicalKey(key, {
+					names: ["x"],
+					codes: ["keyx"],
+					sequences: ["x"],
+				})
+			) {
+				cycleHierarchyInfoMode();
+				return;
+			}
+
+			if (
+				matchesPhysicalKey(key, {
+					names: ["f"],
+					codes: ["keyf"],
+					sequences: ["f"],
+				})
+			) {
+				cycleHierarchyFilterMode();
+				return;
+			}
+
+			if (key.name === "j" || key.name === "down") {
+				scrollHierarchy(DETAIL_SCROLL_STEP);
+				return;
+			}
+
+			if (key.name === "k" || key.name === "up") {
+				scrollHierarchy(-DETAIL_SCROLL_STEP);
+				return;
+			}
+
+			if (key.name === "escape" || key.name === "q") {
+				closeHierarchyView();
+				return;
+			}
+
+			return;
+		}
+
 		if (matchesPhysicalKey(key, { names: ["tab"] })) {
 			toggleFocusedPane();
 			return;
@@ -1862,6 +2120,17 @@ const main = async () => {
 			})
 		) {
 			copySelectedSessionId();
+			return;
+		}
+
+		if (
+			matchesPhysicalKey(key, {
+				names: ["c"],
+				codes: ["keyc"],
+				sequences: ["c"],
+			})
+		) {
+			openHierarchyView();
 			return;
 		}
 

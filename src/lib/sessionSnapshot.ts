@@ -22,6 +22,15 @@ interface BuildSessionSnapshotParams {
 	waitingSignals: WaitingSignalsBySessionId;
 }
 
+const getTrimmedValue = (value: string | undefined): string | undefined => {
+	if (typeof value !== "string") {
+		return undefined;
+	}
+
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+};
+
 const resolveRootSession = (
 	session: Session,
 	sessionsById: Map<string, Session>,
@@ -84,8 +93,20 @@ export const buildSessionSnapshot = (
 			session.status = status;
 			nextStatusBySessionId[session.id] = status;
 
-			if (parseResult.ok && parseResult.value.agent) {
-				session.currentAgent = parseResult.value.agent;
+			if (parseResult.ok) {
+				if (parseResult.value.agent) {
+					session.currentAgent = parseResult.value.agent;
+				}
+
+				const modelID = getTrimmedValue(parseResult.value.modelID);
+				if (modelID) {
+					session.currentModelID = modelID;
+				}
+
+				const variant = getTrimmedValue(parseResult.value.variant);
+				if (variant) {
+					session.currentVariant = variant;
+				}
 			}
 
 			if (!parseResult.ok) {

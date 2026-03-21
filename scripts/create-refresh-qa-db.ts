@@ -195,6 +195,181 @@ const seedFixtureData = (db: Database): void => {
 			input: { prompt: "Can I continue with deployment?" },
 		}),
 	);
+
+	// --- Hierarchy fixture data ---
+
+	// Root session with 4 subagents (running, completed, failed, waiting)
+	insertSession.run(
+		"session-hierarchy",
+		"project-alpha",
+		"hierarchy",
+		"/workspaces/alpha",
+		null,
+		BASE_TIME + 1_200,
+		BASE_TIME + 2_000,
+		null,
+	);
+	insertMessage.run(
+		"session-hierarchy",
+		BASE_TIME + 1_250,
+		encode({
+			role: "user",
+			time: { created: BASE_TIME + 1_250 },
+		}),
+	);
+	insertMessage.run(
+		"session-hierarchy",
+		BASE_TIME + 1_800,
+		encode({
+			role: "assistant",
+			agent: "orchestrator",
+			finish: "stop",
+			time: { created: BASE_TIME + 1_800, completed: BASE_TIME + 1_850 },
+			tokens: { input: 300, output: 800 },
+		}),
+	);
+
+	// Subagent: completed (finish: "stop" with time.completed)
+	insertSession.run(
+		"session-sub-completed",
+		"project-alpha",
+		"explore-deps",
+		"/workspaces/alpha",
+		"session-hierarchy",
+		BASE_TIME + 1_300,
+		BASE_TIME + 1_450,
+		null,
+	);
+	insertMessage.run(
+		"session-sub-completed",
+		BASE_TIME + 1_310,
+		encode({
+			role: "user",
+			time: { created: BASE_TIME + 1_310 },
+		}),
+	);
+	insertMessage.run(
+		"session-sub-completed",
+		BASE_TIME + 1_400,
+		encode({
+			role: "assistant",
+			agent: "explore",
+			finish: "stop",
+			time: { created: BASE_TIME + 1_400, completed: BASE_TIME + 1_450 },
+			tokens: { input: 150, output: 320 },
+		}),
+	);
+
+	// Subagent: running (no finish, no completed time)
+	insertSession.run(
+		"session-sub-running",
+		"project-alpha",
+		"build-feature",
+		"/workspaces/alpha",
+		"session-hierarchy",
+		BASE_TIME + 1_500,
+		BASE_TIME + 1_950,
+		null,
+	);
+	insertMessage.run(
+		"session-sub-running",
+		BASE_TIME + 1_510,
+		encode({
+			role: "user",
+			time: { created: BASE_TIME + 1_510 },
+		}),
+	);
+	insertMessage.run(
+		"session-sub-running",
+		BASE_TIME + 1_900,
+		encode({
+			role: "assistant",
+			agent: "build",
+			time: { created: BASE_TIME + 1_900 },
+			tokens: { input: 400, output: 600 },
+		}),
+	);
+
+	// Subagent: failed (finish: "error")
+	insertSession.run(
+		"session-sub-failed",
+		"project-alpha",
+		"fix-auth-bug",
+		"/workspaces/alpha",
+		"session-hierarchy",
+		BASE_TIME + 1_600,
+		BASE_TIME + 1_700,
+		null,
+	);
+	insertMessage.run(
+		"session-sub-failed",
+		BASE_TIME + 1_610,
+		encode({
+			role: "user",
+			time: { created: BASE_TIME + 1_610 },
+		}),
+	);
+	insertMessage.run(
+		"session-sub-failed",
+		BASE_TIME + 1_650,
+		encode({
+			role: "assistant",
+			agent: "build",
+			finish: "error",
+			time: { created: BASE_TIME + 1_650, completed: BASE_TIME + 1_700 },
+			tokens: { input: 250, output: 80 },
+		}),
+	);
+
+	// Subagent: waiting (tools.question: true, no finish)
+	insertSession.run(
+		"session-sub-waiting",
+		"project-alpha",
+		"review-impl",
+		"/workspaces/alpha",
+		"session-hierarchy",
+		BASE_TIME + 1_750,
+		BASE_TIME + 1_850,
+		null,
+	);
+	insertMessage.run(
+		"session-sub-waiting",
+		BASE_TIME + 1_760,
+		encode({
+			role: "user",
+			time: { created: BASE_TIME + 1_760 },
+		}),
+	);
+	insertMessage.run(
+		"session-sub-waiting",
+		BASE_TIME + 1_800,
+		encode({
+			role: "assistant",
+			agent: "momus",
+			time: { created: BASE_TIME + 1_800 },
+			tools: { question: true },
+		}),
+	);
+
+	// Root session with no subagents (empty-state case) + long title for truncation
+	insertSession.run(
+		"session-empty-root",
+		"project-beta",
+		"This Is A Very Long Session Title Designed To Test Truncation Behavior When The Title Exceeds The Available Column Width In The Hierarchy View Panel Display",
+		"/workspaces/beta",
+		null,
+		BASE_TIME + 2_100,
+		BASE_TIME + 2_100,
+		null,
+	);
+	insertMessage.run(
+		"session-empty-root",
+		BASE_TIME + 2_110,
+		encode({
+			role: "user",
+			time: { created: BASE_TIME + 2_110 },
+		}),
+	);
 };
 
 const main = async () => {
@@ -221,8 +396,11 @@ const main = async () => {
 	}
 
 	console.log(`Created deterministic QA fixture at ${outputPath}`);
-	console.log("Seeded root sessions: alpha, beta, gamma");
-	console.log("Seeded waiting signal: session-gamma question tool running");
+	console.log(
+		"Seeded root sessions: alpha, beta, gamma, hierarchy, empty-root",
+	);
+	console.log("Seeded subagents under session-hierarchy: completed, running, failed, waiting");
+	console.log("Seeded long-title root session: session-empty-root (no subagents)");
 };
 
 void main();

@@ -18,6 +18,37 @@ interface HarnessOptions {
 	injectDurationMs: number;
 	allowMissingFixture: boolean;
 	dbTargetPath: string;
+	keySequence: string;
+	keyDelayMs: number;
+	scenario: string;
+}
+
+type HierarchyAssertion = {
+	description: string;
+	pattern: RegExp;
+	required: boolean;
+};
+
+interface HierarchyEvidence {
+	description: string;
+	harnessMode: string;
+	fixturePath: string;
+	scenario: string;
+	keySequence: string;
+	capturedAt: string;
+	assertions: {
+		description: string;
+		pattern: string;
+		matched: boolean;
+		required: boolean;
+	}[];
+	summary: {
+		total: number;
+		passed: number;
+		requiredFailed: number;
+	};
+	conclusion: string;
+	paneCapture: string;
 }
 
 interface CommandResult {
@@ -46,6 +77,9 @@ const parseArgs = (argv: string[]): HarnessOptions => {
 	let allowMissingFixture = false;
 	let dbTargetPath = DEFAULT_DB_TARGET_PATH;
 	let sessionName = `gctrl-refresh-qa-${Date.now()}`;
+	let keySequence = "";
+	let keyDelayMs = 200;
+	let scenario = "";
 
 	for (let index = 0; index < argv.length; index += 1) {
 		const token = argv[index];
@@ -126,6 +160,30 @@ const parseArgs = (argv: string[]): HarnessOptions => {
 				index += 1;
 				break;
 
+			case "--key-sequence":
+				if (!nextToken) {
+					throw new Error("Missing value for --key-sequence.");
+				}
+				keySequence = nextToken;
+				index += 1;
+				break;
+
+			case "--key-delay-ms":
+				if (!nextToken) {
+					throw new Error("Missing value for --key-delay-ms.");
+				}
+				keyDelayMs = parseInteger(nextToken, token);
+				index += 1;
+				break;
+
+			case "--scenario":
+				if (!nextToken) {
+					throw new Error("Missing value for --scenario.");
+				}
+				scenario = nextToken;
+				index += 1;
+				break;
+
 			default:
 				if (token.startsWith("-")) {
 					throw new Error(`Unknown argument: ${token}`);
@@ -134,6 +192,13 @@ const parseArgs = (argv: string[]): HarnessOptions => {
 				fixturePath = token;
 				break;
 		}
+	}
+
+const HIERARCHY_SCENARIO_KEYS = "ffjjjjjjcvvxq";
+
+	// Resolve scenario to key sequence
+	if (scenario === "hierarchy" && !keySequence) {
+		keySequence = HIERARCHY_SCENARIO_KEYS;
 	}
 
 	return {
@@ -147,6 +212,9 @@ const parseArgs = (argv: string[]): HarnessOptions => {
 		injectDurationMs,
 		allowMissingFixture,
 		dbTargetPath,
+		keySequence,
+		keyDelayMs,
+		scenario,
 	};
 };
 
@@ -240,6 +308,106 @@ const closeStdin = (stdin: unknown): void => {
 	}
 };
 
+const injectKeySequence = async (
+	keys: string,
+	delayMs: number,
+	sendKey: (key: string) => void,
+): Promise<void> => {
+	for (const key of keys) {
+		sendKey(key);
+		await sleep(delayMs);
+	}
+};
+
+const HIERARCHY_ASSERTIONS: HierarchyAssertion[] = [
+	{
+		description: "Hierarchy view header visible",
+		pattern: /Agent Hierarchy|Hierarchy/i,
+		required: true,
+	},
+	{
+		description: "Root session label present",
+		pattern: /hierarchy/i,
+		required: true,
+	},
+	{
+		description: "Subagent with completed status",
+		pattern: /completed/i,
+		required: true,
+	},
+	{
+		description: "Subagent with running status",
+		pattern: /running/i,
+		required: true,
+	},
+	{
+		description: "Subagent with failed status",
+		pattern: /failed/i,
+		required: false,
+	},
+	{
+		description: "Subagent with waiting status",
+		pattern: /waiting/i,
+		required: true,
+	},
+	{
+		description: "View mode badge (tree/flow)",
+		pattern: /tree|flow/i,
+		required: true,
+	},
+	{
+		description: "Info mode badge (standard/detailed)",
+		pattern: /standard|detailed/i,
+		required: false,
+	},
+	{
+		description: "Filter indicator",
+		pattern: /all|active|latest/i,
+		required: false,
+	},
+];
+
+const buildHierarchyEvidence = (
+	pane: string,
+	options: HarnessOptions,
+	harnessMode: string,
+	fixturePath: string,
+): HierarchyEvidence => {
+	const assertions = HIERARCHY_ASSERTIONS.map((assertion) => ({
+		description: assertion.description,
+		pattern: assertion.pattern.source,
+		matched: assertion.pattern.test(pane),
+		required: assertion.required,
+	}));
+
+	const passed = assertions.filter((a) => a.matched).length;
+	const requiredFailed = assertions.filter((a) => a.required && !a.matched).length;
+
+	const conclusion =
+		requiredFailed === 0
+			? `PASS: All ${assertions.filter((a) => a.required).length} required assertions matched.`
+			: `FAIL: ${requiredFailed} required assertion(s) failed.`;
+
+	return {
+		description:
+			"Hierarchy view QA evidence captured from deterministic key sequence execution. " +
+			"Asserts hierarchy rendering, status badges, and mode toggles work correctly.",
+		harnessMode,
+		fixturePath,
+		scenario: options.scenario,
+		keySequence: options.keySequence,
+		capturedAt: new Date().toISOString(),
+		assertions,
+		summary: {
+			total: assertions.length,
+			passed,
+			requiredFailed,
+		},
+		conclusion,
+		paneCapture: pane,
+	};
+};
+
 const runHarnessInTmux = async (options: HarnessOptions): Promise<string> => {
 	let tmuxSessionStarted = false;
 
@@ -266,6 +434,10 @@ const runHarnessInTmux = async (options: HarnessOptions): Promise<string> => {
 				runTmux(["send-keys", "-t", options.sessionName, "j"]);
 				await sleep(options.injectIntervalMs);
 			}
+		} else if (options.keySequence) {
+			await injectKeySequence(options.keySequence, options.keyDelayMs, (key) => {
+				runTmux(["send-keys", "-t", options.sessionName, key]);
+			});
 		}
 
 		await sleep(500);
@@ -317,10 +489,15 @@ const runHarnessWithScriptFallback = async (
 				writeToStdin(child.stdin, "j");
 				await sleep(options.injectIntervalMs);
 			}
+		} else if (options.keySequence) {
+			await injectKeySequence(options.keySequence, options.keyDelayMs, (key) => {
+				writeToStdin(child.stdin, key);
+			});
+		} else {
+			await sleep(350);
+			writeToStdin(child.stdin, "q");
 		}
 
-		await sleep(350);
-		writeToStdin(child.stdin, "q");
 		await sleep(150);
 		closeStdin(child.stdin);
 
@@ -382,21 +559,35 @@ const main = async () => {
 				? await runHarnessInTmux(options)
 				: await runHarnessWithScriptFallback(options, outputPath);
 
-		const report = [
-			`harness_mode=${harnessMode}`,
-			`fixture_path=${fixturePath}`,
-			`fixture_exists=${fixtureExists}`,
-			`inject_j=${options.injectJ}`,
-			`inject_interval_ms=${options.injectIntervalMs}`,
-			`inject_duration_ms=${options.injectDurationMs}`,
-			`startup_wait_ms=${options.startupWaitMs}`,
-			`captured_at=${new Date().toISOString()}`,
-			"",
-			pane,
-		].join("\n");
+		if (options.scenario === "hierarchy") {
+			const evidence = buildHierarchyEvidence(
+				pane,
+				options,
+				harnessMode,
+				fixturePath,
+			);
+			await writeFile(outputPath, JSON.stringify(evidence, null, 2), "utf8");
+			console.log(`Captured hierarchy QA evidence at ${outputPath}`);
+			console.log(`Assertions: ${evidence.summary.passed}/${evidence.summary.total} passed`);
+			console.log(evidence.conclusion);
+		} else {
+			const report = [
+				`harness_mode=${harnessMode}`,
+				`fixture_path=${fixturePath}`,
+				`fixture_exists=${fixtureExists}`,
+				`inject_j=${options.injectJ}`,
+				`inject_interval_ms=${options.injectIntervalMs}`,
+				`inject_duration_ms=${options.injectDurationMs}`,
+				`key_sequence=${options.keySequence || "(none)"}`,
+				`startup_wait_ms=${options.startupWaitMs}`,
+				`captured_at=${new Date().toISOString()}`,
+				"",
+				pane,
+			].join("\n");
 
-		await writeFile(outputPath, report, "utf8");
-		console.log(`Captured harness pane at ${outputPath}`);
+			await writeFile(outputPath, report, "utf8");
+			console.log(`Captured harness pane at ${outputPath}`);
+		}
 	} finally {
 		await rm(dbTargetPath, { force: true });
 
