@@ -194,7 +194,7 @@ const parseArgs = (argv: string[]): HarnessOptions => {
 		}
 	}
 
-const HIERARCHY_SCENARIO_KEYS = "ffjjjjjjcvvxq";
+const HIERARCHY_SCENARIO_KEYS = "ffjjjjjjcvhlvxq";
 
 	// Resolve scenario to key sequence
 	if (scenario === "hierarchy" && !keySequence) {
@@ -351,9 +351,19 @@ const HIERARCHY_ASSERTIONS: HierarchyAssertion[] = [
 		required: true,
 	},
 	{
-		description: "View mode badge (tree/flow)",
-		pattern: /tree|flow/i,
+		description: "View mode badge (tree/timeline)",
+		pattern: /tree|timeline/i,
 		required: true,
+	},
+	{
+		description: "Timeline mode indicator visible",
+		pattern: /timeline/i,
+		required: false,
+	},
+	{
+		description: "Horizontal panning shortcut hint",
+		pattern: /scroll.*\u2190|\u2190\/\u2192|pan timeline/i,
+		required: false,
 	},
 	{
 		description: "Info mode badge (standard/detailed)",

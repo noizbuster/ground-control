@@ -3,11 +3,11 @@ import { Box, bold, dim, fg, Text, t } from "@opentui/core";
 import { getAgentColor, getAgentDisplayName } from "../config/colors";
 import {
 	buildHierarchyLines,
-	type FlowIndentMeta,
 	filterHierarchySession,
 	getStatusLabel,
 	getSubagentSummary,
 	type HierarchyLine,
+	isActiveStatus,
 	sortSubagentsByStatus,
 	type TreeIndentMeta,
 	truncateLabelEnd,
@@ -21,6 +21,7 @@ import {
 } from "../types";
 
 type PanelSize = number | `${number}%` | "100%";
+type HierarchySectionMode = "all" | "header" | "body";
 
 export interface HierarchyViewContentProps {
 	session?: Session | null;
@@ -28,9 +29,26 @@ export interface HierarchyViewContentProps {
 	viewMode?: HierarchyViewMode;
 	infoMode?: HierarchyInfoMode;
 	filterMode?: HierarchyFilterMode;
+	timelineScrollLeft?: number;
+	timelineViewportWidth?: number;
 	width?: PanelSize;
 	narrowMode?: boolean;
+	timelineAxisAnchored?: boolean;
+	sectionMode?: HierarchySectionMode;
 }
+
+export interface HierarchyTimelineAnchorProps {
+	session?: Session | null;
+	viewMode?: HierarchyViewMode;
+	infoMode?: HierarchyInfoMode;
+	filterMode?: HierarchyFilterMode;
+	timelineScrollLeft?: number;
+	timelineViewportWidth?: number;
+	narrowMode?: boolean;
+}
+
+const TIMELINE_INTRO_TEXT =
+	"bars map created -> latest update, with endpoint shape reflecting status.";
 
 const VIEW_COLORS = {
 	sectionBorder: "#1E293B",
@@ -41,7 +59,18 @@ const VIEW_COLORS = {
 	empty: "#64748B",
 } as const;
 
-const FLOW_COLUMN_GAP = "     ";
+const TIMELINE_TRACK_MIN_WIDTH = 96;
+const TIMELINE_TRACK_SCROLL_PADDING_MIN = 12;
+const TIMELINE_TRACK_SCROLL_PADDING_RATIO = 0.15;
+const TIMELINE_CONTEXT_WIDTH_STANDARD = 3;
+export const TIMELINE_CONTEXT_WIDTH = TIMELINE_CONTEXT_WIDTH_STANDARD;
+const TIMELINE_AXIS_INTERVAL = 8;
+
+export const getTimelineContextWidth = (
+	_infoMode: HierarchyInfoMode = "standard",
+): number => {
+	return TIMELINE_CONTEXT_WIDTH_STANDARD;
+};
 
 const ROOT_TREE_PREFIX = {
 	withChildren: "●─ ",
@@ -59,22 +88,6 @@ const STATUS_COLOR_MAP: Record<SessionStatus, `#${string}`> = {
 	[SessionStatus.unknown]: "#64748B",
 };
 
-const VIEW_MODE_LABEL_MAP: Record<HierarchyViewMode, string> = {
-	tree: "Tree",
-	flow: "Flow",
-};
-
-const INFO_MODE_LABEL_MAP: Record<HierarchyInfoMode, string> = {
-	standard: "Standard",
-	detailed: "Detailed",
-};
-
-const FILTER_MODE_LABEL_MAP: Record<HierarchyFilterMode, string> = {
-	latest: "Latest",
-	active: "Active",
-	all: "All",
-};
-
 type HierarchyViewChild = ReturnType<typeof Box> | ReturnType<typeof Text>;
 
 const Badge = (label: string, color: `#${string}`) => {
@@ -85,7 +98,7 @@ const Badge = (label: string, color: `#${string}`) => {
 			paddingLeft: 1,
 			paddingRight: 1,
 			marginRight: 1,
-			marginBottom: 1,
+			marginBottom: 0,
 		},
 		Text({
 			content: label,
@@ -101,7 +114,9 @@ const Section = (title: string, ...children: HierarchyViewChild[]) => {
 			flexDirection: "column",
 			border: true,
 			borderColor: VIEW_COLORS.sectionBorder,
-			padding: 1,
+			paddingTop: 1,
+			paddingLeft: 1,
+			paddingRight: 1,
 			marginBottom: 1,
 		},
 		Text({
@@ -138,6 +153,18 @@ const getTrimmedMetadataValue = (value?: string): string | null => {
 	return trimmed.length > 0 ? trimmed : null;
 };
 
+const normalizeInlineText = (
+	value: string | undefined,
+	fallback: string,
+): string => {
+	if (typeof value !== "string") {
+		return fallback;
+	}
+
+	const normalized = value.replace(/\s+/gu, " ").trim();
+	return normalized.length > 0 ? normalized : fallback;
+};
+
 const getModelLabel = (modelID?: string, variant?: string): string | null => {
 	const model = getTrimmedMetadataValue(modelID);
 	if (!model) {
@@ -159,12 +186,25 @@ const formatAgentBadgeLabel = (
 		: `Agent ${agentName}`;
 };
 
+const clampNumber = (value: number, min: number, max: number): number => {
+	return Math.max(min, Math.min(max, value));
+};
+
+const normalizeTimestamp = (value?: number): number | null => {
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+		return null;
+	}
+
+	return value < 1_000_000_000_000 ? value * 1000 : value;
+};
+
 const formatRelativeTime = (epochMs: number | undefined): string => {
-	if (typeof epochMs !== "number" || !Number.isFinite(epochMs)) {
+	const normalized = normalizeTimestamp(epochMs);
+	if (normalized === null) {
 		return "--";
 	}
 
-	const diffMs = Date.now() - epochMs;
+	const diffMs = Date.now() - normalized;
 	const absDiffMs = Math.abs(diffMs);
 
 	if (absDiffMs < 60_000) {
@@ -183,10 +223,64 @@ const formatRelativeTime = (epochMs: number | undefined): string => {
 		return `${Math.floor(absDiffMs / 86_400_000)}d ago`;
 	}
 
-	return new Date(epochMs).toLocaleDateString("en-US", {
+	return new Date(normalized).toLocaleDateString("en-US", {
 		month: "short",
 		day: "numeric",
 	});
+};
+
+const formatDuration = (
+	startEpochMs: number | undefined,
+	endEpochMs: number | undefined,
+): string => {
+	const start = normalizeTimestamp(startEpochMs);
+	const end = normalizeTimestamp(endEpochMs);
+
+	if (start === null || end === null) {
+		return "--";
+	}
+
+	const durationMs = Math.max(end - start, 0);
+	if (durationMs < 60_000) {
+		return "<1m";
+	}
+
+	const totalMinutes = Math.floor(durationMs / 60_000);
+	if (totalMinutes < 60) {
+		return `${totalMinutes}m`;
+	}
+
+	const totalHours = Math.floor(totalMinutes / 60);
+	const remainingMinutes = totalMinutes % 60;
+	if (totalHours < 24) {
+		return remainingMinutes > 0
+			? `${totalHours}h ${remainingMinutes}m`
+			: `${totalHours}h`;
+	}
+
+	const totalDays = Math.floor(totalHours / 24);
+	const remainingHours = totalHours % 24;
+	return remainingHours > 0
+		? `${totalDays}d ${remainingHours}h`
+		: `${totalDays}d`;
+};
+
+const formatTimelineMinutes = (minutes: number | null): string => {
+	if (minutes === null || !Number.isFinite(minutes) || minutes < 0) {
+		return "--";
+	}
+
+	if (minutes >= 10) {
+		return `${Math.round(minutes).toLocaleString("en-US")}m`;
+	}
+
+	if (minutes >= 1) {
+		const rounded = Math.round(minutes * 10) / 10;
+		return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}m`;
+	}
+
+	const fraction = minutes.toFixed(2).replace(/0+$/u, "").replace(/\.$/u, "");
+	return `${fraction}m`;
 };
 
 const getFilterDescription = (
@@ -227,12 +321,121 @@ const getPreparedSession = (
 	};
 };
 
-const getTreeIndent = (line: HierarchyLine): TreeIndentMeta => {
-	return line.indent as TreeIndentMeta;
+interface TimelineRowWindow {
+	startMs: number;
+	endMs: number;
+}
+
+interface TimelineWindow {
+	startMs: number;
+	endMs: number;
+	rangeMs: number;
+}
+
+interface TimelineLayout {
+	contextWidth: number;
+	trackWidth: number;
+	viewportWidth: number;
+	scrollLeft: number;
+}
+
+const getTimelineRowWindow = (
+	line: HierarchyLine,
+): TimelineRowWindow | null => {
+	const startMs = normalizeTimestamp(line.node.original.time_created);
+	const updatedMs = normalizeTimestamp(line.node.original.time_updated);
+	const fallbackTime = startMs ?? updatedMs;
+
+	if (fallbackTime === null) {
+		return null;
+	}
+
+	return {
+		startMs: startMs ?? fallbackTime,
+		endMs: Math.max(updatedMs ?? fallbackTime, startMs ?? fallbackTime),
+	};
 };
 
-const getFlowIndent = (line: HierarchyLine): FlowIndentMeta => {
-	return line.indent as FlowIndentMeta;
+const getTimelineWindow = (lines: HierarchyLine[]): TimelineWindow | null => {
+	let startMs = Number.POSITIVE_INFINITY;
+	let endMs = Number.NEGATIVE_INFINITY;
+
+	for (const line of lines) {
+		const rowWindow = getTimelineRowWindow(line);
+		if (!rowWindow) {
+			continue;
+		}
+
+		startMs = Math.min(startMs, rowWindow.startMs);
+		endMs = Math.max(endMs, rowWindow.endMs);
+	}
+
+	if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+		return null;
+	}
+
+	if (startMs === endMs) {
+		endMs += 60_000;
+	}
+
+	return {
+		startMs,
+		endMs,
+		rangeMs: Math.max(endMs - startMs, 1),
+	};
+};
+
+export const getTimelineTrackWidth = (
+	timelineViewportWidth?: number,
+): number => {
+	const viewportWidth = clampNumber(
+		Math.floor(timelineViewportWidth ?? TIMELINE_TRACK_MIN_WIDTH),
+		12,
+		Number.MAX_SAFE_INTEGER,
+	);
+
+	if (viewportWidth >= TIMELINE_TRACK_MIN_WIDTH) {
+		return viewportWidth;
+	}
+
+	const scrollPadding = Math.max(
+		Math.floor(viewportWidth * TIMELINE_TRACK_SCROLL_PADDING_RATIO),
+		TIMELINE_TRACK_SCROLL_PADDING_MIN,
+	);
+
+	return Math.max(TIMELINE_TRACK_MIN_WIDTH, viewportWidth) + scrollPadding;
+};
+
+const getTimelineLayout = (
+	timelineViewportWidth?: number,
+	timelineScrollLeft?: number,
+	infoMode: HierarchyInfoMode = "standard",
+	contextWidthOverride?: number,
+): TimelineLayout => {
+	const trackWidth = getTimelineTrackWidth(timelineViewportWidth);
+	const contextWidth =
+		contextWidthOverride ?? getTimelineContextWidth(infoMode);
+	const viewportWidth = clampNumber(
+		Math.floor(timelineViewportWidth ?? trackWidth),
+		12,
+		trackWidth,
+	);
+	const maxScrollLeft = Math.max(trackWidth - viewportWidth, 0);
+
+	return {
+		contextWidth,
+		trackWidth,
+		viewportWidth,
+		scrollLeft: clampNumber(
+			Math.floor(timelineScrollLeft ?? 0),
+			0,
+			maxScrollLeft,
+		),
+	};
+};
+
+const getTreeIndent = (line: HierarchyLine): TreeIndentMeta => {
+	return line.indent as TreeIndentMeta;
 };
 
 const getLinePrefix = (line: HierarchyLine): string => {
@@ -270,22 +473,57 @@ const getDetailPrefix = (line: HierarchyLine): string => {
 	return `${ancestorPrefix}${currentConnector}`;
 };
 
-const getFlowLinePrefix = (line: HierarchyLine): string => {
-	const indent = getFlowIndent(line);
-	const lanePrefix = FLOW_COLUMN_GAP.repeat(indent.columnIndex);
-
-	if (line.node.isRoot) {
-		return "entry ";
+const getTimelineContextWidthForLines = (
+	renderedLines: HierarchyLine[],
+	infoMode: HierarchyInfoMode = "standard",
+	viewMode: HierarchyViewMode = "tree",
+): number => {
+	const baseContextWidth = getTimelineContextWidth(infoMode);
+	if (viewMode !== "flow") {
+		return baseContextWidth;
 	}
 
-	return `${lanePrefix}=> `;
+	return renderedLines.reduce((maxWidth, line) => {
+		return Math.max(maxWidth, getDetailPrefix(line).length);
+	}, baseContextWidth);
 };
 
-const getFlowDetailPrefix = (line: HierarchyLine): string => {
-	const indent = getFlowIndent(line);
-	const lanePrefix = FLOW_COLUMN_GAP.repeat(indent.columnIndex);
+export const getHierarchyTimelineContextWidth = ({
+	session,
+	messageCountBySessionId,
+	viewMode = "tree",
+	infoMode = "standard",
+	filterMode = "latest",
+	narrowMode = false,
+}: Pick<
+	HierarchyViewContentProps,
+	| "session"
+	| "messageCountBySessionId"
+	| "viewMode"
+	| "infoMode"
+	| "filterMode"
+	| "narrowMode"
+>): number => {
+	const activeViewMode = narrowMode ? "tree" : viewMode;
+	const lineBuildMode: HierarchyViewMode =
+		activeViewMode === "flow" ? "tree" : activeViewMode;
+	const preparedSession = session
+		? getPreparedSession(session, filterMode)
+		: null;
+	const renderedLines = preparedSession
+		? buildHierarchyLines(
+				preparedSession,
+				lineBuildMode,
+				infoMode,
+				messageCountBySessionId,
+			)
+		: [];
 
-	return `${lanePrefix}${line.node.isRoot ? "      " : "   | "}`;
+	return getTimelineContextWidthForLines(
+		renderedLines,
+		infoMode,
+		activeViewMode,
+	);
 };
 
 const getDetailedMetadataContent = (
@@ -308,6 +546,263 @@ const getDetailedMetadataContent = (
 	return t`${fg(VIEW_COLORS.muted)(prefix)}${includeDirectory ? dim("dir ") : ""}${includeDirectory ? directory : ""}${includeDirectory ? dim("  ") : ""}${dim("msgs ")}${messageCount}${dim("  children ")}${childCount}${showProject ? dim("  project ") : ""}${showProject ? detailedInfo.projectLabel : ""}`;
 };
 
+const getTimelineTrackEndMarker = (status: SessionStatus): string => {
+	switch (status) {
+		case SessionStatus.completed:
+			return "●";
+		case SessionStatus.failed:
+			return "✕";
+		case SessionStatus.running:
+		case SessionStatus.waiting:
+		case SessionStatus.pending:
+			return "▶";
+		default:
+			return "◆";
+	}
+};
+
+const buildTimelineTrackSegments = (params: {
+	status: SessionStatus;
+	rowWindow: TimelineRowWindow | null;
+	timelineWindow: TimelineWindow | null;
+	layout: TimelineLayout;
+}): {
+	leading: string;
+	segment: string;
+	trailing: string;
+} => {
+	const { status, rowWindow, timelineWindow, layout } = params;
+	const fullTrack = Array.from({ length: layout.trackWidth }, () => "·");
+	let trackStartIndex = 0;
+	let trackEndIndex = -1;
+
+	if (rowWindow && timelineWindow) {
+		trackStartIndex = clampNumber(
+			Math.round(
+				((rowWindow.startMs - timelineWindow.startMs) /
+					timelineWindow.rangeMs) *
+					(layout.trackWidth - 1),
+			),
+			0,
+			layout.trackWidth - 1,
+		);
+		trackEndIndex = clampNumber(
+			Math.max(
+				trackStartIndex,
+				Math.round(
+					((rowWindow.endMs - timelineWindow.startMs) /
+						timelineWindow.rangeMs) *
+						(layout.trackWidth - 1),
+				),
+			),
+			0,
+			layout.trackWidth - 1,
+		);
+
+		if (trackStartIndex === trackEndIndex) {
+			fullTrack[trackStartIndex] = getTimelineTrackEndMarker(status);
+		} else {
+			fullTrack[trackStartIndex] = "╺";
+			for (let index = trackStartIndex + 1; index < trackEndIndex; index += 1) {
+				fullTrack[index] = "━";
+			}
+			fullTrack[trackEndIndex] = getTimelineTrackEndMarker(status);
+		}
+	}
+
+	const visibleTrack = fullTrack
+		.join("")
+		.slice(layout.scrollLeft, layout.scrollLeft + layout.viewportWidth);
+
+	if (!rowWindow || !timelineWindow || trackEndIndex < trackStartIndex) {
+		return {
+			leading: visibleTrack,
+			segment: "",
+			trailing: "",
+		};
+	}
+
+	const visibleStart = layout.scrollLeft;
+	const visibleEnd = visibleStart + visibleTrack.length;
+	const highlightedStart = Math.max(trackStartIndex, visibleStart);
+	const highlightedEnd = Math.min(trackEndIndex + 1, visibleEnd);
+
+	if (highlightedStart >= highlightedEnd) {
+		if (isActiveStatus(status) && visibleTrack.length > 0) {
+			const edgeIndex =
+				trackStartIndex < visibleStart ? 0 : visibleTrack.length - 1;
+			const marker = getTimelineTrackEndMarker(status);
+			const patchedTrack = visibleTrack.split("");
+			patchedTrack[edgeIndex] = marker;
+
+			return {
+				leading: patchedTrack.slice(0, edgeIndex).join(""),
+				segment: marker,
+				trailing: patchedTrack.slice(edgeIndex + 1).join(""),
+			};
+		}
+
+		return {
+			leading: visibleTrack,
+			segment: "",
+			trailing: "",
+		};
+	}
+
+	const localStart = highlightedStart - visibleStart;
+	const localEnd = highlightedEnd - visibleStart;
+
+	return {
+		leading: visibleTrack.slice(0, localStart),
+		segment: visibleTrack.slice(localStart, localEnd),
+		trailing: visibleTrack.slice(localEnd),
+	};
+};
+
+const buildTimelineAxisSlice = (layout: TimelineLayout): string => {
+	const axis = Array.from({ length: layout.trackWidth }, (_, index) => {
+		if (index === 0 || index === layout.trackWidth - 1) {
+			return "│";
+		}
+
+		return index % TIMELINE_AXIS_INTERVAL === 0 ? "┼" : "─";
+	}).join("");
+
+	return axis.slice(
+		layout.scrollLeft,
+		layout.scrollLeft + layout.viewportWidth,
+	);
+};
+
+const buildTimelineTickLabelSlice = (
+	layout: TimelineLayout,
+	timelineWindow: TimelineWindow | null,
+): string => {
+	const labelBuffer = Array.from({ length: layout.viewportWidth }, () => " ");
+
+	if (!timelineWindow) {
+		return labelBuffer.join("");
+	}
+
+	const maxTrackIndex = Math.max(layout.trackWidth - 1, 1);
+	const totalMinutes = timelineWindow.rangeMs / 60_000;
+	const tickIndexes: number[] = [];
+
+	for (let index = 0; index <= maxTrackIndex; index += TIMELINE_AXIS_INTERVAL) {
+		tickIndexes.push(index);
+	}
+
+	if (tickIndexes[tickIndexes.length - 1] !== maxTrackIndex) {
+		tickIndexes.push(maxTrackIndex);
+	}
+
+	for (const tickIndex of tickIndexes) {
+		const localTickIndex = tickIndex - layout.scrollLeft;
+		if (localTickIndex < 0 || localTickIndex >= layout.viewportWidth) {
+			continue;
+		}
+
+		const elapsedMinutes = (tickIndex / maxTrackIndex) * totalMinutes;
+		const label = formatTimelineMinutes(elapsedMinutes);
+		if (label === "--") {
+			continue;
+		}
+
+		const centeredStart = localTickIndex - Math.floor(label.length / 2);
+		const maxStart = Math.max(layout.viewportWidth - label.length, 0);
+		const startIndex = clampNumber(centeredStart, 0, maxStart);
+
+		for (let offset = 0; offset < label.length; offset += 1) {
+			const bufferIndex = startIndex + offset;
+			if (bufferIndex >= 0 && bufferIndex < labelBuffer.length) {
+				labelBuffer[bufferIndex] = label[offset] ?? " ";
+			}
+		}
+	}
+
+	return labelBuffer.join("");
+};
+
+interface TimelineAxisData {
+	axisSlice: string;
+	tickLabelSlice: string;
+	startOffsetLabel: string;
+	endOffsetLabel: string;
+	tickMinutesLabel: string;
+	windowSpan: string;
+	contextSpacer: string;
+}
+
+const getTimelineAxisData = (
+	lines: HierarchyLine[],
+	layout: TimelineLayout,
+): TimelineAxisData => {
+	const rootDetailPrefix = lines.length > 0 ? getDetailPrefix(lines[0]) : "";
+	const axisInsetWidth =
+		rootDetailPrefix.length > 0 ? rootDetailPrefix.length : layout.contextWidth;
+	const timelineWindow = getTimelineWindow(lines);
+	const totalMinutes = timelineWindow ? timelineWindow.rangeMs / 60_000 : null;
+	const tickMinutes = timelineWindow
+		? ((timelineWindow.rangeMs / Math.max(layout.trackWidth - 1, 1)) *
+				TIMELINE_AXIS_INTERVAL) /
+			60_000
+		: null;
+
+	return {
+		axisSlice: buildTimelineAxisSlice(layout),
+		tickLabelSlice: buildTimelineTickLabelSlice(layout, timelineWindow),
+		startOffsetLabel: "0",
+		endOffsetLabel: formatTimelineMinutes(totalMinutes),
+		tickMinutesLabel: formatTimelineMinutes(tickMinutes),
+		windowSpan: timelineWindow
+			? formatDuration(timelineWindow.startMs, timelineWindow.endMs)
+			: "--",
+		contextSpacer: " ".repeat(axisInsetWidth),
+	};
+};
+
+const createTimelineIntroText = (): ReturnType<typeof Text> => {
+	return Text({
+		content: t`${fg(VIEW_COLORS.flowAccent)("timeline")} ${dim(TIMELINE_INTRO_TEXT)}`,
+		fg: VIEW_COLORS.muted,
+		width: "100%",
+		wrapMode: "word",
+	});
+};
+
+const createTimelineAxisText = (
+	axisData: TimelineAxisData,
+): ReturnType<typeof Text> => {
+	return Text({
+		content: t`${axisData.contextSpacer}${fg(VIEW_COLORS.muted)(axisData.axisSlice)}`,
+		fg: VIEW_COLORS.muted,
+		width: "100%",
+		wrapMode: "none",
+	});
+};
+
+const createTimelineGuideText = (
+	axisData: TimelineAxisData,
+): ReturnType<typeof Text> => {
+	return Text({
+		content: t`${axisData.contextSpacer}${dim("start ")}${axisData.startOffsetLabel}${dim("  end ")}${axisData.endOffsetLabel}${dim("  tick ")}${axisData.tickMinutesLabel}${dim(" /mark  span ")}${axisData.windowSpan}`,
+		fg: VIEW_COLORS.muted,
+		width: "100%",
+		wrapMode: "none",
+	});
+};
+
+const createTimelineTickLabelText = (
+	axisData: TimelineAxisData,
+): ReturnType<typeof Text> => {
+	return Text({
+		content: t`${axisData.contextSpacer}${fg(VIEW_COLORS.muted)(axisData.tickLabelSlice)}`,
+		fg: VIEW_COLORS.muted,
+		width: "100%",
+		wrapMode: "none",
+	});
+};
+
 const renderTreeHierarchyLine = (
 	line: HierarchyLine,
 	options: { showSpacer?: boolean } = {},
@@ -317,7 +812,7 @@ const renderTreeHierarchyLine = (
 	const modelLabel = getModelLabel(info.modelID, info.variant);
 	const statusColor = STATUS_COLOR_MAP[info.status];
 	const titleColor = line.node.isRoot ? VIEW_COLORS.accent : VIEW_COLORS.text;
-	const title = line.node.title.trim() || "Untitled";
+	const title = normalizeInlineText(line.node.title, "Untitled");
 	const detailPrefix = getDetailPrefix(line);
 	const showSpacer = options.showSpacer ?? false;
 	const titleContent = t`${fg(VIEW_COLORS.muted)(getLinePrefix(line))}${bold(fg(titleColor)(title))}`;
@@ -372,80 +867,199 @@ const renderTreeHierarchyLine = (
 	);
 };
 
-const renderFlowHierarchyLine = (line: HierarchyLine) => {
+const getTimelinePrimarySegmentWidths = (
+	availableWidth: number,
+	agentLabelLength: number,
+): {
+	agentWidth: number;
+	titleWidth: number;
+} => {
+	const clampedAvailableWidth = Math.max(Math.floor(availableWidth), 2);
+	const minTitleWidth = Math.min(8, Math.max(clampedAvailableWidth - 1, 1));
+	const minAgentWidth = Math.min(4, Math.max(clampedAvailableWidth - 1, 1));
+
+	let agentWidth = Math.min(
+		agentLabelLength,
+		Math.max(Math.floor(clampedAvailableWidth * 0.35), 1),
+	);
+	let titleWidth = Math.max(clampedAvailableWidth - agentWidth, 1);
+
+	if (titleWidth < minTitleWidth && agentWidth > 1) {
+		const shiftToTitle = Math.min(minTitleWidth - titleWidth, agentWidth - 1);
+		titleWidth += shiftToTitle;
+		agentWidth -= shiftToTitle;
+	}
+
+	if (agentWidth < minAgentWidth && titleWidth > 1) {
+		const shiftToAgent = Math.min(minAgentWidth - agentWidth, titleWidth - 1);
+		agentWidth += shiftToAgent;
+		titleWidth -= shiftToAgent;
+	}
+
+	return {
+		agentWidth,
+		titleWidth,
+	};
+};
+
+const renderTimelineHierarchyLine = (
+	line: HierarchyLine,
+	params: {
+		layout: TimelineLayout;
+		timelineWindow: TimelineWindow | null;
+		showSpacer?: boolean;
+	},
+) => {
 	const info = line.standardInfo;
+	const isDetailedMode = line.infoMode === "detailed";
+	const showSpacer = params.showSpacer ?? false;
 	const agentName = getAgentDisplayName(info.agent);
 	const modelLabel = getModelLabel(info.modelID, info.variant);
 	const statusColor = STATUS_COLOR_MAP[info.status];
 	const titleColor = line.node.isRoot
 		? VIEW_COLORS.flowAccent
 		: VIEW_COLORS.text;
-	const primaryContent = t`${fg(VIEW_COLORS.muted)(getFlowLinePrefix(line))}${bold(fg(titleColor)(info.title))}${dim("  status ")}${fg(statusColor)(getStatusLabel(info.status))}${dim("  agent ")}${fg(getAgentColor(info.agent))(agentName)}${modelLabel ? dim(" / ") : ""}${modelLabel ? fg(VIEW_COLORS.muted)(modelLabel) : ""}`;
+	const linePrefix = getLinePrefix(line);
+	const detailPrefix = getDetailPrefix(line);
+	const rowWindow = getTimelineRowWindow(line);
+	const spanLabel = formatDuration(rowWindow?.startMs, rowWindow?.endMs);
+	const normalizedTitle = normalizeInlineText(line.node.title, "Untitled");
+	const primaryRowWidth = Math.max(
+		params.layout.viewportWidth +
+			params.layout.contextWidth -
+			Math.max(linePrefix.length - params.layout.contextWidth, 0),
+		12,
+	);
+	const primarySegmentWidth = Math.max(
+		primaryRowWidth - linePrefix.length - spanLabel.length - 6,
+		2,
+	);
+	const { agentWidth, titleWidth } = getTimelinePrimarySegmentWidths(
+		primarySegmentWidth,
+		agentName.length,
+	);
+	const primaryAgentLabel = truncateLabelEnd(agentName, agentWidth);
+	const primaryTitleLabel = truncateLabelEnd(normalizedTitle, titleWidth);
+	const trackSegments = buildTimelineTrackSegments({
+		status: info.status,
+		rowWindow,
+		timelineWindow: params.timelineWindow,
+		layout: params.layout,
+	});
+	const standardPrimaryContent = t`${fg(VIEW_COLORS.muted)(linePrefix)}${fg(getAgentColor(info.agent))(primaryAgentLabel)}${dim(" : ")}${bold(fg(titleColor)(primaryTitleLabel))}${dim(" (")}${fg(statusColor)(spanLabel)}${dim(")")}`;
+	const standardTimelineContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${fg(VIEW_COLORS.muted)(trackSegments.leading)}${fg(statusColor)(trackSegments.segment)}${fg(VIEW_COLORS.muted)(trackSegments.trailing)}`;
+	const detailedAdditionalContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${dim("status ")}${fg(statusColor)(getStatusLabel(info.status))}${dim("  started ")}${formatRelativeTime(rowWindow?.startMs)}${dim("  updated ")}${formatRelativeTime(rowWindow?.endMs)}${modelLabel ? dim("  model ") : ""}${modelLabel ? fg(VIEW_COLORS.muted)(modelLabel) : ""}${line.detailedInfo ? dim("  msgs ") : ""}${line.detailedInfo ? formatMessageCount(line.detailedInfo.messageCount) : ""}${line.detailedInfo ? dim("  children ") : ""}${line.detailedInfo ? formatSubagentCount(line.detailedInfo.subagentCount) : ""}`;
 
 	return Box(
 		{
 			width: "100%",
 			flexDirection: "column",
-			marginBottom: line.detailedInfo ? 1 : 0,
+			marginBottom: 0,
 		},
 		Text({
-			content: primaryContent,
+			content: standardPrimaryContent,
 			width: "100%",
-			wrapMode: "word",
+			wrapMode: "none",
 			truncate: true,
 		}),
-		...(line.detailedInfo
+		...(isDetailedMode
 			? [
 					Text({
-						content: t`${fg(VIEW_COLORS.muted)(getFlowDetailPrefix(line))}${dim("id ")}${truncateLabelEnd(line.detailedInfo.id, 24)}${dim("  created ")}${formatRelativeTime(line.detailedInfo.timeCreated)}${dim("  updated ")}${formatRelativeTime(line.detailedInfo.timeUpdated)}`,
-						fg: VIEW_COLORS.muted,
+						content: detailedAdditionalContent,
 						width: "100%",
-						wrapMode: "word",
-					}),
-					Text({
-						content: getDetailedMetadataContent(
-							getFlowDetailPrefix(line),
-							line.detailedInfo,
-						),
-						fg: VIEW_COLORS.muted,
-						width: "100%",
-						wrapMode: "word",
+						wrapMode: "none",
 						truncate: true,
+					}),
+				]
+			: []),
+		Text({
+			content: standardTimelineContent,
+			width: "100%",
+			wrapMode: "none",
+		}),
+		...(isDetailedMode && showSpacer
+			? [
+					Text({
+						content: t`${fg(VIEW_COLORS.muted)(detailPrefix)}`,
+						width: "100%",
 					}),
 				]
 			: []),
 	);
 };
 
-const renderFlowHierarchy = (lines: HierarchyLine[]): HierarchyViewChild[] => {
-	const children: HierarchyViewChild[] = [
-		Text({
-			content: t`${fg(VIEW_COLORS.flowAccent)("entry")} ${dim("fans left to right; wrapped rows continue below.")}`,
-			fg: VIEW_COLORS.muted,
-			width: "100%",
-			wrapMode: "word",
-		}),
-		Box({ height: 1 }),
-	];
+const renderTimelineHierarchy = (
+	lines: HierarchyLine[],
+	params: {
+		layout: TimelineLayout;
+		showAxisLine?: boolean;
+		showIntroLine?: boolean;
+	},
+): HierarchyViewChild[] => {
+	const timelineWindow = getTimelineWindow(lines);
+	const showAxisLine = params.showAxisLine ?? true;
+	const showIntroLine = params.showIntroLine ?? true;
+	const axisData = getTimelineAxisData(lines, params.layout);
+	const children: HierarchyViewChild[] = [];
 
-	for (const line of lines) {
-		const indent = getFlowIndent(line);
+	if (showIntroLine) {
+		children.push(createTimelineIntroText());
+	}
 
-		if (indent.isContinuation) {
-			children.push(
-				Text({
-					content: t`${fg(VIEW_COLORS.flowAccent)("  ||")} ${dim(`wrap to row ${indent.rowIndex + 1}`)}`,
-					fg: VIEW_COLORS.muted,
-					width: "100%",
-					wrapMode: "word",
-				}),
-			);
-		}
+	if (showAxisLine) {
+		children.push(createTimelineGuideText(axisData));
+		children.push(createTimelineAxisText(axisData));
+		children.push(createTimelineTickLabelText(axisData));
+	}
 
-		children.push(renderFlowHierarchyLine(line));
+	children.push(Box({ height: 1 }));
+
+	for (const [index, line] of lines.entries()) {
+		children.push(
+			renderTimelineHierarchyLine(line, {
+				layout: params.layout,
+				timelineWindow,
+				showSpacer: line.infoMode === "detailed" && index < lines.length - 1,
+			}),
+		);
 	}
 
 	return children;
+};
+
+export const createHierarchyTimelineAnchor = ({
+	session,
+	viewMode = "tree",
+	infoMode = "standard",
+	filterMode = "latest",
+	timelineScrollLeft = 0,
+	timelineViewportWidth,
+	narrowMode = false,
+}: HierarchyTimelineAnchorProps): ReturnType<typeof Box> | null => {
+	const activeViewMode = narrowMode ? "tree" : viewMode;
+	if (activeViewMode !== "flow" || !session) {
+		return null;
+	}
+
+	const preparedSession = getPreparedSession(session, filterMode);
+	const lines = buildHierarchyLines(preparedSession, "tree", "standard");
+	const layout = getTimelineLayout(
+		timelineViewportWidth,
+		timelineScrollLeft,
+		infoMode,
+	);
+	const axisData = getTimelineAxisData(lines, layout);
+
+	return Box(
+		{
+			width: "100%",
+			flexDirection: "column",
+		},
+		createTimelineIntroText(),
+		createTimelineGuideText(axisData),
+		createTimelineAxisText(axisData),
+		createTimelineTickLabelText(axisData),
+	);
 };
 
 export const createHierarchyViewContent = ({
@@ -454,9 +1068,16 @@ export const createHierarchyViewContent = ({
 	viewMode = "tree",
 	infoMode = "standard",
 	filterMode = "latest",
+	timelineScrollLeft = 0,
+	timelineViewportWidth,
 	width = "100%",
 	narrowMode = false,
+	timelineAxisAnchored = false,
+	sectionMode = "all",
 }: HierarchyViewContentProps): ReturnType<typeof Box> => {
+	const activeViewMode = narrowMode ? "tree" : viewMode;
+	const lineBuildMode: HierarchyViewMode =
+		activeViewMode === "flow" ? "tree" : activeViewMode;
 	const preparedSession = session
 		? getPreparedSession(session, filterMode)
 		: null;
@@ -464,7 +1085,7 @@ export const createHierarchyViewContent = ({
 	const renderedLines = preparedSession
 		? buildHierarchyLines(
 				preparedSession,
-				narrowMode ? "tree" : viewMode,
+				lineBuildMode,
 				infoMode,
 				messageCountBySessionId,
 			)
@@ -474,116 +1095,118 @@ export const createHierarchyViewContent = ({
 	const summary = preparedSession
 		? getSubagentSummary(preparedSession)
 		: { total: 0, active: 0, running: 0, terminal: 0 };
-	const sessionTitle = preparedSession?.title?.trim() || "No session selected";
+	const sessionTitle = normalizeInlineText(
+		preparedSession?.title,
+		"No session selected",
+	);
 	const sessionStatus = preparedSession?.status ?? SessionStatus.unknown;
 	const currentAgentName = getAgentDisplayName(preparedSession?.currentAgent);
-	const activeViewMode = narrowMode ? "tree" : viewMode;
-	const modeBadges = narrowMode
-		? [
-				Badge(
-					`View ${VIEW_MODE_LABEL_MAP[activeViewMode]}`,
-					VIEW_COLORS.accent,
-				),
-				Badge(
-					`Filter ${FILTER_MODE_LABEL_MAP[filterMode]}`,
-					VIEW_COLORS.accent,
-				),
-			]
-		: [
-				Badge(
-					`View ${VIEW_MODE_LABEL_MAP[viewMode]}`,
-					viewMode === "flow" ? VIEW_COLORS.flowAccent : VIEW_COLORS.accent,
-				),
-				Badge(`Info ${INFO_MODE_LABEL_MAP[infoMode]}`, VIEW_COLORS.accent),
-				Badge(
-					`Filter ${FILTER_MODE_LABEL_MAP[filterMode]}`,
-					VIEW_COLORS.accent,
-				),
+	const timelineLayout = getTimelineLayout(
+		timelineViewportWidth,
+		timelineScrollLeft,
+		infoMode,
+		getTimelineContextWidthForLines(renderedLines, infoMode, activeViewMode),
+	);
+	const headerSection = Section(
+		"Agent Hierarchy",
+		Text({
+			content: t`${bold(fg(VIEW_COLORS.text)(narrowMode ? truncateLabelEnd(sessionTitle, 40) : sessionTitle))}`,
+			fg: VIEW_COLORS.text,
+			width: "100%",
+			wrapMode: "word",
+		}),
+		Text({
+			content: preparedSession
+				? t`${dim("root id ")}${truncateLabelEnd(preparedSession.id, narrowMode ? 12 : 24)}${dim("  running ")}${summary.running.toLocaleString("en-US")} / ${summary.total.toLocaleString("en-US")}${dim("  active ")}${summary.active.toLocaleString("en-US")}`
+				: "Select a session to inspect its subagent tree.",
+			fg: preparedSession ? VIEW_COLORS.muted : VIEW_COLORS.empty,
+			width: "100%",
+			wrapMode: "word",
+			truncate: true,
+		}),
+		...(preparedSession
+			? [
+					Box(
+						{
+							width: "100%",
+							flexDirection: "row",
+							flexWrap: "wrap",
+						},
+						Badge(
+							getStatusLabel(sessionStatus),
+							STATUS_COLOR_MAP[sessionStatus],
+						),
+						Badge(
+							formatAgentBadgeLabel(
+								currentAgentName,
+								preparedSession.currentModelID,
+								preparedSession.currentVariant,
+							),
+							getAgentColor(preparedSession.currentAgent),
+						),
+					),
+				]
+			: []),
+	);
+
+	const bodySection = Section(
+		activeViewMode === "flow" ? "Timeline" : "Tree",
+		...(() => {
+			const filterDesc = getFilterDescription(
+				filterMode,
+				visibleSubagentCount,
+				totalSubagentCount,
+			);
+			if (!filterDesc) {
+				return [];
+			}
+			return [
+				Text({
+					content: t`${dim(filterDesc)}`,
+					fg: VIEW_COLORS.muted,
+					width: "100%",
+					wrapMode: "word",
+				}),
+				Box({ height: 1 }),
 			];
+		})(),
+		...(renderedLines.length > 0
+			? activeViewMode === "flow"
+				? renderTimelineHierarchy(renderedLines, {
+						layout: timelineLayout,
+						showAxisLine: !timelineAxisAnchored,
+						showIntroLine: !timelineAxisAnchored,
+					})
+				: renderedLines.map((line, index) =>
+						renderTreeHierarchyLine(line, {
+							showSpacer: index < renderedLines.length - 1,
+						}),
+					)
+			: [
+					Text({
+						content: "Select a session to render its hierarchy.",
+						fg: VIEW_COLORS.empty,
+						width: "100%",
+						wrapMode: "word",
+					}),
+				]),
+	);
+
+	const sections: HierarchyViewChild[] = [];
+
+	if (sectionMode === "all" || sectionMode === "header") {
+		sections.push(headerSection);
+	}
+
+	if (sectionMode === "all" || sectionMode === "body") {
+		sections.push(bodySection);
+	}
 
 	return Box(
 		{
 			width,
 			flexDirection: "column",
 		},
-		Section(
-			"Agent Hierarchy",
-			Text({
-				content: t`${bold(fg(VIEW_COLORS.text)(narrowMode ? truncateLabelEnd(sessionTitle, 40) : sessionTitle))}`,
-				fg: VIEW_COLORS.text,
-				width: "100%",
-				wrapMode: "word",
-			}),
-			Text({
-				content: preparedSession
-					? t`${dim("root id ")}${truncateLabelEnd(preparedSession.id, narrowMode ? 12 : 24)}${dim("  running ")}${summary.running.toLocaleString("en-US")} / ${summary.total.toLocaleString("en-US")}${dim("  active ")}${summary.active.toLocaleString("en-US")}`
-					: "Select a session to inspect its subagent tree.",
-				fg: preparedSession ? VIEW_COLORS.muted : VIEW_COLORS.empty,
-				width: "100%",
-				wrapMode: "word",
-			}),
-			Box(
-				{
-					width: "100%",
-					flexDirection: "row",
-					flexWrap: "wrap",
-				},
-				...(preparedSession
-					? [
-							Badge(
-								getStatusLabel(sessionStatus),
-								STATUS_COLOR_MAP[sessionStatus],
-							),
-							Badge(
-								formatAgentBadgeLabel(
-									currentAgentName,
-									preparedSession.currentModelID,
-									preparedSession.currentVariant,
-								),
-								getAgentColor(preparedSession.currentAgent),
-							),
-						]
-					: []),
-				...modeBadges,
-			),
-		),
-		Section(
-			activeViewMode === "flow" ? "Flow Graph" : "Tree",
-			...(() => {
-				const filterDesc = getFilterDescription(
-					filterMode,
-					visibleSubagentCount,
-					totalSubagentCount,
-				);
-				if (!filterDesc) {
-					return [];
-				}
-				return [
-					Text({
-						content: t`${dim(filterDesc)}`,
-						fg: VIEW_COLORS.muted,
-						width: "100%",
-						wrapMode: "word",
-					}),
-					Box({ height: 1 }),
-				];
-			})(),
-			...(renderedLines.length > 0
-				? activeViewMode === "flow"
-					? renderFlowHierarchy(renderedLines)
-					: renderedLines.map((line, index) =>
-							renderTreeHierarchyLine(line, {
-								showSpacer: index < renderedLines.length - 1,
-							}),
-						)
-				: [
-						Text({
-							content: "Select a session to render its hierarchy.",
-							fg: VIEW_COLORS.empty,
-							width: "100%",
-							wrapMode: "word",
-						}),
-					]),
-		),
+		...sections,
 	);
 };

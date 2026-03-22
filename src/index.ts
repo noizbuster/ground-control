@@ -36,7 +36,11 @@ import {
 	SessionStatus,
 } from "./types";
 import { createDetailPanelContent } from "./ui/DetailPanel";
-import { createHierarchyViewContent } from "./ui/HierarchyView";
+import {
+	createHierarchyViewContent,
+	getHierarchyTimelineContextWidth,
+	getTimelineTrackWidth,
+} from "./ui/HierarchyView";
 import { SESSION_CARD_MAX_HEIGHT } from "./ui/SessionCard";
 import {
 	createSessionGridContent,
@@ -55,6 +59,9 @@ const GRID_SCROLLBOX_ID = "session-grid-scrollbox";
 const GRID_CONTENT_ID = "session-grid-content";
 const DETAIL_SCROLLBOX_ID = "session-detail-scrollbox";
 const DETAIL_CONTENT_ID = "session-detail-content";
+const HIERARCHY_CONTAINER_ID = "session-hierarchy-container";
+const HIERARCHY_HEADER_ID = "session-hierarchy-header";
+const HIERARCHY_TIMELINE_ANCHOR_ID = "session-hierarchy-timeline-anchor";
 const HIERARCHY_SCROLLBOX_ID = "session-hierarchy-scrollbox";
 const HIERARCHY_CONTENT_ID = "session-hierarchy-content";
 const POLL_INTERVAL_MS = 2000;
@@ -66,8 +73,10 @@ const ATTACH_SHORTCUT_LABEL = "a";
 const COPY_ID_SHORTCUT_LABEL = "i";
 const DELETE_SHORTCUT_LABEL = "d";
 const SORT_SHORTCUT_LABEL = "s";
+const TIMELINE_SHORTCUT_LABEL = "t";
 const HIERARCHY_NARROW_THRESHOLD = 56;
 const HIERARCHY_SHORTCUT_LABEL = "c";
+const HIERARCHY_FRAME_VERTICAL_INSET = 2;
 const ROOT_PADDING_TOP = 1;
 const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
@@ -230,11 +239,12 @@ const moveSelectionInGrid = (params: {
 	}
 };
 
-const normalizeDirectoryKey = (directory: string): string =>
-	directory
-		.trim()
-		.replace(/[\\/]+$/gu, "")
-		.toLowerCase();
+const shouldNormalizeDirectoryCase = process.platform === "win32";
+
+const normalizeDirectoryKey = (directory: string): string => {
+	const normalized = directory.trim().replace(/[\\/]+$/gu, "");
+	return shouldNormalizeDirectoryCase ? normalized.toLowerCase() : normalized;
+};
 
 const isActiveSessionStatus = (status?: SessionStatus): boolean =>
 	status === SessionStatus.pending ||
@@ -416,6 +426,16 @@ const formatFilterBadge = (
 	activeMode: SessionFilterMode,
 ): string => (mode === activeMode ? `[${mode.toUpperCase()}]` : mode);
 
+const footerShortcut = (value: string) => bold(value);
+
+const footerState = (value: string, color: `#${string}` = APP_PALETTE.accent) =>
+	fg(color)(value);
+
+const createStyledFilterBadge = (
+	mode: SessionFilterMode,
+	activeMode: SessionFilterMode,
+) => (mode === activeMode ? footerState(`[${mode.toUpperCase()}]`) : dim(mode));
+
 const createBannerText = (state: AppState): string => {
 	if (state.dbError) {
 		return `error: ${state.dbError}`;
@@ -434,6 +454,7 @@ const createBannerText = (state: AppState): string => {
 };
 
 interface AppState {
+	allSessions: Session[];
 	sessions: Session[];
 	selectedIndex: number;
 	selectedSessionId: string | null;
@@ -466,6 +487,8 @@ interface AppState {
 	hierarchyScrollTop: number;
 	hierarchyScrollTopBySessionId: Partial<Record<string, number>>;
 	hierarchyOrigin: FocusPane;
+	timelineScrollLeft: number;
+	timelineScrollLeftBySessionId: Partial<Record<string, number>>;
 }
 
 const isScrollBoxRenderable = (
@@ -767,6 +790,7 @@ const main = async () => {
 	});
 
 	const state: AppState = {
+		allSessions: [],
 		sessions: [],
 		selectedIndex: -1,
 		selectedSessionId: null,
@@ -799,6 +823,8 @@ const main = async () => {
 		hierarchyScrollTop: 0,
 		hierarchyScrollTopBySessionId: {},
 		hierarchyOrigin: "grid",
+		timelineScrollLeft: 0,
+		timelineScrollLeftBySessionId: {},
 	};
 
 	const refreshCoordinator = createRefreshCoordinator();
@@ -989,14 +1015,48 @@ const main = async () => {
 							flexDirection: "column",
 						}),
 					),
-					ScrollBox(
+					Box(
 						{
-							id: HIERARCHY_SCROLLBOX_ID,
+							id: HIERARCHY_CONTAINER_ID,
 							width: 0,
 							height: "100%",
 							border: true,
 							borderColor: "#334155",
 							backgroundColor: "#0F172A",
+							flexDirection: "column",
+							visible: false,
+							onMouseDown: (event) => {
+								event.preventDefault();
+								event.stopPropagation();
+							},
+							onMouseScroll: (event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								const direction = event.scroll?.direction;
+								if (direction === "up" || direction === "down") {
+									scrollHierarchy(
+										direction === "up"
+											? -DETAIL_SCROLL_STEP
+											: DETAIL_SCROLL_STEP,
+									);
+									return;
+								}
+
+								if (getEffectiveHierarchyViewMode() === "flow") {
+									if (direction === "left") {
+										scrollTimeline(-TIMELINE_SCROLL_STEP);
+										return;
+									}
+
+									if (direction === "right") {
+										scrollTimeline(TIMELINE_SCROLL_STEP);
+									}
+								}
+							},
+						},
+						Box({
+							id: HIERARCHY_HEADER_ID,
+							width: "100%",
 							padding: 1,
 							visible: false,
 							onMouseDown: (event) => {
@@ -1013,14 +1073,99 @@ const main = async () => {
 											? -DETAIL_SCROLL_STEP
 											: DETAIL_SCROLL_STEP,
 									);
+									return;
+								}
+
+								if (getEffectiveHierarchyViewMode() === "flow") {
+									if (direction === "left") {
+										scrollTimeline(-TIMELINE_SCROLL_STEP);
+										return;
+									}
+
+									if (direction === "right") {
+										scrollTimeline(TIMELINE_SCROLL_STEP);
+									}
 								}
 							},
-						},
-						Box({
-							id: HIERARCHY_CONTENT_ID,
-							width: "100%",
-							flexDirection: "column",
 						}),
+						Box({
+							id: HIERARCHY_TIMELINE_ANCHOR_ID,
+							width: "100%",
+							paddingLeft: 1,
+							paddingRight: 1,
+							visible: false,
+							onMouseDown: (event) => {
+								event.preventDefault();
+								event.stopPropagation();
+							},
+							onMouseScroll: (event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								const direction = event.scroll?.direction;
+								if (direction === "up" || direction === "down") {
+									scrollHierarchy(
+										direction === "up"
+											? -DETAIL_SCROLL_STEP
+											: DETAIL_SCROLL_STEP,
+									);
+									return;
+								}
+
+								if (getEffectiveHierarchyViewMode() === "flow") {
+									if (direction === "left") {
+										scrollTimeline(-TIMELINE_SCROLL_STEP);
+										return;
+									}
+
+									if (direction === "right") {
+										scrollTimeline(TIMELINE_SCROLL_STEP);
+									}
+								}
+							},
+						}),
+						ScrollBox(
+							{
+								id: HIERARCHY_SCROLLBOX_ID,
+								width: "100%",
+								height: "100%",
+								backgroundColor: "#0F172A",
+								padding: 1,
+								visible: false,
+								onMouseDown: (event) => {
+									event.preventDefault();
+									event.stopPropagation();
+								},
+								onMouseScroll: (event) => {
+									event.preventDefault();
+									event.stopPropagation();
+									const direction = event.scroll?.direction;
+									if (direction === "up" || direction === "down") {
+										scrollHierarchy(
+											direction === "up"
+												? -DETAIL_SCROLL_STEP
+												: DETAIL_SCROLL_STEP,
+										);
+										return;
+									}
+
+									if (getEffectiveHierarchyViewMode() === "flow") {
+										if (direction === "left") {
+											scrollTimeline(-TIMELINE_SCROLL_STEP);
+											return;
+										}
+
+										if (direction === "right") {
+											scrollTimeline(TIMELINE_SCROLL_STEP);
+										}
+									}
+								},
+							},
+							Box({
+								id: HIERARCHY_CONTENT_ID,
+								width: "100%",
+								flexDirection: "column",
+							}),
+						),
 					),
 				),
 				Box(
@@ -1082,6 +1227,14 @@ const main = async () => {
 			renderer.root.findDescendantById(GRID_SCROLLBOX_ID);
 		const existingDetailScrollBox =
 			renderer.root.findDescendantById(DETAIL_SCROLLBOX_ID);
+		const existingHierarchyContainer = renderer.root.findDescendantById(
+			HIERARCHY_CONTAINER_ID,
+		);
+		const existingHierarchyHeader =
+			renderer.root.findDescendantById(HIERARCHY_HEADER_ID);
+		const existingHierarchyTimelineAnchor = renderer.root.findDescendantById(
+			HIERARCHY_TIMELINE_ANCHOR_ID,
+		);
 		const footerContainer =
 			renderer.root.findDescendantById(FOOTER_CONTAINER_ID);
 		const statusText = renderer.root.findDescendantById(STATUS_TEXT_ID);
@@ -1104,6 +1257,9 @@ const main = async () => {
 			!isBoxRenderable(existingRoot) ||
 			!isScrollBoxRenderable(existingGridScrollBox) ||
 			!isScrollBoxRenderable(existingDetailScrollBox) ||
+			!isBoxRenderable(existingHierarchyContainer) ||
+			!isBoxRenderable(existingHierarchyHeader) ||
+			!isBoxRenderable(existingHierarchyTimelineAnchor) ||
 			!isScrollBoxRenderable(existingHierarchyScrollBox) ||
 			!isBoxRenderable(footerContainer) ||
 			!isTextRenderable(statusText) ||
@@ -1166,6 +1322,11 @@ const main = async () => {
 		const canSwitchFocus = showGrid && showDetail;
 		const deletePromptActive = Boolean(state.pendingDeleteSessionId);
 		state.focusedPane = getFocusedPane(showGrid, showDetail, state.focusedPane);
+		const hierarchyNarrowMode =
+			showHierarchy && isHierarchyNarrowMode(innerWidth);
+		const effectiveHierarchyViewMode = showHierarchy
+			? getEffectiveHierarchyViewMode(innerWidth)
+			: state.hierarchyViewMode;
 		const focusLabel = state.focusedPane === "detail" ? "detail" : "grid";
 		const focusSummary = canSwitchFocus
 			? `${headerText} | sort: ${state.sessionSortMode} | focus: ${focusLabel}`
@@ -1178,15 +1339,32 @@ const main = async () => {
 			state.sessionFilterMode === "latest" && state.hiddenCompletedCount > 0
 				? ` | hidden completed: ${state.hiddenCompletedCount}`
 				: "";
+		const hierarchyViewLabel =
+			effectiveHierarchyViewMode === "flow" ? "timeline" : "tree";
+		const hierarchyScrollHint =
+			effectiveHierarchyViewMode === "flow"
+				? "↑/↓/j/k: scroll | ←/→/h/l: pan timeline"
+				: "↑/↓/j/k: scroll";
 		const shortcutGuide = deletePromptActive
 			? state.isDeletingSession
 				? "Deleting selected session..."
 				: "Delete selected session? y: confirm | Esc/n: cancel"
 			: state.isHierarchyMode
-				? `v: view(${state.hierarchyViewMode}) | x: info(${state.hierarchyInfoMode}) | f: filter(${state.hierarchyFilterMode}) | ↑/↓/j/k: scroll | q/Esc: close`
+				? `Tab: view(${hierarchyViewLabel}) | x: info(${state.hierarchyInfoMode}) | f: filter(${state.hierarchyFilterMode}) | ${hierarchyScrollHint} | q/Esc: close`
 				: state.focusedPane === "detail"
-					? `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}↑/↓/j/k: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`
-					: `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/j/k: move grid | Enter: detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`;
+					? `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓/j/k: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`
+					: `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/j/k: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`;
+		const styledShortcutGuide = deletePromptActive
+			? state.isDeletingSession
+				? t`${fg(APP_PALETTE.warning)("Deleting selected session...")}`
+				: t`${fg(APP_PALETTE.danger)("Delete selected session? ")}${footerShortcut("y")}${dim(": confirm | ")}${footerShortcut("Esc/n")}${dim(": cancel")}`
+			: state.isHierarchyMode
+				? effectiveHierarchyViewMode === "flow"
+					? t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(state.hierarchyFilterMode)}${dim(") | ")}${footerShortcut("↑/↓/j/k")}${dim(": scroll | ")}${footerShortcut("←/→/h/l")}${dim(": pan timeline | ")}${footerShortcut("q/Esc")}${dim(": close")}`
+					: t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(state.hierarchyFilterMode)}${dim(") | ")}${footerShortcut("↑/↓/j/k")}${dim(": scroll | ")}${footerShortcut("q/Esc")}${dim(": close")}`
+				: state.focusedPane === "detail"
+					? t`${dim("Filters: ")}${createStyledFilterBadge("latest", state.sessionFilterMode)} ${createStyledFilterBadge("active", state.sessionFilterMode)} ${createStyledFilterBadge("all", state.sessionFilterMode)}${dim(" | ")}${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: cycle | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut("↑/↓/j/k")}${dim(": scroll detail | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy | ")}${footerShortcut(ATTACH_SHORTCUT_LABEL)}${dim(": attach | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id | ")}${footerShortcut(DELETE_SHORTCUT_LABEL)}${dim(": delete | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`
+					: t`${dim("Filters: ")}${createStyledFilterBadge("latest", state.sessionFilterMode)} ${createStyledFilterBadge("active", state.sessionFilterMode)} ${createStyledFilterBadge("all", state.sessionFilterMode)}${dim(" | ")}${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: cycle | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut("arrows/j/k")}${dim(": move grid | ")}${footerShortcut("Enter")}${dim(": detail | ")}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy | ")}${footerShortcut(ATTACH_SHORTCUT_LABEL)}${dim(": attach | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id | ")}${footerShortcut(DELETE_SHORTCUT_LABEL)}${dim(": delete | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`;
 		const footerAvailableWidth = innerWidth;
 		const footerWraps =
 			shortcutGuide.length + focusSummary.length + FOOTER_INLINE_GAP >
@@ -1217,6 +1395,15 @@ const main = async () => {
 		const shouldRestoreDetailScroll =
 			showDetail && selectedSession?.id !== state.renderedDetailSessionId;
 
+		if (showHierarchy && selectedSession?.id) {
+			state.timelineScrollLeft =
+				state.timelineScrollLeftBySessionId[selectedSession.id] ?? 0;
+		}
+
+		const timelineViewportWidth = getTimelineViewportWidth(
+			showHierarchy ? innerWidth : undefined,
+		);
+
 		existingRoot.width = width;
 		existingRoot.height = height;
 		existingRoot.flexDirection = "column";
@@ -1243,11 +1430,15 @@ const main = async () => {
 		statusText.width = footerWraps ? footerAvailableWidth : rightFooterWidth;
 		statusText.content = state.dbError
 			? t`${fg(APP_PALETTE.warning)(state.dbError)}`
-			: t`${dim(rightFooterText.padStart(rightFooterWidth))}`;
+			: deletePromptActive
+				? state.isDeletingSession
+					? t`${fg(APP_PALETTE.warning)("delete in progress")}`
+					: t`${fg(APP_PALETTE.danger)("delete armed")}${dim(": ")}${footerState(sanitizeText(state.pendingDeleteSessionTitle, "selected session"))}`
+				: t`${dim(headerText)}${canSwitchFocus ? dim(" | sort: ") : ""}${canSwitchFocus ? footerState(state.sessionSortMode) : ""}${canSwitchFocus ? dim(" | focus: ") : ""}${canSwitchFocus ? footerState(focusLabel) : ""}${state.sessionFilterMode === "latest" && state.hiddenCompletedCount > 0 ? dim(" | hidden completed: ") : ""}${state.sessionFilterMode === "latest" && state.hiddenCompletedCount > 0 ? footerState(state.hiddenCompletedCount.toLocaleString("en-US")) : ""}`;
 		statusText.truncate = true;
 
 		controlText.width = footerWraps ? footerAvailableWidth : leftFooterWidth;
-		controlText.content = t`${dim(shortcutGuide)}`;
+		controlText.content = styledShortcutGuide;
 		controlText.truncate = !footerWraps;
 
 		footerContainer.width = footerAvailableWidth;
@@ -1284,12 +1475,35 @@ const main = async () => {
 				? APP_PALETTE.accent
 				: "#334155";
 
-		existingHierarchyScrollBox.visible = showHierarchy;
-		existingHierarchyScrollBox.width = showHierarchy ? innerWidth : 0;
-		existingHierarchyScrollBox.height = contentHeight;
-		existingHierarchyScrollBox.borderColor = showHierarchy
+		existingHierarchyContainer.visible = showHierarchy;
+		existingHierarchyContainer.width = showHierarchy ? innerWidth : 0;
+		existingHierarchyContainer.height = contentHeight;
+		existingHierarchyContainer.borderColor = showHierarchy
 			? APP_PALETTE.accent
 			: "#334155";
+
+		existingHierarchyHeader.visible = false;
+		existingHierarchyHeader.height = 0;
+		replaceChildren(existingHierarchyHeader, []);
+
+		existingHierarchyTimelineAnchor.visible = false;
+		existingHierarchyTimelineAnchor.height = 0;
+		replaceChildren(existingHierarchyTimelineAnchor, []);
+
+		const hierarchyHeaderHeight = 0;
+		const timelineAnchorHeight = 0;
+
+		existingHierarchyScrollBox.visible = showHierarchy;
+		existingHierarchyScrollBox.width = "100%";
+		existingHierarchyScrollBox.height = showHierarchy
+			? Math.max(
+					contentHeight -
+						hierarchyHeaderHeight -
+						timelineAnchorHeight -
+						HIERARCHY_FRAME_VERTICAL_INSET,
+					1,
+				)
+			: 0;
 
 		replaceChildren(gridContent, [
 			createSessionGridContent({
@@ -1308,16 +1522,8 @@ const main = async () => {
 				messageCount: selectedSession?.id
 					? state.messageCountBySessionId[selectedSession.id]
 					: undefined,
-				agents: selectedSession
-					? [
-							...(selectedSession.currentAgent
-								? [selectedSession.currentAgent]
-								: []),
-							...(selectedSession.subagentSessions ?? []).flatMap((subagent) =>
-								subagent.currentAgent ? [subagent.currentAgent] : [],
-							),
-						]
-					: [],
+				sessions: state.allSessions,
+				messageCountBySessionId: state.messageCountBySessionId,
 				status: selectedState.status,
 				summary: selectedState.summary,
 				width: showDetail
@@ -1332,11 +1538,15 @@ const main = async () => {
 			createHierarchyViewContent({
 				session: selectedSession,
 				messageCountBySessionId: state.messageCountBySessionId,
-				viewMode: state.hierarchyViewMode,
+				viewMode: effectiveHierarchyViewMode,
 				infoMode: state.hierarchyInfoMode,
 				filterMode: state.hierarchyFilterMode,
-				width: showHierarchy ? innerWidth : innerWidth,
-				narrowMode: showHierarchy && innerWidth < HIERARCHY_NARROW_THRESHOLD,
+				timelineScrollLeft: state.timelineScrollLeft,
+				timelineViewportWidth: timelineViewportWidth,
+				width: "100%",
+				narrowMode: hierarchyNarrowMode,
+				timelineAxisAnchored: false,
+				sectionMode: "all",
 			}),
 		]);
 
@@ -1392,6 +1602,7 @@ const main = async () => {
 	};
 
 	const applyRefreshErrorState = (errorMessage: string) => {
+		state.allSessions = [];
 		state.sessions = [];
 		state.statusBySessionId = {};
 		state.gridScrollTop = 0;
@@ -1416,6 +1627,7 @@ const main = async () => {
 
 	const applyRefreshSnapshotState = (snapshot: RefreshSnapshotPayload) => {
 		state.dbError = null;
+		state.allSessions = snapshot.sessions;
 		state.detailScrollTopBySessionId = pruneDetailScrollState(
 			state.detailScrollTopBySessionId,
 			snapshot.sessions,
@@ -1592,6 +1804,90 @@ const main = async () => {
 		}
 	};
 
+	const TIMELINE_SCROLL_STEP = 8;
+
+	const isHierarchyNarrowMode = (paneWidth?: number): boolean => {
+		const width = getSafeNumber(renderer.width, 80);
+		const effectivePaneWidth =
+			typeof paneWidth === "number" && Number.isFinite(paneWidth)
+				? Math.max(Math.floor(paneWidth), 1)
+				: Math.max(width - ROOT_PADDING_X, 1);
+
+		return effectivePaneWidth < HIERARCHY_NARROW_THRESHOLD;
+	};
+
+	const getEffectiveHierarchyViewMode = (
+		paneWidth?: number,
+	): HierarchyViewMode => {
+		return isHierarchyNarrowMode(paneWidth) ? "tree" : state.hierarchyViewMode;
+	};
+
+	const getCurrentHierarchyTimelineContextWidth = (
+		paneWidth?: number,
+	): number => {
+		return getHierarchyTimelineContextWidth({
+			session: state.sessions[state.selectedIndex] ?? null,
+			messageCountBySessionId: state.messageCountBySessionId,
+			viewMode: state.hierarchyViewMode,
+			infoMode: state.hierarchyInfoMode,
+			filterMode: state.hierarchyFilterMode,
+			narrowMode: isHierarchyNarrowMode(paneWidth),
+		});
+	};
+
+	const scrollTimeline = (delta: number) => {
+		if (getEffectiveHierarchyViewMode() !== "flow") {
+			return;
+		}
+
+		const viewportWidth = getTimelineViewportWidth();
+		const maxScrollLeft = getTimelineTrackWidth(viewportWidth) - viewportWidth;
+		const nextScrollLeft = clampNumber(
+			state.timelineScrollLeft + delta,
+			0,
+			Math.max(maxScrollLeft, 0),
+		);
+
+		if (nextScrollLeft !== state.timelineScrollLeft) {
+			state.timelineScrollLeft = nextScrollLeft;
+			if (state.selectedSessionId) {
+				state.timelineScrollLeftBySessionId[state.selectedSessionId] =
+					nextScrollLeft;
+			}
+			render();
+		}
+	};
+
+	const getTimelineViewportWidth = (paneWidth?: number): number => {
+		const width = getSafeNumber(renderer.width, 80);
+		const fallbackInnerWidth =
+			typeof paneWidth === "number" && Number.isFinite(paneWidth)
+				? Math.max(Math.floor(paneWidth), 1)
+				: Math.max(width - ROOT_PADDING_X, 1);
+		const contextWidth = getCurrentHierarchyTimelineContextWidth(paneWidth);
+
+		if (typeof paneWidth === "number" && Number.isFinite(paneWidth)) {
+			return Math.max(fallbackInnerWidth - contextWidth - 4, 12);
+		}
+
+		const hierarchyScrollBox = renderer.root.findDescendantById(
+			HIERARCHY_SCROLLBOX_ID,
+		);
+		const measuredPaneWidth =
+			isScrollBoxRenderable(hierarchyScrollBox) && hierarchyScrollBox.visible
+				? Math.max(
+						getSafeNumber(hierarchyScrollBox.width, fallbackInnerWidth),
+						1,
+					)
+				: fallbackInnerWidth;
+
+		return Math.max(measuredPaneWidth - contextWidth - 4, 12);
+	};
+
+	const clampNumber = (value: number, min: number, max: number): number => {
+		return Math.max(min, Math.min(max, value));
+	};
+
 	const toggleFocusedPane = () => {
 		const detailOnlyMode = state.isDetailMode && !state.isSideviewMode;
 		const showGrid = !detailOnlyMode;
@@ -1682,12 +1978,17 @@ const main = async () => {
 		render();
 	};
 
-	const openHierarchyView = () => {
+	const openHierarchyView = (preferredViewMode?: HierarchyViewMode) => {
 		if (state.sessions.length === 0 || !state.selectedSessionId) {
 			return;
 		}
 
-		state.hierarchyOrigin = state.isDetailMode ? "detail" : "grid";
+		if (preferredViewMode) {
+			state.hierarchyViewMode = preferredViewMode;
+		}
+
+		state.hierarchyOrigin =
+			state.isDetailMode || state.focusedPane === "detail" ? "detail" : "grid";
 		state.isHierarchyMode = true;
 		render();
 	};
@@ -1723,7 +2024,18 @@ const main = async () => {
 	};
 
 	const cycleHierarchyViewMode = () => {
+		if (state.hierarchyViewMode === "flow" && state.selectedSessionId) {
+			state.timelineScrollLeftBySessionId[state.selectedSessionId] =
+				state.timelineScrollLeft;
+		}
+
 		state.hierarchyViewMode = getNextHierarchyViewMode(state.hierarchyViewMode);
+
+		if (state.hierarchyViewMode === "flow" && state.selectedSessionId) {
+			state.timelineScrollLeft =
+				state.timelineScrollLeftBySessionId[state.selectedSessionId] ?? 0;
+		}
+
 		render();
 	};
 
@@ -2023,13 +2335,7 @@ const main = async () => {
 
 		// Hierarchy mode key handling
 		if (state.isHierarchyMode) {
-			if (
-				matchesPhysicalKey(key, {
-					names: ["v"],
-					codes: ["keyv"],
-					sequences: ["v"],
-				})
-			) {
+			if (matchesPhysicalKey(key, { names: ["tab"] })) {
 				cycleHierarchyViewMode();
 				return;
 			}
@@ -2064,6 +2370,18 @@ const main = async () => {
 			if (key.name === "k" || key.name === "up") {
 				scrollHierarchy(-DETAIL_SCROLL_STEP);
 				return;
+			}
+
+			if (getEffectiveHierarchyViewMode() === "flow") {
+				if (key.name === "left" || key.name === "h") {
+					scrollTimeline(-TIMELINE_SCROLL_STEP);
+					return;
+				}
+
+				if (key.name === "right" || key.name === "l") {
+					scrollTimeline(TIMELINE_SCROLL_STEP);
+					return;
+				}
 			}
 
 			if (key.name === "escape" || key.name === "q") {
@@ -2120,6 +2438,17 @@ const main = async () => {
 			})
 		) {
 			copySelectedSessionId();
+			return;
+		}
+
+		if (
+			matchesPhysicalKey(key, {
+				names: [TIMELINE_SHORTCUT_LABEL],
+				codes: ["keyt"],
+				sequences: [TIMELINE_SHORTCUT_LABEL],
+			})
+		) {
+			openHierarchyView("flow");
 			return;
 		}
 

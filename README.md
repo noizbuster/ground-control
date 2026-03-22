@@ -46,7 +46,9 @@ After launch, use these shortcuts to navigate and control the monitor:
 | Key | Action |
 | --- | --- |
 | `j` / `k` / `Up` / `Down` | Move selection |
-| `Enter` | Attach to selected session |
+| `Enter` | Open the selected session detail view |
+| `c` | Open hierarchy view |
+| `t` | Open hierarchy directly in timeline view |
 | `a` | Attach to the selected session |
 | `i` | Copy the selected session ID |
 | `d` | Request delete for selected session |
@@ -57,13 +59,14 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 ### Hierarchy View (`c`)
 
-Press `c` on a selected session to open the agent hierarchy view. This shows the session's subagent tree with status, timing, and metadata.
+Press `c` on a selected session to open the agent hierarchy view, or press `t` to open it directly in timeline mode. This shows the session's subagent tree with status, timing, and metadata.
 
 | Key | Action |
 | --- | --- |
-| `v` | Cycle view mode (tree / flow) |
+| `Tab` | Cycle view mode (tree / timeline) |
 | `x` | Cycle info mode (standard / detailed) |
 | `f` | Cycle filter mode (all / active / latest) |
+| `←` / `→` / `h` / `l` | Pan timeline (timeline mode only) |
 | `j` / `k` / `Up` / `Down` | Scroll |
 | `Esc` / `q` | Close hierarchy view |
 
