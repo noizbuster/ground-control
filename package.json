@@ -1,7 +1,7 @@
 {
   "name": "gctrl",
-  "version": "0.1.8",
-  "description": "Real-time OpenCode session monitor CLI with Node.js built-in SQLite access.",
+  "version": "0.1.9",
+  "description": "Real-time OpenCode session monitor CLI",
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
@@ -21,10 +21,10 @@
   ],
   "keywords": [
     "opencode",
+    "oh-my-opencode",
     "tui",
     "node",
     "opentui",
-    "sqlite",
     "monitor"
   ],
   "author": "NoizBuster <noizbuster@noizbuster.com>",

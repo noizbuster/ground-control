@@ -32,6 +32,10 @@ npx gctrl
   <img src="./demo.png" alt="demo image of gctrl" width="75%" />
 </p>
 
+<p align="center">
+  <img src="./demo2.png" alt="demo image of gctrl" width="75%" />
+</p>
+
 ## Overview
 
 - Displays OpenCode sessions in a live terminal list
@@ -45,8 +49,13 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 | Key | Action |
 | --- | --- |
-| `j` / `k` / `Up` / `Down` | Move selection |
+| `h` / `j` / `k` / `l` / `←` / `↑` / `↓` / `→` | Move selection in the session grid |
+| `j` / `k` / `↑` / `↓` (detail focus) | Scroll session detail |
+| `Tab` | Switch focus between grid and detail pane (when sideview is enabled) |
 | `Enter` | Open the selected session detail view |
+| `e` / `p` | Toggle sideview layout |
+| `f` | Cycle session filter mode (`active → recent → busy → all`) |
+| `s` | Cycle sort mode (`status → update → create`) |
 | `c` | Open hierarchy view |
 | `t` | Open hierarchy directly in timeline view |
 | `a` | Attach to the selected session |
@@ -54,8 +63,15 @@ After launch, use these shortcuts to navigate and control the monitor:
 | `d` | Request delete for selected session |
 | `y` / `n` | Confirm or cancel delete prompt |
 | `r` | Refresh immediately |
-| `Esc` / `q` | Cancel prompt or quit |
+| `Esc` / `q` | Cancel prompt, close current view, or quit from the main view |
 | `Ctrl+C` | Quit immediately |
+
+### Session Filter Modes (`f`)
+
+- `active`: non-completed sessions, plus externally attached completed sessions. Directory-count fallback is applied as **non-complete first**, and only remaining slots can surface latest completed sessions.
+- `recent`: everything visible in `active`, plus (1) the globally latest completed session and (2) each project's latest updated session.
+- `busy`: non-completed sessions only.
+- `all`: all sessions.
 
 ### Hierarchy View (`c`)
 
@@ -65,7 +81,7 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 | --- | --- |
 | `Tab` | Cycle view mode (tree / timeline) |
 | `x` | Cycle info mode (standard / detailed) |
-| `f` | Cycle filter mode (all / active / latest) |
+| `f` | Cycle filter mode (latest / busy / all) |
 | `←` / `→` / `h` / `l` | Pan timeline (timeline mode only) |
 | `j` / `k` / `Up` / `Down` | Scroll |
 | `Esc` / `q` | Close hierarchy view |
