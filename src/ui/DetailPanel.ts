@@ -517,17 +517,6 @@ const getMetricColumnCount = (width?: number): number => {
 	return 1;
 };
 
-const getMetricCardWidth = (width?: number): number | undefined => {
-	if (typeof width !== "number" || !Number.isFinite(width)) {
-		return undefined;
-	}
-
-	const contentWidth = Math.max(Math.floor(width) - 6, 18);
-	const columnCount = getMetricColumnCount(contentWidth);
-	const gapWidth = Math.max(columnCount - 1, 0);
-	return Math.max(Math.floor((contentWidth - gapWidth) / columnCount), 18);
-};
-
 const getSummaryText = (params: {
 	session?: Session | null;
 	status: SessionStatus;
@@ -593,19 +582,15 @@ const DetailRow = (label: string, value: string) => {
 	);
 };
 
-const MetricCard = (metric: MetricCardData, width?: number) => {
+const MetricItem = (metric: MetricCardData) => {
 	const color = metric.color ?? PANEL_COLORS.accent;
+	const noteText = metric.note?.trim();
 
 	return Box(
 		{
-			width: width ?? "100%",
+			width: "100%",
 			flexDirection: "column",
-			border: true,
-			borderColor: color,
-			padding: 1,
-			marginRight: width ? 1 : 0,
 			marginBottom: 1,
-			flexShrink: 0,
 		},
 		Text({
 			content: t`${dim(metric.label.toUpperCase())}`,
@@ -613,24 +598,14 @@ const MetricCard = (metric: MetricCardData, width?: number) => {
 			width: "100%",
 			wrapMode: "word",
 		}),
-		Box({ height: 1 }),
 		Text({
-			content: t`${bold(fg(color)(metric.value))}`,
-			fg: color,
+			content: noteText
+				? t`${bold(fg(color)(metric.value))}${dim(` - ${noteText}`)}`
+				: t`${bold(fg(color)(metric.value))}`,
+			fg: PANEL_COLORS.text,
 			width: "100%",
 			wrapMode: "word",
 		}),
-		...(metric.note
-			? [
-					Box({ height: 1 }),
-					Text({
-						content: metric.note,
-						fg: PANEL_COLORS.muted,
-						width: "100%",
-						wrapMode: "word",
-					}),
-				]
-			: []),
 	);
 };
 
@@ -672,15 +647,13 @@ const Section = (title: string, ...children: DetailPanelChild[]) => {
 	);
 };
 
-const MetricGrid = (metrics: MetricCardData[], width?: number) => {
-	const cardWidth = getMetricCardWidth(width);
+const MetricGrid = (metrics: MetricCardData[]) => {
 	return Box(
 		{
 			width: "100%",
-			flexDirection: "row",
-			flexWrap: "wrap",
+			flexDirection: "column",
 		},
-		...metrics.map((metric) => MetricCard(metric, cardWidth)),
+		...metrics.map((metric) => MetricItem(metric)),
 	);
 };
 
@@ -767,12 +740,6 @@ export const createDetailPanelContent = ({
 	});
 	const useTwoColumnLayout = shouldUseTwoColumnLayout(width);
 	const columnWidth = getTwoColumnWidth(width);
-	const metricGridWidth =
-		useTwoColumnLayout && columnWidth
-			? columnWidth
-			: typeof width === "number"
-				? width
-				: undefined;
 
 	const overviewSection = Section(
 		"Overview",
@@ -783,52 +750,49 @@ export const createDetailPanelContent = ({
 			wrapMode: "word",
 		}),
 		Box({ height: 1 }),
-		MetricGrid(
-			[
-				{
-					label: "Messages",
-					value: formatOptionalNumber(rootMessageCount),
-					note: session?.id ? `Root session ${session.id}` : "Select a session",
-					color: PANEL_COLORS.accent,
-				},
-				{
-					label: "Runtime",
-					value: formatDurationMs(currentDurationMs),
-					note: session
-						? `Created ${formatRelativeTime(session.time_created)}`
-						: "--",
-					color: PANEL_COLORS.warning,
-				},
-				{
-					label: "Last update",
-					value: formatRelativeTime(session?.time_updated),
-					note: formatTimestamp(session?.time_updated),
-					color: STATUS_COLOR_MAP[sessionStatus],
-				},
-				{
-					label: "Child sessions",
-					value: `${subagentSummary.total}`,
-					note:
-						subagentSummary.total > 0
-							? `${subagentSummary.active} active / ${subagentSummary.terminal} closed`
-							: "No child sessions recorded",
-					color: PANEL_COLORS.success,
-				},
-				{
-					label: "Agent coverage",
-					value: `${sessionAgents.length}`,
-					note: describeAgentSample(sessionAgents),
-					color: PANEL_COLORS.teal,
-				},
-				{
-					label: "Related peers",
-					value: `${relatedGroup.peers.length}`,
-					note: relatedGroup.label,
-					color: PANEL_COLORS.info,
-				},
-			],
-			metricGridWidth,
-		),
+		MetricGrid([
+			{
+				label: "Messages",
+				value: formatOptionalNumber(rootMessageCount),
+				note: session?.id ? `Root session ${session.id}` : "Select a session",
+				color: PANEL_COLORS.accent,
+			},
+			{
+				label: "Runtime",
+				value: formatDurationMs(currentDurationMs),
+				note: session
+					? `Created ${formatRelativeTime(session.time_created)}`
+					: "--",
+				color: PANEL_COLORS.warning,
+			},
+			{
+				label: "Last update",
+				value: formatRelativeTime(session?.time_updated),
+				note: formatTimestamp(session?.time_updated),
+				color: STATUS_COLOR_MAP[sessionStatus],
+			},
+			{
+				label: "Child sessions",
+				value: `${subagentSummary.total}`,
+				note:
+					subagentSummary.total > 0
+						? `${subagentSummary.active} active / ${subagentSummary.terminal} closed`
+						: "No child sessions recorded",
+				color: PANEL_COLORS.success,
+			},
+			{
+				label: "Agent coverage",
+				value: `${sessionAgents.length}`,
+				note: describeAgentSample(sessionAgents),
+				color: PANEL_COLORS.teal,
+			},
+			{
+				label: "Related peers",
+				value: `${relatedGroup.peers.length}`,
+				note: relatedGroup.label,
+				color: PANEL_COLORS.info,
+			},
+		]),
 	);
 
 	const metadataSection = Section(
@@ -866,60 +830,57 @@ export const createDetailPanelContent = ({
 			wrapMode: "word",
 		}),
 		Box({ height: 1 }),
-		MetricGrid(
-			[
-				{
-					label: "Root messages",
-					value: formatOptionalNumber(rootMessageCount),
-					note: sessionTitle,
-					color: PANEL_COLORS.accent,
-				},
-				{
-					label: "Child messages",
-					value: formatOptionalNumber(childMessageTotal),
-					note:
-						subagentSummary.total > 0 && typeof childMessageTotal === "number"
-							? `${formatAverageNumber(
-									childMessageTotal / subagentSummary.total,
-								)} avg per child`
-							: subagentSummary.total > 0
-								? "Waiting for every child message count to load"
-								: "No child messages yet",
-					color: PANEL_COLORS.info,
-				},
-				{
-					label: "Hierarchy total",
-					value: formatOptionalNumber(hierarchyMessageTotal),
-					note:
-						typeof hierarchyMessageTotal === "number"
-							? "Root + child messages"
-							: "Waiting for root or child message counts",
-					color: PANEL_COLORS.success,
-				},
-				{
-					label: "Active children",
-					value: `${subagentSummary.active}`,
-					note: `${subagentSummary.running} running right now`,
-					color: PANEL_COLORS.warning,
-				},
-				{
-					label: "Closed children",
-					value: `${subagentSummary.terminal}`,
-					note: `${formatPercent(subagentSummary.terminal, subagentSummary.total)} completion rate`,
-					color: PANEL_COLORS.teal,
-				},
-				{
-					label: "Latest child activity",
-					value: formatRelativeTime(latestSubagentUpdate),
-					note:
-						latestSubagentUpdate !== undefined
-							? formatTimestamp(latestSubagentUpdate)
-							: "No child-session updates yet",
-					color: PANEL_COLORS.neutral,
-				},
-			],
-			metricGridWidth,
-		),
+		MetricGrid([
+			{
+				label: "Root messages",
+				value: formatOptionalNumber(rootMessageCount),
+				note: sessionTitle,
+				color: PANEL_COLORS.accent,
+			},
+			{
+				label: "Child messages",
+				value: formatOptionalNumber(childMessageTotal),
+				note:
+					subagentSummary.total > 0 && typeof childMessageTotal === "number"
+						? `${formatAverageNumber(
+								childMessageTotal / subagentSummary.total,
+							)} avg per child`
+						: subagentSummary.total > 0
+							? "Waiting for every child message count to load"
+							: "No child messages yet",
+				color: PANEL_COLORS.info,
+			},
+			{
+				label: "Hierarchy total",
+				value: formatOptionalNumber(hierarchyMessageTotal),
+				note:
+					typeof hierarchyMessageTotal === "number"
+						? "Root + child messages"
+						: "Waiting for root or child message counts",
+				color: PANEL_COLORS.success,
+			},
+			{
+				label: "Active children",
+				value: `${subagentSummary.active}`,
+				note: `${subagentSummary.running} running right now`,
+				color: PANEL_COLORS.warning,
+			},
+			{
+				label: "Closed children",
+				value: `${subagentSummary.terminal}`,
+				note: `${formatPercent(subagentSummary.terminal, subagentSummary.total)} completion rate`,
+				color: PANEL_COLORS.teal,
+			},
+			{
+				label: "Latest child activity",
+				value: formatRelativeTime(latestSubagentUpdate),
+				note:
+					latestSubagentUpdate !== undefined
+						? formatTimestamp(latestSubagentUpdate)
+						: "No child-session updates yet",
+				color: PANEL_COLORS.neutral,
+			},
+		]),
 	);
 
 	const benchmarksSection = Section(
@@ -934,65 +895,62 @@ export const createDetailPanelContent = ({
 			wrapMode: "word",
 		}),
 		Box({ height: 1 }),
-		MetricGrid(
-			[
-				{
-					label: "Update rank",
-					value: formatRank(recencyRank, cohortSessions.length),
-					note: `By last activity in the ${relatedGroup.label.toLowerCase()}`,
-					color: PANEL_COLORS.info,
-				},
-				{
-					label: "Message rank",
-					value: formatRank(effectiveMessageRank, cohortSessions.length),
-					note:
-						cohortAverageMessages === null
-							? "Message counts unavailable for at least one related session"
-							: `Current ${formatOptionalNumber(rootMessageCount)} vs avg ${formatAverageNumber(cohortAverageMessages)}`,
-					color: PANEL_COLORS.accent,
-				},
-				{
-					label: "Hierarchy rank",
-					value: formatRank(hierarchyRank, cohortSessions.length),
-					note: `Current ${subagentSummary.total} children vs avg ${formatAverageNumber(cohortAverageSubagents)}`,
-					color: PANEL_COLORS.success,
-				},
-				{
-					label: "Messages vs avg",
-					value: formatSignedNumber(
-						cohortAverageMessages === null || rootMessageCount === undefined
-							? null
-							: rootMessageCount - cohortAverageMessages,
-					),
-					note:
-						cohortAverageMessages === null
-							? "Message counts unavailable in this cohort"
-							: `Average ${formatAverageNumber(cohortAverageMessages)} per root session`,
-					color: PANEL_COLORS.warning,
-				},
-				{
-					label: "Children vs avg",
-					value: formatSignedNumber(
-						cohortAverageSubagents === null
-							? null
-							: subagentSummary.total - cohortAverageSubagents,
-					),
-					note: `Average ${formatAverageNumber(cohortAverageSubagents)} attached sessions`,
-					color: PANEL_COLORS.teal,
-				},
-				{
-					label: "Runtime vs avg",
-					value: formatSignedDuration(
-						currentDurationMs === null || cohortAverageDurationMs === null
-							? null
-							: currentDurationMs - cohortAverageDurationMs,
-					),
-					note: `Average ${formatDurationMs(cohortAverageDurationMs)} per root session`,
-					color: STATUS_COLOR_MAP[sessionStatus],
-				},
-			],
-			metricGridWidth,
-		),
+		MetricGrid([
+			{
+				label: "Update rank",
+				value: formatRank(recencyRank, cohortSessions.length),
+				note: `By last activity in the ${relatedGroup.label.toLowerCase()}`,
+				color: PANEL_COLORS.info,
+			},
+			{
+				label: "Message rank",
+				value: formatRank(effectiveMessageRank, cohortSessions.length),
+				note:
+					cohortAverageMessages === null
+						? "Message counts unavailable for at least one related session"
+						: `Current ${formatOptionalNumber(rootMessageCount)} vs avg ${formatAverageNumber(cohortAverageMessages)}`,
+				color: PANEL_COLORS.accent,
+			},
+			{
+				label: "Hierarchy rank",
+				value: formatRank(hierarchyRank, cohortSessions.length),
+				note: `Current ${subagentSummary.total} children vs avg ${formatAverageNumber(cohortAverageSubagents)}`,
+				color: PANEL_COLORS.success,
+			},
+			{
+				label: "Messages vs avg",
+				value: formatSignedNumber(
+					cohortAverageMessages === null || rootMessageCount === undefined
+						? null
+						: rootMessageCount - cohortAverageMessages,
+				),
+				note:
+					cohortAverageMessages === null
+						? "Message counts unavailable in this cohort"
+						: `Average ${formatAverageNumber(cohortAverageMessages)} per root session`,
+				color: PANEL_COLORS.warning,
+			},
+			{
+				label: "Children vs avg",
+				value: formatSignedNumber(
+					cohortAverageSubagents === null
+						? null
+						: subagentSummary.total - cohortAverageSubagents,
+				),
+				note: `Average ${formatAverageNumber(cohortAverageSubagents)} attached sessions`,
+				color: PANEL_COLORS.teal,
+			},
+			{
+				label: "Runtime vs avg",
+				value: formatSignedDuration(
+					currentDurationMs === null || cohortAverageDurationMs === null
+						? null
+						: currentDurationMs - cohortAverageDurationMs,
+				),
+				note: `Average ${formatDurationMs(cohortAverageDurationMs)} per root session`,
+				color: STATUS_COLOR_MAP[sessionStatus],
+			},
+		]),
 	);
 
 	const detailsLayout =

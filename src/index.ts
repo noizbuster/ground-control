@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readlinkSync, writeFileSync } from "node:fs";
 import {
 	Box,
 	type BoxRenderable,
@@ -82,12 +82,19 @@ const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
 const FOOTER_INLINE_GAP = 1;
 const CLEAR_TERMINAL_SEQUENCE = "\u001B[2J\u001B[3J\u001B[H";
+const ATTACHED_SESSION_ID_PATTERN =
+	/--session(?:=|\s+)(["']?)([A-Za-z0-9._:-]+)\1/u;
 
 type FocusPane = "grid" | "detail";
-type SessionFilterMode = "latest" | "active" | "all";
+type SessionFilterMode = "active" | "recent" | "busy" | "all";
 type SessionSortMode = "status" | "update" | "create";
 
-const SESSION_FILTER_CYCLE: SessionFilterMode[] = ["latest", "active", "all"];
+const SESSION_FILTER_CYCLE: SessionFilterMode[] = [
+	"active",
+	"recent",
+	"busy",
+	"all",
+];
 const SESSION_SORT_CYCLE: SessionSortMode[] = ["status", "update", "create"];
 const HIERARCHY_FILTER_CYCLE: HierarchyFilterMode[] = [
 	"latest",
@@ -130,6 +137,13 @@ const sanitizeText = (
 ): string => {
 	const trimmed = value?.trim();
 	return trimmed && trimmed.length > 0 ? trimmed : fallback;
+};
+
+const shouldNormalizeDirectoryCase = process.platform === "win32";
+
+const normalizeDirectoryPath = (directory: string): string => {
+	const normalized = directory.trim().replace(/[\\/]+$/gu, "");
+	return shouldNormalizeDirectoryCase ? normalized.toLowerCase() : normalized;
 };
 
 const clampSelection = (sessions: Session[], selectedIndex: number): number => {
@@ -239,17 +253,8 @@ const moveSelectionInGrid = (params: {
 	}
 };
 
-const shouldNormalizeDirectoryCase = process.platform === "win32";
-
-const normalizeDirectoryKey = (directory: string): string => {
-	const normalized = directory.trim().replace(/[\\/]+$/gu, "");
-	return shouldNormalizeDirectoryCase ? normalized.toLowerCase() : normalized;
-};
-
-const isActiveSessionStatus = (status?: SessionStatus): boolean =>
-	status === SessionStatus.pending ||
-	status === SessionStatus.running ||
-	status === SessionStatus.waiting;
+const isNonCompletedSessionStatus = (status?: SessionStatus): boolean =>
+	status !== SessionStatus.completed;
 
 const getSessionStatusSortRank = (status?: SessionStatus): number => {
 	if (status === SessionStatus.waiting) {
@@ -270,34 +275,83 @@ const getSessionStatusSortRank = (status?: SessionStatus): number => {
 const applySessionFilter = (
 	sessions: Session[],
 	filterMode: SessionFilterMode,
+	pinnedSessionIds: ReadonlySet<string> = new Set(),
+	latestCompletedSessionId: string | null = null,
 ): SessionFilterResult => {
 	switch (filterMode) {
 		case "all":
 			return { sessions, hiddenCompletedCount: 0 };
 
-		case "active":
+		case "busy":
 			return {
 				sessions: sessions.filter((session) =>
-					isActiveSessionStatus(session.status),
+					isNonCompletedSessionStatus(session.status),
 				),
 				hiddenCompletedCount: 0,
 			};
 
-		case "latest": {
-			const latestCompletedByDirectory = new Set<string>();
+		case "recent": {
+			const orderedSessions = [...sessions].sort(
+				(left, right) => right.time_updated - left.time_updated,
+			);
+			const latestSessionIdsByProject = new Set<string>();
+			const seenProjectDirectories = new Set<string>();
+			for (const session of orderedSessions) {
+				const projectDirectoryKey = normalizeDirectoryPath(session.directory);
+				if (seenProjectDirectories.has(projectDirectoryKey)) {
+					continue;
+				}
+
+				seenProjectDirectories.add(projectDirectoryKey);
+				latestSessionIdsByProject.add(session.id);
+			}
+			let hiddenCompletedCount = 0;
+
+			const filteredSessions = orderedSessions.filter((session) => {
+				if (isNonCompletedSessionStatus(session.status)) {
+					return true;
+				}
+
+				if (pinnedSessionIds.has(session.id)) {
+					return true;
+				}
+
+				if (latestSessionIdsByProject.has(session.id)) {
+					return true;
+				}
+
+				if (
+					latestCompletedSessionId !== null &&
+					session.id === latestCompletedSessionId
+				) {
+					return true;
+				}
+
+				if (session.status === SessionStatus.completed) {
+					hiddenCompletedCount += 1;
+				}
+
+				return false;
+			});
+
+			return {
+				sessions: filteredSessions,
+				hiddenCompletedCount,
+			};
+		}
+
+		case "active": {
 			const orderedSessions = [...sessions].sort(
 				(left, right) => right.time_updated - left.time_updated,
 			);
 			let hiddenCompletedCount = 0;
 
 			const filteredSessions = orderedSessions.filter((session) => {
-				if (session.status !== SessionStatus.completed) {
+				if (isNonCompletedSessionStatus(session.status)) {
 					return true;
 				}
 
-				const directoryKey = normalizeDirectoryKey(session.directory);
-				if (!latestCompletedByDirectory.has(directoryKey)) {
-					latestCompletedByDirectory.add(directoryKey);
+				if (pinnedSessionIds.has(session.id)) {
 					return true;
 				}
 
@@ -421,20 +475,18 @@ const getNextHierarchyInfoMode = (
 	return HIERARCHY_INFO_CYCLE[(currentIndex + 1) % HIERARCHY_INFO_CYCLE.length];
 };
 
-const formatFilterBadge = (
-	mode: SessionFilterMode,
-	activeMode: SessionFilterMode,
-): string => (mode === activeMode ? `[${mode.toUpperCase()}]` : mode);
+const getSessionFilterLabel = (mode: SessionFilterMode): string => {
+	return mode;
+};
+
+const getHierarchyFilterLabel = (mode: HierarchyFilterMode): string => {
+	return mode === "active" ? "busy" : mode;
+};
 
 const footerShortcut = (value: string) => bold(value);
 
 const footerState = (value: string, color: `#${string}` = APP_PALETTE.accent) =>
 	fg(color)(value);
-
-const createStyledFilterBadge = (
-	mode: SessionFilterMode,
-	activeMode: SessionFilterMode,
-) => (mode === activeMode ? footerState(`[${mode.toUpperCase()}]`) : dim(mode));
 
 const createBannerText = (state: AppState): string => {
 	if (state.dbError) {
@@ -442,7 +494,7 @@ const createBannerText = (state: AppState): string => {
 	}
 
 	if (state.sessions.length === 0) {
-		return `sessions: 0 | filter: ${state.sessionFilterMode}`;
+		return `sessions: 0 | filter: ${getSessionFilterLabel(state.sessionFilterMode)}`;
 	}
 
 	const parseIssueCount = Object.keys(state.sessionIssues).length;
@@ -458,6 +510,8 @@ interface AppState {
 	sessions: Session[];
 	selectedIndex: number;
 	selectedSessionId: string | null;
+	externalAttachedSessionIds: Set<string>;
+	externalAttachedSessionDirectoryCounts: Map<string, number>;
 	pendingDeleteSessionId: string | null;
 	pendingDeleteSessionTitle: string | null;
 	deleteConfirmationError: string | null;
@@ -794,6 +848,8 @@ const main = async () => {
 		sessions: [],
 		selectedIndex: -1,
 		selectedSessionId: null,
+		externalAttachedSessionIds: new Set(),
+		externalAttachedSessionDirectoryCounts: new Map(),
 		pendingDeleteSessionId: null,
 		pendingDeleteSessionTitle: null,
 		deleteConfirmationError: null,
@@ -810,7 +866,7 @@ const main = async () => {
 		statusBySessionId: {},
 		messageCountBySessionId: {},
 		sessionIssues: {},
-		sessionFilterMode: "latest",
+		sessionFilterMode: "active",
 		sessionSortMode: "status",
 		hiddenCompletedCount: 0,
 		isAttachingSession: false,
@@ -840,6 +896,7 @@ const main = async () => {
 	let interval: ReturnType<typeof setInterval> | null = null;
 	let isWaitingPulseLive = false;
 	let isRefreshApplying = false;
+	let isRefreshingExternalAttachedSessions = false;
 
 	const renderStatsPath = process.env.GCTRL_RENDER_STATS || "";
 	const renderStats = renderStatsPath
@@ -849,6 +906,316 @@ const main = async () => {
 				liveFrameSkippedDuringApply: 0,
 			}
 		: null;
+
+	const areSessionIdSetsEqual = (
+		left: ReadonlySet<string>,
+		right: ReadonlySet<string>,
+	): boolean => {
+		if (left.size !== right.size) {
+			return false;
+		}
+
+		for (const sessionId of left) {
+			if (!right.has(sessionId)) {
+				return false;
+			}
+		}
+
+		return true;
+	};
+
+	const areDirectoryCountMapsEqual = (
+		left: ReadonlyMap<string, number>,
+		right: ReadonlyMap<string, number>,
+	): boolean => {
+		if (left.size !== right.size) {
+			return false;
+		}
+
+		for (const [directory, count] of left) {
+			if ((right.get(directory) ?? 0) !== count) {
+				return false;
+			}
+		}
+
+		return true;
+	};
+
+	const parseAttachedSessionIdsFromProcessList = (
+		processListOutput: string,
+	): {
+		sessionIds: Set<string>;
+		directoryProcessCounts: Map<string, number>;
+	} => {
+		const externalAttachedSignals = {
+			sessionIds: new Set<string>(),
+			directoryProcessCounts: new Map<string, number>(),
+		};
+		const OPENCODE_COMMAND_NAME = "opencode";
+		const NON_SESSION_OPENCODE_SUBCOMMANDS = new Set([
+			"completion",
+			"acp",
+			"mcp",
+			"attach",
+			"run",
+			"debug",
+			"providers",
+			"auth",
+			"agent",
+			"upgrade",
+			"uninstall",
+			"serve",
+			"web",
+			"models",
+			"stats",
+			"export",
+			"import",
+			"github",
+			"pr",
+			"session",
+			"db",
+			"x",
+		]);
+		const HELP_OR_VERSION_FLAGS = new Set(["-h", "--help", "-v", "--version"]);
+		const getBasename = (value: string): string => {
+			return value.split(/[\\/]/u).at(-1)?.toLowerCase() ?? "";
+		};
+		const normalizeCommandToken = (token: string): string => {
+			return token
+				.trim()
+				.replace(/^["']+/u, "")
+				.replace(/["']+$/u, "");
+		};
+		const isRuntimeWrapperCommand = (commandBasename: string): boolean => {
+			return (
+				commandBasename === "node" ||
+				commandBasename === "bun" ||
+				commandBasename === "deno"
+			);
+		};
+		const isOpencodeToken = (token: string): boolean => {
+			const normalizedToken = normalizeCommandToken(token);
+			if (normalizedToken.length === 0) {
+				return false;
+			}
+
+			return getBasename(normalizedToken) === OPENCODE_COMMAND_NAME;
+		};
+		const containsOpencodeToken = (tokens: readonly string[]): boolean => {
+			return tokens.some((token) => isOpencodeToken(token));
+		};
+		const getOpencodeExecutableTokenIndex = (
+			commandBasename: string,
+			argumentTokens: readonly string[],
+		): number => {
+			const tokenIndex = argumentTokens.findIndex((token) =>
+				isOpencodeToken(token),
+			);
+			if (tokenIndex >= 0) {
+				return tokenIndex;
+			}
+
+			return commandBasename === OPENCODE_COMMAND_NAME ? 0 : -1;
+		};
+		const isNonSessionOpencodeInvocation = (
+			commandBasename: string,
+			argumentTokens: readonly string[],
+		): boolean => {
+			const executableTokenIndex = getOpencodeExecutableTokenIndex(
+				commandBasename,
+				argumentTokens,
+			);
+			if (executableTokenIndex < 0) {
+				return false;
+			}
+
+			let hasOnlyHelpOrVersionFlag = false;
+			for (
+				let tokenIndex = executableTokenIndex + 1;
+				tokenIndex < argumentTokens.length;
+				tokenIndex += 1
+			) {
+				const normalizedToken = normalizeCommandToken(
+					argumentTokens[tokenIndex],
+				);
+				if (!normalizedToken || normalizedToken === "--") {
+					continue;
+				}
+
+				if (HELP_OR_VERSION_FLAGS.has(normalizedToken)) {
+					hasOnlyHelpOrVersionFlag = true;
+					continue;
+				}
+
+				if (normalizedToken.startsWith("-")) {
+					continue;
+				}
+
+				const subcommandCandidate = getBasename(normalizedToken);
+				return NON_SESSION_OPENCODE_SUBCOMMANDS.has(subcommandCandidate);
+			}
+
+			return hasOnlyHelpOrVersionFlag;
+		};
+		const tryReadProcessCwd = (pid: number): string | null => {
+			try {
+				return normalizeDirectoryPath(readlinkSync(`/proc/${pid}/cwd`));
+			} catch {
+				return null;
+			}
+		};
+
+		for (const line of processListOutput.split(/\r?\n/u)) {
+			const trimmedLine = line.trim();
+			if (!trimmedLine || trimmedLine.startsWith("PID")) {
+				continue;
+			}
+
+			const processRowMatch = trimmedLine.match(/^(\d+)\s+(\S+)\s+(.+)$/u);
+			if (!processRowMatch) {
+				continue;
+			}
+
+			const pid = Number.parseInt(processRowMatch[1], 10);
+			if (!Number.isInteger(pid) || pid <= 0) {
+				continue;
+			}
+
+			const commandName = processRowMatch[2];
+			const commandLine = processRowMatch[3];
+			const commandBasename = getBasename(commandName);
+			const argumentTokens = commandLine.split(/\s+/u).filter(Boolean);
+			if (argumentTokens.length === 0) {
+				continue;
+			}
+
+			const firstArgumentBasename = getBasename(
+				normalizeCommandToken(argumentTokens[0]),
+			);
+			const isDirectOpencodeCommand =
+				commandBasename === OPENCODE_COMMAND_NAME ||
+				firstArgumentBasename === OPENCODE_COMMAND_NAME;
+			const isRuntimeWrappedOpencodeCommand =
+				isRuntimeWrapperCommand(commandBasename) &&
+				argumentTokens.length >= 2 &&
+				getBasename(normalizeCommandToken(argumentTokens[1])).startsWith(
+					"opencode",
+				);
+			const hasOpencodeToken = containsOpencodeToken(argumentTokens);
+			if (
+				!isDirectOpencodeCommand &&
+				!isRuntimeWrappedOpencodeCommand &&
+				!hasOpencodeToken
+			) {
+				continue;
+			}
+
+			const attachedSessionIdMatch = commandLine.match(
+				ATTACHED_SESSION_ID_PATTERN,
+			);
+			if (attachedSessionIdMatch) {
+				externalAttachedSignals.sessionIds.add(attachedSessionIdMatch[2]);
+				continue;
+			}
+
+			if (isNonSessionOpencodeInvocation(commandBasename, argumentTokens)) {
+				continue;
+			}
+
+			const processCwd = tryReadProcessCwd(pid);
+			if (!processCwd) {
+				continue;
+			}
+
+			const existingCount =
+				externalAttachedSignals.directoryProcessCounts.get(processCwd) ?? 0;
+			externalAttachedSignals.directoryProcessCounts.set(
+				processCwd,
+				existingCount + 1,
+			);
+		}
+
+		return externalAttachedSignals;
+	};
+
+	const getSubprocessStreamText = (stream: unknown): Promise<string> => {
+		if (stream instanceof ReadableStream) {
+			return new Response(stream as ReadableStream<Uint8Array>).text();
+		}
+
+		return Promise.resolve("");
+	};
+
+	const readAttachedSessionSignalsFromProcessList = async (): Promise<{
+		sessionIds: Set<string>;
+		directoryProcessCounts: Map<string, number>;
+	}> => {
+		if (process.platform === "win32") {
+			return {
+				sessionIds: new Set(),
+				directoryProcessCounts: new Map(),
+			};
+		}
+
+		let child: ReturnType<typeof Bun.spawn>;
+		try {
+			child = Bun.spawn({
+				cmd: ["ps", "-eo", "pid,comm,args"],
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+		} catch {
+			return {
+				sessionIds: new Set(),
+				directoryProcessCounts: new Map(),
+			};
+		}
+
+		const stdoutTextPromise = getSubprocessStreamText(child.stdout);
+		const [stdoutText, exitCode] = await Promise.all([
+			stdoutTextPromise,
+			child.exited,
+		]);
+
+		if (exitCode !== 0) {
+			return {
+				sessionIds: new Set(),
+				directoryProcessCounts: new Map(),
+			};
+		}
+
+		return parseAttachedSessionIdsFromProcessList(stdoutText);
+	};
+
+	const refreshExternalAttachedSessionSignals = async () => {
+		if (isRefreshingExternalAttachedSessions) {
+			return;
+		}
+
+		isRefreshingExternalAttachedSessions = true;
+		try {
+			const nextAttachedSessionSignals =
+				await readAttachedSessionSignalsFromProcessList();
+			const areAttachedSessionIdsEqual = areSessionIdSetsEqual(
+				state.externalAttachedSessionIds,
+				nextAttachedSessionSignals.sessionIds,
+			);
+			const areAttachedDirectoryCountsEqual = areDirectoryCountMapsEqual(
+				state.externalAttachedSessionDirectoryCounts,
+				nextAttachedSessionSignals.directoryProcessCounts,
+			);
+			if (areAttachedSessionIdsEqual && areAttachedDirectoryCountsEqual) {
+				return;
+			}
+
+			state.externalAttachedSessionIds = nextAttachedSessionSignals.sessionIds;
+			state.externalAttachedSessionDirectoryCounts =
+				nextAttachedSessionSignals.directoryProcessCounts;
+			refreshSessions();
+		} finally {
+			isRefreshingExternalAttachedSessions = false;
+		}
+	};
 
 	const getStateForSession = (
 		sessionId?: string,
@@ -927,6 +1294,7 @@ const main = async () => {
 	const startPolling = () => {
 		if (!interval) {
 			interval = setInterval(() => {
+				void refreshExternalAttachedSessionSignals();
 				refreshSessions();
 			}, POLL_INTERVAL_MS);
 		}
@@ -1332,39 +1700,43 @@ const main = async () => {
 			? `${headerText} | sort: ${state.sessionSortMode} | focus: ${focusLabel}`
 			: headerText;
 		const shortcutPrefix = canSwitchFocus ? "Tab: switch pane | " : "";
-		const filterBadgeText = SESSION_FILTER_CYCLE.map((mode) =>
-			formatFilterBadge(mode, state.sessionFilterMode),
-		).join(" ");
+		const sessionFilterLabel = getSessionFilterLabel(state.sessionFilterMode);
+		const shouldShowHiddenCompleted =
+			state.sessionFilterMode === "active" ||
+			state.sessionFilterMode === "recent";
 		const hiddenCompletedSummary =
-			state.sessionFilterMode === "latest" && state.hiddenCompletedCount > 0
+			shouldShowHiddenCompleted && state.hiddenCompletedCount > 0
 				? ` | hidden completed: ${state.hiddenCompletedCount}`
 				: "";
 		const hierarchyViewLabel =
 			effectiveHierarchyViewMode === "flow" ? "timeline" : "tree";
+		const hierarchyFilterLabel = getHierarchyFilterLabel(
+			state.hierarchyFilterMode,
+		);
 		const hierarchyScrollHint =
 			effectiveHierarchyViewMode === "flow"
-				? "↑/↓/j/k: scroll | ←/→/h/l: pan timeline"
-				: "↑/↓/j/k: scroll";
+				? "↑/↓: scroll | ←/→: pan timeline"
+				: "↑/↓: scroll";
 		const shortcutGuide = deletePromptActive
 			? state.isDeletingSession
 				? "Deleting selected session..."
 				: "Delete selected session? y: confirm | Esc/n: cancel"
 			: state.isHierarchyMode
-				? `Tab: view(${hierarchyViewLabel}) | x: info(${state.hierarchyInfoMode}) | f: filter(${state.hierarchyFilterMode}) | ${hierarchyScrollHint} | q/Esc: close`
+				? `Tab: view(${hierarchyViewLabel}) | x: info(${state.hierarchyInfoMode}) | f: filter(${hierarchyFilterLabel}) | ${hierarchyScrollHint} | q/Esc: close`
 				: state.focusedPane === "detail"
-					? `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓/j/k: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`
-					: `Filters: ${filterBadgeText} | ${FILTER_SHORTCUT_LABEL}/click: cycle | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/j/k: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`;
+					? `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`
+					: `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy | ${ATTACH_SHORTCUT_LABEL}: attach | ${COPY_ID_SHORTCUT_LABEL}: copy id | ${DELETE_SHORTCUT_LABEL}: delete | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`;
 		const styledShortcutGuide = deletePromptActive
 			? state.isDeletingSession
 				? t`${fg(APP_PALETTE.warning)("Deleting selected session...")}`
 				: t`${fg(APP_PALETTE.danger)("Delete selected session? ")}${footerShortcut("y")}${dim(": confirm | ")}${footerShortcut("Esc/n")}${dim(": cancel")}`
 			: state.isHierarchyMode
 				? effectiveHierarchyViewMode === "flow"
-					? t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(state.hierarchyFilterMode)}${dim(") | ")}${footerShortcut("↑/↓/j/k")}${dim(": scroll | ")}${footerShortcut("←/→/h/l")}${dim(": pan timeline | ")}${footerShortcut("q/Esc")}${dim(": close")}`
-					: t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(state.hierarchyFilterMode)}${dim(") | ")}${footerShortcut("↑/↓/j/k")}${dim(": scroll | ")}${footerShortcut("q/Esc")}${dim(": close")}`
+					? t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(hierarchyFilterLabel)}${dim(") | ")}${footerShortcut("↑/↓")}${dim(": scroll | ")}${footerShortcut("←/→")}${dim(": pan timeline | ")}${footerShortcut("q/Esc")}${dim(": close")}`
+					: t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(hierarchyFilterLabel)}${dim(") | ")}${footerShortcut("↑/↓")}${dim(": scroll | ")}${footerShortcut("q/Esc")}${dim(": close")}`
 				: state.focusedPane === "detail"
-					? t`${dim("Filters: ")}${createStyledFilterBadge("latest", state.sessionFilterMode)} ${createStyledFilterBadge("active", state.sessionFilterMode)} ${createStyledFilterBadge("all", state.sessionFilterMode)}${dim(" | ")}${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: cycle | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut("↑/↓/j/k")}${dim(": scroll detail | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy | ")}${footerShortcut(ATTACH_SHORTCUT_LABEL)}${dim(": attach | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id | ")}${footerShortcut(DELETE_SHORTCUT_LABEL)}${dim(": delete | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`
-					: t`${dim("Filters: ")}${createStyledFilterBadge("latest", state.sessionFilterMode)} ${createStyledFilterBadge("active", state.sessionFilterMode)} ${createStyledFilterBadge("all", state.sessionFilterMode)}${dim(" | ")}${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: cycle | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut("arrows/j/k")}${dim(": move grid | ")}${footerShortcut("Enter")}${dim(": detail | ")}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy | ")}${footerShortcut(ATTACH_SHORTCUT_LABEL)}${dim(": attach | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id | ")}${footerShortcut(DELETE_SHORTCUT_LABEL)}${dim(": delete | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`;
+					? t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut("↑/↓")}${dim(": scroll detail | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy | ")}${footerShortcut(ATTACH_SHORTCUT_LABEL)}${dim(": attach | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id | ")}${footerShortcut(DELETE_SHORTCUT_LABEL)}${dim(": delete | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`
+					: t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut("arrows")}${dim(": move grid | ")}${footerShortcut("Enter")}${dim(": detail | ")}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy | ")}${footerShortcut(ATTACH_SHORTCUT_LABEL)}${dim(": attach | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id | ")}${footerShortcut(DELETE_SHORTCUT_LABEL)}${dim(": delete | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`;
 		const footerAvailableWidth = innerWidth;
 		const footerWraps =
 			shortcutGuide.length + focusSummary.length + FOOTER_INLINE_GAP >
@@ -1434,7 +1806,7 @@ const main = async () => {
 				? state.isDeletingSession
 					? t`${fg(APP_PALETTE.warning)("delete in progress")}`
 					: t`${fg(APP_PALETTE.danger)("delete armed")}${dim(": ")}${footerState(sanitizeText(state.pendingDeleteSessionTitle, "selected session"))}`
-				: t`${dim(headerText)}${canSwitchFocus ? dim(" | sort: ") : ""}${canSwitchFocus ? footerState(state.sessionSortMode) : ""}${canSwitchFocus ? dim(" | focus: ") : ""}${canSwitchFocus ? footerState(focusLabel) : ""}${state.sessionFilterMode === "latest" && state.hiddenCompletedCount > 0 ? dim(" | hidden completed: ") : ""}${state.sessionFilterMode === "latest" && state.hiddenCompletedCount > 0 ? footerState(state.hiddenCompletedCount.toLocaleString("en-US")) : ""}`;
+				: t`${dim(headerText)}${canSwitchFocus ? dim(" | sort: ") : ""}${canSwitchFocus ? footerState(state.sessionSortMode) : ""}${canSwitchFocus ? dim(" | focus: ") : ""}${canSwitchFocus ? footerState(focusLabel) : ""}${shouldShowHiddenCompleted && state.hiddenCompletedCount > 0 ? dim(" | hidden completed: ") : ""}${shouldShowHiddenCompleted && state.hiddenCompletedCount > 0 ? footerState(state.hiddenCompletedCount.toLocaleString("en-US")) : ""}`;
 		statusText.truncate = true;
 
 		controlText.width = footerWraps ? footerAvailableWidth : leftFooterWidth;
@@ -1614,6 +1986,8 @@ const main = async () => {
 		state.hiddenCompletedCount = 0;
 		state.selectedIndex = -1;
 		state.selectedSessionId = null;
+		state.externalAttachedSessionIds = new Set();
+		state.externalAttachedSessionDirectoryCounts = new Map();
 		state.renderedDetailSessionId = null;
 		state.detailReturnToSideview = false;
 		state.dbError = errorMessage;
@@ -1632,10 +2006,74 @@ const main = async () => {
 			state.detailScrollTopBySessionId,
 			snapshot.sessions,
 		);
+		const snapshotSessionIds = new Set(
+			snapshot.sessions.map((session) => session.id),
+		);
+
+		state.externalAttachedSessionIds = new Set(
+			[...state.externalAttachedSessionIds].filter((sessionId) =>
+				snapshotSessionIds.has(sessionId),
+			),
+		);
+
+		const orderedCompletedSessions = snapshot.sessions
+			.filter((session) => session.status === SessionStatus.completed)
+			.sort((left, right) => right.time_updated - left.time_updated);
+		const latestCompletedSessionId = orderedCompletedSessions[0]?.id ?? null;
+
+		const externalDirectoryPinnedSessionIds = new Set<string>();
+		if (state.externalAttachedSessionDirectoryCounts.size > 0) {
+			const nonCompletedCountByDirectory = new Map<string, number>();
+			for (const session of snapshot.sessions) {
+				if (!isNonCompletedSessionStatus(session.status)) {
+					continue;
+				}
+
+				const directoryKey = normalizeDirectoryPath(session.directory);
+				const existingCount =
+					nonCompletedCountByDirectory.get(directoryKey) ?? 0;
+				nonCompletedCountByDirectory.set(directoryKey, existingCount + 1);
+			}
+
+			const remainingDirectorySlots = new Map<string, number>();
+			for (const [
+				directoryKey,
+				totalSlots,
+			] of state.externalAttachedSessionDirectoryCounts) {
+				const consumedByNonCompleted =
+					nonCompletedCountByDirectory.get(directoryKey) ?? 0;
+				const remainingSlots = totalSlots - consumedByNonCompleted;
+				if (remainingSlots > 0) {
+					remainingDirectorySlots.set(directoryKey, remainingSlots);
+				}
+			}
+
+			for (const session of orderedCompletedSessions) {
+				const directoryKey = normalizeDirectoryPath(session.directory);
+				const remainingSlots = remainingDirectorySlots.get(directoryKey) ?? 0;
+				if (remainingSlots <= 0) {
+					continue;
+				}
+
+				externalDirectoryPinnedSessionIds.add(session.id);
+				if (remainingSlots === 1) {
+					remainingDirectorySlots.delete(directoryKey);
+				} else {
+					remainingDirectorySlots.set(directoryKey, remainingSlots - 1);
+				}
+			}
+		}
+
+		const pinnedSessionIds = new Set([
+			...state.externalAttachedSessionIds,
+			...externalDirectoryPinnedSessionIds,
+		]);
 
 		const filterResult = applySessionFilter(
 			snapshot.sessions,
 			state.sessionFilterMode,
+			pinnedSessionIds,
+			latestCompletedSessionId,
 		);
 		state.sessions = applySessionSort(
 			filterResult.sessions,
@@ -2489,6 +2927,7 @@ const main = async () => {
 		}
 
 		switch (key.name) {
+			case "h":
 			case "left":
 				if (state.focusedPane === "grid") {
 					moveSelection("left");
@@ -2505,6 +2944,7 @@ const main = async () => {
 				moveSelection("down");
 				break;
 
+			case "l":
 			case "right":
 				if (state.focusedPane === "grid") {
 					moveSelection("right");
@@ -2556,6 +2996,7 @@ const main = async () => {
 	});
 
 	await renderer.start();
+	void refreshExternalAttachedSessionSignals();
 	refreshSessions();
 	startPolling();
 

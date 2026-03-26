@@ -1,6 +1,10 @@
 import { Box, bold, dim, fg, MouseButton, Text, t } from "@opentui/core";
 
 import { getAgentColor, getAgentDisplayName } from "../config/colors";
+import {
+	isRecentlyCompleted,
+	normalizeTimestamp,
+} from "../lib/recentCompletion";
 import { type Session, SessionStatus } from "../types";
 
 const CARD_WIDTH = 38;
@@ -21,7 +25,6 @@ const CARD_COLORS = {
 } as const;
 
 const WAITING_PULSE_INTERVAL_MS = 2200;
-const RECENT_COMPLETION_WINDOW_MS = 5 * 60 * 1000;
 
 const STATUS_COLORS: Record<SessionStatus, string> = {
 	[SessionStatus.pending]: "#94A3B8",
@@ -139,14 +142,6 @@ const shortenDirectoryPath = (value: string, maxLength: number): string => {
 	return `.../${truncateText(segments.slice(-2).join("/"), Math.max(maxLength - 4, 1))}`;
 };
 
-const normalizeTimestamp = (value: number): number | null => {
-	if (!Number.isFinite(value) || value <= 0) {
-		return null;
-	}
-
-	return value < 1_000_000_000_000 ? value * 1000 : value;
-};
-
 const pad2 = (value: number): string => value.toString().padStart(2, "0");
 
 const formatTimestamp = (value: number): string => {
@@ -241,23 +236,22 @@ export function SessionCard(props: SessionCardProps) {
 	const waitingPulseStrength = isWaiting
 		? (1 - Math.cos(waitingPulsePhase * Math.PI * 2)) / 2
 		: 0;
-	const updatedAt = normalizeTimestamp(session.time_updated);
-	const isRecentlyCompleted =
-		status === SessionStatus.completed &&
-		updatedAt !== null &&
-		Date.now() - updatedAt <= RECENT_COMPLETION_WINDOW_MS;
+	const isRecentlyCompletedSession = isRecentlyCompleted(
+		status,
+		session.time_updated,
+	);
 	const borderColor = isWaiting
 		? interpolateHexColor(
 				agentColor,
 				CARD_COLORS.waitingEdge,
 				waitingPulseStrength,
 			)
-		: isRecentlyCompleted
+		: isRecentlyCompletedSession
 			? CARD_COLORS.recentCompletedEdge
 			: agentColor;
 	const isActiveSelection = props.isSelected && (props.isActivePane ?? true);
 	const borderStyle =
-		isActiveSelection || isRecentlyCompleted ? "heavy" : "rounded";
+		isActiveSelection || isRecentlyCompletedSession ? "heavy" : "rounded";
 
 	const title = truncateText(
 		session.title.trim() || "Untitled session",
@@ -295,7 +289,7 @@ export function SessionCard(props: SessionCardProps) {
 	const waitingEdgeLine = isWaiting
 		? t`${bold(fg(interpolateHexColor(CARD_COLORS.meta, CARD_COLORS.waitingEdge, waitingPulseStrength))(waitingEdge))}`
 		: undefined;
-	const recentCompletionEdgeLine = isRecentlyCompleted
+	const recentCompletionEdgeLine = isRecentlyCompletedSession
 		? t`${bold(fg(CARD_COLORS.recentCompletedEdge)(buildRecentCompletionEdge(contentWidth)))}`
 		: undefined;
 	const agentLine = t`${dim("agent   ")}${fg(agentColor)(agentLabel)}`;
@@ -313,10 +307,10 @@ export function SessionCard(props: SessionCardProps) {
 			borderStyle,
 			borderColor,
 			backgroundColor: isActiveSelection
-				? isRecentlyCompleted
+				? isRecentlyCompletedSession
 					? CARD_COLORS.recentCompletedSelectedBackground
 					: CARD_COLORS.selectedBackground
-				: isRecentlyCompleted
+				: isRecentlyCompletedSession
 					? CARD_COLORS.recentCompletedBackground
 					: CARD_COLORS.background,
 			padding: 1,
