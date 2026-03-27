@@ -1,6 +1,6 @@
 {
   "name": "gctrl",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Real-time OpenCode session monitor CLI",
   "type": "module",
   "scripts": {

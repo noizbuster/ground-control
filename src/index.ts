@@ -66,6 +66,7 @@ const HIERARCHY_SCROLLBOX_ID = "session-hierarchy-scrollbox";
 const HIERARCHY_CONTENT_ID = "session-hierarchy-content";
 const POLL_INTERVAL_MS = 2000;
 const RESIZE_DEBOUNCE_MS = 150;
+const WAITING_PULSE_FRAME_INTERVAL_MS = 80;
 const DETAIL_SCROLL_STEP = 3;
 const SIDEVIEW_SHORTCUT_LABEL = "e/p";
 const FILTER_SHORTCUT_LABEL = "f";
@@ -689,14 +690,14 @@ const createDeleteConfirmationDialog = (params: {
 	);
 };
 
-const pruneDetailScrollState = (
-	detailScrollTopBySessionId: Partial<Record<string, number>>,
+const pruneSessionScopedNumberState = (
+	stateBySessionId: Partial<Record<string, number>>,
 	sessions: Session[],
 ): Partial<Record<string, number>> => {
 	const activeSessionIds = new Set(sessions.map((session) => session.id));
 
 	return Object.fromEntries(
-		Object.entries(detailScrollTopBySessionId).filter(([sessionId]) =>
+		Object.entries(stateBySessionId).filter(([sessionId]) =>
 			activeSessionIds.has(sessionId),
 		),
 	);
@@ -895,6 +896,7 @@ const main = async () => {
 	};
 	let interval: ReturnType<typeof setInterval> | null = null;
 	let isWaitingPulseLive = false;
+	let lastWaitingPulseFrameRenderAt = 0;
 	let isRefreshApplying = false;
 	let isRefreshingExternalAttachedSessions = false;
 
@@ -1230,8 +1232,9 @@ const main = async () => {
 		};
 	};
 
-	const syncWaitingPulseRendering = () => {
+	const syncWaitingPulseRendering = (isGridVisible: boolean) => {
 		const shouldPulse =
+			isGridVisible &&
 			!state.isAttachingSession &&
 			state.sessions.some(
 				(session) => session.status === SessionStatus.waiting,
@@ -1240,12 +1243,14 @@ const main = async () => {
 		if (shouldPulse && !isWaitingPulseLive) {
 			renderer.requestLive();
 			isWaitingPulseLive = true;
+			lastWaitingPulseFrameRenderAt = 0;
 			return;
 		}
 
 		if (!shouldPulse && isWaitingPulseLive) {
 			renderer.dropLive();
 			isWaitingPulseLive = false;
+			lastWaitingPulseFrameRenderAt = 0;
 		}
 	};
 
@@ -1877,50 +1882,58 @@ const main = async () => {
 				)
 			: 0;
 
-		replaceChildren(gridContent, [
-			createSessionGridContent({
-				sessions: state.sessions,
-				selectedIndex: state.selectedIndex,
-				isFocusedPane: state.focusedPane === "grid",
-				statusBySessionId: state.statusBySessionId,
-				onSelectSession: selectSessionById,
-				width: showGrid ? gridLayoutWidth : innerWidth,
-			}),
-		]);
+		if (showGrid) {
+			replaceChildren(gridContent, [
+				createSessionGridContent({
+					sessions: state.sessions,
+					selectedIndex: state.selectedIndex,
+					isFocusedPane: state.focusedPane === "grid",
+					statusBySessionId: state.statusBySessionId,
+					onSelectSession: selectSessionById,
+					width: gridLayoutWidth,
+				}),
+			]);
+		} else if (gridContent.getChildren().length > 0) {
+			replaceChildren(gridContent, []);
+		}
 
-		replaceChildren(detailContent, [
-			createDetailPanelContent({
-				session: selectedSession,
-				messageCount: selectedSession?.id
-					? state.messageCountBySessionId[selectedSession.id]
-					: undefined,
-				sessions: state.allSessions,
-				messageCountBySessionId: state.messageCountBySessionId,
-				status: selectedState.status,
-				summary: selectedState.summary,
-				width: showDetail
-					? detailOnlyMode
-						? innerWidth
-						: detailWidth
-					: innerWidth,
-			}),
-		]);
+		if (showDetail) {
+			replaceChildren(detailContent, [
+				createDetailPanelContent({
+					session: selectedSession,
+					messageCount: selectedSession?.id
+						? state.messageCountBySessionId[selectedSession.id]
+						: undefined,
+					sessions: state.allSessions,
+					messageCountBySessionId: state.messageCountBySessionId,
+					status: selectedState.status,
+					summary: selectedState.summary,
+					width: detailOnlyMode ? innerWidth : detailWidth,
+				}),
+			]);
+		} else if (detailContent.getChildren().length > 0) {
+			replaceChildren(detailContent, []);
+		}
 
-		replaceChildren(hierarchyContent, [
-			createHierarchyViewContent({
-				session: selectedSession,
-				messageCountBySessionId: state.messageCountBySessionId,
-				viewMode: effectiveHierarchyViewMode,
-				infoMode: state.hierarchyInfoMode,
-				filterMode: state.hierarchyFilterMode,
-				timelineScrollLeft: state.timelineScrollLeft,
-				timelineViewportWidth: timelineViewportWidth,
-				width: "100%",
-				narrowMode: hierarchyNarrowMode,
-				timelineAxisAnchored: false,
-				sectionMode: "all",
-			}),
-		]);
+		if (showHierarchy) {
+			replaceChildren(hierarchyContent, [
+				createHierarchyViewContent({
+					session: selectedSession,
+					messageCountBySessionId: state.messageCountBySessionId,
+					viewMode: effectiveHierarchyViewMode,
+					infoMode: state.hierarchyInfoMode,
+					filterMode: state.hierarchyFilterMode,
+					timelineScrollLeft: state.timelineScrollLeft,
+					timelineViewportWidth: timelineViewportWidth,
+					width: "100%",
+					narrowMode: hierarchyNarrowMode,
+					timelineAxisAnchored: false,
+					sectionMode: "all",
+				}),
+			]);
+		} else if (hierarchyContent.getChildren().length > 0) {
+			replaceChildren(hierarchyContent, []);
+		}
 
 		deleteConfirmationOverlay.visible = deletePromptActive;
 		deleteConfirmationOverlay.width = width;
@@ -1969,7 +1982,7 @@ const main = async () => {
 		state.renderedDetailSessionId = showDetail
 			? (selectedSession?.id ?? null)
 			: null;
-		syncWaitingPulseRendering();
+		syncWaitingPulseRendering(showGrid);
 		state.gridFollowSelectionOnRender = false;
 	};
 
@@ -1981,6 +1994,10 @@ const main = async () => {
 		state.gridFollowSelectionOnRender = false;
 		state.detailScrollTop = 0;
 		state.detailScrollTopBySessionId = {};
+		state.hierarchyScrollTop = 0;
+		state.hierarchyScrollTopBySessionId = {};
+		state.timelineScrollLeft = 0;
+		state.timelineScrollLeftBySessionId = {};
 		state.messageCountBySessionId = {};
 		state.sessionIssues = {};
 		state.hiddenCompletedCount = 0;
@@ -2002,13 +2019,29 @@ const main = async () => {
 	const applyRefreshSnapshotState = (snapshot: RefreshSnapshotPayload) => {
 		state.dbError = null;
 		state.allSessions = snapshot.sessions;
-		state.detailScrollTopBySessionId = pruneDetailScrollState(
+		state.detailScrollTopBySessionId = pruneSessionScopedNumberState(
 			state.detailScrollTopBySessionId,
+			snapshot.sessions,
+		);
+		state.hierarchyScrollTopBySessionId = pruneSessionScopedNumberState(
+			state.hierarchyScrollTopBySessionId,
+			snapshot.sessions,
+		);
+		state.timelineScrollLeftBySessionId = pruneSessionScopedNumberState(
+			state.timelineScrollLeftBySessionId,
 			snapshot.sessions,
 		);
 		const snapshotSessionIds = new Set(
 			snapshot.sessions.map((session) => session.id),
 		);
+
+		if (
+			state.selectedSessionId &&
+			!snapshotSessionIds.has(state.selectedSessionId)
+		) {
+			state.hierarchyScrollTop = 0;
+			state.timelineScrollLeft = 0;
+		}
 
 		state.externalAttachedSessionIds = new Set(
 			[...state.externalAttachedSessionIds].filter((sessionId) =>
@@ -2688,6 +2721,19 @@ const main = async () => {
 			refreshWorker.terminate();
 		} catch {}
 
+		if (isResizeDebouncing.value) {
+			clearTimeout(isResizeDebouncing.value);
+			isResizeDebouncing.value = null;
+		}
+
+		if (isWaitingPulseLive) {
+			renderer.dropLive();
+			isWaitingPulseLive = false;
+			lastWaitingPulseFrameRenderAt = 0;
+		}
+
+		stopPolling();
+
 		flushRenderStats();
 		renderer.destroy();
 		process.exit(0);
@@ -2990,6 +3036,12 @@ const main = async () => {
 			if (renderStats) renderStats.liveFrameSkippedDuringApply++;
 			return;
 		}
+
+		const now = Date.now();
+		if (now - lastWaitingPulseFrameRenderAt < WAITING_PULSE_FRAME_INTERVAL_MS) {
+			return;
+		}
+		lastWaitingPulseFrameRenderAt = now;
 
 		if (renderStats) renderStats.liveFrameRenders++;
 		render();
