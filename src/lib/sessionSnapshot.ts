@@ -107,6 +107,18 @@ export const buildSessionSnapshot = (
 				if (variant) {
 					session.currentVariant = variant;
 				}
+
+				if (parseResult.value.finish) {
+					session.finishReason = parseResult.value.finish;
+				}
+
+				const rawMessage = parseResult.value as unknown as Record<string, unknown>;
+				const providerID = getTrimmedValue(
+					rawMessage.providerID as string | undefined,
+				);
+				if (providerID) {
+					session.providerID = providerID;
+				}
 			}
 
 			if (!parseResult.ok) {

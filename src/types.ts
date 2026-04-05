@@ -31,7 +31,7 @@ export interface MessageData {
 	modelID?: string;
 	variant?: string;
 	time: MessageTimeData;
-	finish?: "stop" | "tool-calls" | "error";
+	finish?: "stop" | "tool-calls" | "error" | "other" | "length" | "unknown";
 	tokens?: MessageTokens;
 	tools?: MessageTools;
 }
@@ -54,6 +54,8 @@ export interface SubagentSession extends SessionRecord {
 	currentModelID?: string;
 	currentVariant?: string;
 	status?: SessionStatus;
+	finishReason?: string;
+	providerID?: string;
 }
 
 export interface Session extends SessionRecord {
@@ -61,6 +63,8 @@ export interface Session extends SessionRecord {
 	currentModelID?: string;
 	currentVariant?: string;
 	status?: SessionStatus;
+	finishReason?: string;
+	providerID?: string;
 	subagentSessions?: SubagentSession[];
 }
 

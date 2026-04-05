@@ -60,11 +60,21 @@ After launch, use these shortcuts to navigate and control the monitor:
 | `t` | Open hierarchy directly in timeline view |
 | `a` | Attach to the selected session |
 | `i` | Copy the selected session ID |
+| `K` | Stop active child sessions (detail/sideview mode only) |
 | `d` | Request delete for selected session |
 | `y` / `n` | Confirm or cancel delete prompt |
 | `r` | Refresh immediately |
 | `Esc` / `q` | Cancel prompt, close current view, or quit from the main view |
 | `Ctrl+C` | Quit immediately |
+
+### Stop Child Sessions (`K`)
+
+Available in detail or sideview mode. Press `K` (Shift+K) to gracefully stop all active (non-completed, non-failed) child sessions of the selected session.
+
+The stop flow works in two stages:
+
+1. **Graceful stop**: sends a "stop" message to each child session via `opencode run --session <id>`, which triggers normal completion (`finish: "stop"`).
+2. **Delete fallback**: if graceful stop fails for any child, a per-item confirmation dialog appears where you can choose to delete (`y`), skip (`n`), or cancel all (`Esc`/`q`).
 
 ### Session Filter Modes (`f`)
 
@@ -123,6 +133,59 @@ src/config/   color and agent configuration
 src/lib/      status detection logic
 dist/         compiled output
 ```
+
+## Session Status Detection
+
+Session status is derived from the latest message in the OpenCode SQLite database. The detection pipeline reads the most recent `message` row per session, parses its JSON `data` column, and applies status detectors in priority order.
+
+### Status Priority
+
+| Priority | Status | Condition |
+|---|---|---|
+| 1 | `failed` | `finish === "error"` |
+| 2 | `waiting` | Question tool is running AND no user response yet (see Waiting Detection below) |
+| 3 | `completed` | `finish === "stop"` OR `time.completed` is a finite number |
+| 4 | `running` | Not failed, not waiting, not completed |
+| 5 | `unknown` | Message data is null, empty, or failed JSON parsing |
+
+### Finish Values
+
+The `finish` field on the latest message indicates how the session step ended:
+
+| `finish` | `time.completed` | Detected Status | Display Label |
+|---|---|---|---|
+| `stop` | — | `completed` | Completed |
+| `tool-calls` | absent | `running` | Running |
+| `error` | — | `failed` | Failed |
+| `other` | present | `completed` | Completed (other) |
+| `length` | present | `completed` | Completed (length) |
+| `unknown` | present | `completed` | Completed (unknown) |
+| _undefined_ | absent | `running` | Running |
+| _no message_ | — | `unknown` | Unknown |
+
+When `finish` is `"other"`, `"length"`, or `"unknown"`, the status label appends the reason in parentheses — e.g. `Completed (other)`, `Completed (length)`.
+
+### Waiting Detection
+
+A session is `waiting` when the question tool is active and awaiting user input. This uses a secondary signal from the `part` table:
+
+1. Find the latest `part` row with `type === "tool"` and `tool === "question"` where `state.status === "running"`
+2. Compare its timestamp against the latest user message time
+3. If the question tool time is newer → `waiting` (overrides `running`)
+
+Waiting never overrides `failed` or `completed`.
+
+### Display Override: AWAITING SUBAGENT
+
+A `completed` root session that has running child sessions displays as **AWAITING SUBAGENT** instead of Completed. This reflects that the parent is technically done but work continues in subagents. The effective status becomes `running` for filtering and sorting purposes.
+
+### Hierarchy Filter: Latest Mode
+
+In the hierarchy view's "latest" filter mode, subagent sessions are filtered as follows:
+
+- **Active** subagents (pending/running/waiting) are always shown
+- **AWAITING SUBAGENT** subagents (completed with active children) are always shown
+- **Terminal** subagents (completed/failed/unknown with no active children) — only the most recently updated one is shown
 
 ## License
 

@@ -1,7 +1,11 @@
 import { Box, bold, dim, fg, ScrollBox, Text, t } from "@opentui/core";
 
 import { getAgentColor, getAgentDisplayName } from "../config/colors";
-import { getSubagentSummary } from "../lib/hierarchyHelpers";
+import {
+	getDisplayStatus,
+	getStatusLabel,
+	getSubagentSummary,
+} from "../lib/hierarchyHelpers";
 import { type Session, SessionStatus } from "../types";
 
 type PanelSize = number | `${number}%` | "100%";
@@ -68,18 +72,9 @@ const STATUS_COLOR_MAP: Record<SessionStatus, `#${string}`> = {
 	[SessionStatus.pending]: "#F59E0B",
 	[SessionStatus.running]: "#3B82F6",
 	[SessionStatus.waiting]: "#F97316",
-	[SessionStatus.completed]: "#22C55E",
+	[SessionStatus.completed]: PANEL_COLORS.text,
 	[SessionStatus.failed]: "#EF4444",
 	[SessionStatus.unknown]: "#64748B",
-};
-
-const STATUS_LABEL_MAP: Record<SessionStatus, string> = {
-	[SessionStatus.pending]: "Pending",
-	[SessionStatus.running]: "Running",
-	[SessionStatus.waiting]: "Waiting",
-	[SessionStatus.completed]: "Completed",
-	[SessionStatus.failed]: "Failed",
-	[SessionStatus.unknown]: "Unknown",
 };
 
 const normalizeTimestamp = (value?: number): number | null => {
@@ -525,6 +520,7 @@ const getSummaryText = (params: {
 	hierarchyTotal: number;
 	hierarchyRunning: number;
 	summary?: string;
+	finishReason?: string;
 }): string => {
 	const {
 		session,
@@ -534,6 +530,7 @@ const getSummaryText = (params: {
 		hierarchyTotal,
 		hierarchyRunning,
 		summary,
+		finishReason,
 	} = params;
 
 	if (!session) {
@@ -541,7 +538,7 @@ const getSummaryText = (params: {
 	}
 
 	const fragments = [
-		`${STATUS_LABEL_MAP[status]} session`,
+		`${getStatusLabel(status, { runningSubagents: hierarchyRunning, finishReason })} session`,
 		typeof messageCount === "number" && Number.isFinite(messageCount)
 			? `${messageCount.toLocaleString("en-US")} messages`
 			: "message count unavailable",
@@ -672,6 +669,13 @@ export const createDetailPanelContent = ({
 	const subagentSummary = session
 		? getSubagentSummary(session)
 		: { total: 0, active: 0, running: 0, terminal: 0 };
+	const sessionDisplayStatus = getDisplayStatus(sessionStatus, {
+		runningSubagents: subagentSummary.running,
+	});
+	const sessionStatusLabel = getStatusLabel(sessionStatus, {
+		runningSubagents: subagentSummary.running,
+		finishReason: session?.finishReason,
+	});
 	const relatedGroup = getRelatedSessionGroup(session, sessions);
 	const rootMessageCount =
 		typeof messageCount === "number" && Number.isFinite(messageCount)
@@ -737,6 +741,7 @@ export const createDetailPanelContent = ({
 		hierarchyTotal: subagentSummary.total,
 		hierarchyRunning: subagentSummary.running,
 		summary,
+		finishReason: session?.finishReason,
 	});
 	const useTwoColumnLayout = shouldUseTwoColumnLayout(width);
 	const columnWidth = getTwoColumnWidth(width);
@@ -769,7 +774,7 @@ export const createDetailPanelContent = ({
 				label: "Last update",
 				value: formatRelativeTime(session?.time_updated),
 				note: formatTimestamp(session?.time_updated),
-				color: STATUS_COLOR_MAP[sessionStatus],
+				color: STATUS_COLOR_MAP[sessionDisplayStatus],
 			},
 			{
 				label: "Child sessions",
@@ -806,7 +811,9 @@ export const createDetailPanelContent = ({
 		DetailRow("Directory", session?.directory ?? "Unavailable"),
 		DetailRow("Created", formatTimestamp(session?.time_created)),
 		DetailRow("Updated", formatTimestamp(session?.time_updated)),
-		DetailRow("Status", STATUS_LABEL_MAP[sessionStatus]),
+		DetailRow("Status", sessionStatusLabel),
+		DetailRow("Finish reason", session?.finishReason ?? "—"),
+		DetailRow("Provider", session?.providerID ?? "—"),
 		DetailRow(
 			"Current agent",
 			session?.currentAgent
@@ -948,7 +955,7 @@ export const createDetailPanelContent = ({
 						: currentDurationMs - cohortAverageDurationMs,
 				),
 				note: `Average ${formatDurationMs(cohortAverageDurationMs)} per root session`,
-				color: STATUS_COLOR_MAP[sessionStatus],
+				color: STATUS_COLOR_MAP[sessionDisplayStatus],
 			},
 		]),
 	);
@@ -1010,7 +1017,7 @@ export const createDetailPanelContent = ({
 				flexDirection: "row",
 				flexWrap: "wrap",
 			},
-			Badge(STATUS_LABEL_MAP[sessionStatus], STATUS_COLOR_MAP[sessionStatus]),
+			Badge(sessionStatusLabel, STATUS_COLOR_MAP[sessionDisplayStatus]),
 			...(session?.currentAgent
 				? [
 						Badge(

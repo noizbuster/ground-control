@@ -24,7 +24,10 @@ const isValidFinish = (finish: unknown): finish is MessageData["finish"] => {
 		finish === undefined ||
 		finish === "stop" ||
 		finish === "tool-calls" ||
-		finish === "error"
+		finish === "error" ||
+		finish === "other" ||
+		finish === "length" ||
+		finish === "unknown"
 	);
 };
 

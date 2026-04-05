@@ -1,9 +1,11 @@
-import { Box, bold, dim, fg, Text, t } from "@opentui/core";
+import { Box, bold, dim, fg, MouseButton, Text, t } from "@opentui/core";
 
 import { getAgentColor, getAgentDisplayName } from "../config/colors";
 import {
 	buildHierarchyLines,
+	countRunningSubagents,
 	filterHierarchySession,
+	getDisplayStatus,
 	getStatusLabel,
 	getSubagentSummary,
 	type HierarchyLine,
@@ -35,6 +37,7 @@ export interface HierarchyViewContentProps {
 	narrowMode?: boolean;
 	timelineAxisAnchored?: boolean;
 	sectionMode?: HierarchySectionMode;
+	onCopyId?: (id: string) => void;
 }
 
 export interface HierarchyTimelineAnchorProps {
@@ -83,7 +86,7 @@ const STATUS_COLOR_MAP: Record<SessionStatus, `#${string}`> = {
 	[SessionStatus.pending]: "#F59E0B",
 	[SessionStatus.running]: "#3B82F6",
 	[SessionStatus.waiting]: "#F97316",
-	[SessionStatus.completed]: "#22C55E",
+	[SessionStatus.completed]: VIEW_COLORS.text,
 	[SessionStatus.failed]: "#EF4444",
 	[SessionStatus.unknown]: "#64748B",
 };
@@ -488,6 +491,30 @@ const getTimelineContextWidthForLines = (
 	}, baseContextWidth);
 };
 
+const getLineRunningSubagentCount = (line: HierarchyLine): number => {
+	if (!line.node.isRoot || !("subagentSessions" in line.node.original)) {
+		return 0;
+	}
+
+	return countRunningSubagents(line.node.original);
+};
+
+const getLineStatusDisplay = (
+	line: HierarchyLine,
+): {
+	label: string;
+	colorStatus: SessionStatus;
+} => {
+	const runningSubagents = getLineRunningSubagentCount(line);
+
+	return {
+		label: getStatusLabel(line.standardInfo.status, { runningSubagents, finishReason: line.standardInfo.finishReason }),
+		colorStatus: getDisplayStatus(line.standardInfo.status, {
+			runningSubagents,
+		}),
+	};
+};
+
 export const getHierarchyTimelineContextWidth = ({
 	session,
 	messageCountBySessionId,
@@ -805,18 +832,19 @@ const createTimelineTickLabelText = (
 
 const renderTreeHierarchyLine = (
 	line: HierarchyLine,
-	options: { showSpacer?: boolean } = {},
+	options: { showSpacer?: boolean; onCopyId?: (id: string) => void } = {},
 ) => {
 	const info = line.standardInfo;
 	const agentName = getAgentDisplayName(info.agent);
 	const modelLabel = getModelLabel(info.modelID, info.variant);
-	const statusColor = STATUS_COLOR_MAP[info.status];
+	const statusDisplay = getLineStatusDisplay(line);
+	const statusColor = STATUS_COLOR_MAP[statusDisplay.colorStatus];
 	const titleColor = line.node.isRoot ? VIEW_COLORS.accent : VIEW_COLORS.text;
 	const title = normalizeInlineText(line.node.title, "Untitled");
 	const detailPrefix = getDetailPrefix(line);
 	const showSpacer = options.showSpacer ?? false;
 	const titleContent = t`${fg(VIEW_COLORS.muted)(getLinePrefix(line))}${bold(fg(titleColor)(title))}`;
-	const metadataContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${dim("status ")}${fg(statusColor)(getStatusLabel(info.status))}${dim("  agent ")}${fg(getAgentColor(info.agent))(agentName)}${modelLabel ? dim(" / ") : ""}${modelLabel ? fg(VIEW_COLORS.muted)(modelLabel) : ""}`;
+	const metadataContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${dim("status ")}${fg(statusColor)(statusDisplay.label)}${dim("  agent ")}${fg(getAgentColor(info.agent))(agentName)}${modelLabel ? dim(" / ") : ""}${modelLabel ? fg(VIEW_COLORS.muted)(modelLabel) : ""}`;
 
 	return Box(
 		{
@@ -838,10 +866,19 @@ const renderTreeHierarchyLine = (
 		...(line.detailedInfo
 			? [
 					Text({
-						content: t`${fg(VIEW_COLORS.muted)(detailPrefix)}${dim("id ")}${truncateLabelEnd(line.detailedInfo.id, 24)}${dim("  created ")}${formatRelativeTime(line.detailedInfo.timeCreated)}${dim("  updated ")}${formatRelativeTime(line.detailedInfo.timeUpdated)}`,
+						content: t`${fg(VIEW_COLORS.muted)(detailPrefix)}${dim("id ")}${line.detailedInfo.id}${dim("  created ")}${formatRelativeTime(line.detailedInfo.timeCreated)}${dim("  updated ")}${formatRelativeTime(line.detailedInfo.timeUpdated)}`,
 						fg: VIEW_COLORS.muted,
 						width: "100%",
 						wrapMode: "word",
+						onMouseDown: (event) => {
+							if (event.button !== MouseButton.LEFT || event.isDragging) {
+								return;
+							}
+							const id = line.detailedInfo?.id;
+							if (id) {
+								options.onCopyId?.(id);
+							}
+						},
 					}),
 					Text({
 						content: getDetailedMetadataContent(
@@ -915,7 +952,8 @@ const renderTimelineHierarchyLine = (
 	const showSpacer = params.showSpacer ?? false;
 	const agentName = getAgentDisplayName(info.agent);
 	const modelLabel = getModelLabel(info.modelID, info.variant);
-	const statusColor = STATUS_COLOR_MAP[info.status];
+	const statusDisplay = getLineStatusDisplay(line);
+	const statusColor = STATUS_COLOR_MAP[statusDisplay.colorStatus];
 	const titleColor = line.node.isRoot
 		? VIEW_COLORS.flowAccent
 		: VIEW_COLORS.text;
@@ -948,7 +986,7 @@ const renderTimelineHierarchyLine = (
 	});
 	const standardPrimaryContent = t`${fg(VIEW_COLORS.muted)(linePrefix)}${fg(getAgentColor(info.agent))(primaryAgentLabel)}${dim(" : ")}${bold(fg(titleColor)(primaryTitleLabel))}${dim(" (")}${fg(statusColor)(spanLabel)}${dim(")")}`;
 	const standardTimelineContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${fg(VIEW_COLORS.muted)(trackSegments.leading)}${fg(statusColor)(trackSegments.segment)}${fg(VIEW_COLORS.muted)(trackSegments.trailing)}`;
-	const detailedAdditionalContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${dim("status ")}${fg(statusColor)(getStatusLabel(info.status))}${dim("  started ")}${formatRelativeTime(rowWindow?.startMs)}${dim("  updated ")}${formatRelativeTime(rowWindow?.endMs)}${modelLabel ? dim("  model ") : ""}${modelLabel ? fg(VIEW_COLORS.muted)(modelLabel) : ""}${line.detailedInfo ? dim("  msgs ") : ""}${line.detailedInfo ? formatMessageCount(line.detailedInfo.messageCount) : ""}${line.detailedInfo ? dim("  children ") : ""}${line.detailedInfo ? formatSubagentCount(line.detailedInfo.subagentCount) : ""}`;
+	const detailedAdditionalContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${dim("status ")}${fg(statusColor)(statusDisplay.label)}${dim("  started ")}${formatRelativeTime(rowWindow?.startMs)}${dim("  updated ")}${formatRelativeTime(rowWindow?.endMs)}${modelLabel ? dim("  model ") : ""}${modelLabel ? fg(VIEW_COLORS.muted)(modelLabel) : ""}${line.detailedInfo ? dim("  msgs ") : ""}${line.detailedInfo ? formatMessageCount(line.detailedInfo.messageCount) : ""}${line.detailedInfo ? dim("  children ") : ""}${line.detailedInfo ? formatSubagentCount(line.detailedInfo.subagentCount) : ""}`;
 
 	return Box(
 		{
@@ -1074,6 +1112,7 @@ export const createHierarchyViewContent = ({
 	narrowMode = false,
 	timelineAxisAnchored = false,
 	sectionMode = "all",
+	onCopyId,
 }: HierarchyViewContentProps): ReturnType<typeof Box> => {
 	const activeViewMode = narrowMode ? "tree" : viewMode;
 	const lineBuildMode: HierarchyViewMode =
@@ -1100,6 +1139,13 @@ export const createHierarchyViewContent = ({
 		"No session selected",
 	);
 	const sessionStatus = preparedSession?.status ?? SessionStatus.unknown;
+	const sessionDisplayStatus = getDisplayStatus(sessionStatus, {
+		runningSubagents: summary.running,
+	});
+	const sessionStatusLabel = getStatusLabel(sessionStatus, {
+		runningSubagents: summary.running,
+		finishReason: preparedSession?.finishReason,
+	});
 	const currentAgentName = getAgentDisplayName(preparedSession?.currentAgent);
 	const timelineLayout = getTimelineLayout(
 		timelineViewportWidth,
@@ -1132,10 +1178,7 @@ export const createHierarchyViewContent = ({
 							flexDirection: "row",
 							flexWrap: "wrap",
 						},
-						Badge(
-							getStatusLabel(sessionStatus),
-							STATUS_COLOR_MAP[sessionStatus],
-						),
+						Badge(sessionStatusLabel, STATUS_COLOR_MAP[sessionDisplayStatus]),
 						Badge(
 							formatAgentBadgeLabel(
 								currentAgentName,
@@ -1180,6 +1223,7 @@ export const createHierarchyViewContent = ({
 				: renderedLines.map((line, index) =>
 						renderTreeHierarchyLine(line, {
 							showSpacer: index < renderedLines.length - 1,
+							onCopyId,
 						}),
 					)
 			: [

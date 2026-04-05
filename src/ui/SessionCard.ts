@@ -2,6 +2,11 @@ import { Box, bold, dim, fg, MouseButton, Text, t } from "@opentui/core";
 
 import { getAgentColor, getAgentDisplayName } from "../config/colors";
 import {
+	countRunningSubagents,
+	getDisplayStatus,
+	getStatusLabel,
+} from "../lib/hierarchyHelpers";
+import {
 	isRecentlyCompleted,
 	normalizeTimestamp,
 } from "../lib/recentCompletion";
@@ -30,7 +35,7 @@ const STATUS_COLORS: Record<SessionStatus, string> = {
 	[SessionStatus.pending]: "#94A3B8",
 	[SessionStatus.running]: "#60A5FA",
 	[SessionStatus.waiting]: "#FBBF24",
-	[SessionStatus.completed]: "#34D399",
+	[SessionStatus.completed]: CARD_COLORS.title,
 	[SessionStatus.failed]: "#F87171",
 	[SessionStatus.unknown]: "#94A3B8",
 };
@@ -168,8 +173,14 @@ const formatTimestamp = (value: number): string => {
 	].join("");
 };
 
-const formatStatus = (status: SessionStatus): string =>
-	status === SessionStatus.waiting ? "AWAITING USER" : status.toUpperCase();
+const formatStatus = (
+	status: SessionStatus,
+	runningSubagents: number = 0,
+	finishReason?: string,
+): string =>
+	status === SessionStatus.waiting
+		? "AWAITING USER"
+		: getStatusLabel(status, { runningSubagents, finishReason }).toUpperCase();
 
 const buildWaitingEdge = (contentWidth: number): string => {
 	const edgeWidth = Math.max(contentWidth, 11);
@@ -209,12 +220,6 @@ const buildSubagentSummary = (session: Session, maxLength: number): string => {
 	return truncateText(labels.join(", "), maxLength);
 };
 
-const getRunningSubagentCount = (session: Session): number => {
-	return (session.subagentSessions ?? []).filter(
-		(subagent) => subagent.status === SessionStatus.running,
-	).length;
-};
-
 export function SessionCard(props: SessionCardProps) {
 	const width = clampWidth(props.width);
 	const contentWidth = width - CONTENT_WIDTH_OFFSET;
@@ -236,8 +241,12 @@ export function SessionCard(props: SessionCardProps) {
 	const waitingPulseStrength = isWaiting
 		? (1 - Math.cos(waitingPulsePhase * Math.PI * 2)) / 2
 		: 0;
+	const runningSubagentCount = countRunningSubagents(session);
+	const displayStatus = getDisplayStatus(status, {
+		runningSubagents: runningSubagentCount,
+	});
 	const isRecentlyCompletedSession = isRecentlyCompleted(
-		status,
+		displayStatus,
 		session.time_updated,
 	);
 	const borderColor = isWaiting
@@ -272,14 +281,13 @@ export function SessionCard(props: SessionCardProps) {
 		Math.max(contentWidth - 7, 8),
 	);
 	const agentLabel = truncateText(currentAgent, Math.max(contentWidth - 7, 8));
-	const runningSubagentCount = getRunningSubagentCount(session);
 	const subagentCount = session.subagentSessions?.length ?? 0;
 	const subagentLabel = buildSubagentSummary(
 		session,
 		Math.max(contentWidth - 10, 8),
 	);
-	const statusLabel = formatStatus(status);
-	const statusColor = STATUS_COLORS[status];
+	const statusLabel = formatStatus(status, runningSubagentCount, session.finishReason);
+	const statusColor = STATUS_COLORS[displayStatus];
 	const waitingEdge = buildWaitingEdge(contentWidth);
 
 	const idLine = t`${dim(shortId)}`;

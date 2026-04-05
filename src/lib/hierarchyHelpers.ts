@@ -49,6 +49,7 @@ export interface StandardNodeInfo {
 	modelID?: string;
 	variant?: string;
 	depth: number;
+	finishReason?: string;
 }
 
 /** Detailed node info - full display data */
@@ -156,6 +157,41 @@ export const isSessionVisible = (
 	return isActiveStatus(session.status);
 };
 
+const buildChildrenByParentId = (
+	subagents: SubagentSession[],
+): Map<string, SubagentSession[]> => {
+	const childrenByParentId = new Map<string, SubagentSession[]>();
+	const subagentIds = new Set(subagents.map((s) => s.id));
+
+	for (const subagent of subagents) {
+		const parentId = subagent.parent_id;
+		if (!parentId || parentId === subagent.id || !subagentIds.has(parentId)) {
+			continue;
+		}
+
+		const existing = childrenByParentId.get(parentId);
+		if (existing) {
+			existing.push(subagent);
+		} else {
+			childrenByParentId.set(parentId, [subagent]);
+		}
+	}
+
+	return childrenByParentId;
+};
+
+const hasActiveChildren = (
+	subagentId: string,
+	childrenByParentId: Map<string, SubagentSession[]>,
+): boolean => {
+	const children = childrenByParentId.get(subagentId);
+	if (!children) {
+		return false;
+	}
+
+	return children.some((child) => isActiveStatus(child.status));
+};
+
 /**
  * Filter subagent sessions based on filter mode.
  * Note: Root session visibility is handled by the caller.
@@ -172,18 +208,26 @@ export const filterSubagentSessions = (
 		return subagents.filter((s) => isActiveStatus(s.status));
 	}
 
+	const childrenByParentId = buildChildrenByParentId(subagents);
+
 	const active = subagents.filter((s) => isActiveStatus(s.status));
-	const terminal = subagents.filter((s) => isTerminalStatus(s.status));
+	const terminal = subagents.filter(
+		(s) => isTerminalStatus(s.status) && !hasActiveChildren(s.id, childrenByParentId),
+	);
+	const awaitingSubagent = subagents.filter(
+		(s) =>
+			isTerminalStatus(s.status) && hasActiveChildren(s.id, childrenByParentId),
+	);
 
 	if (terminal.length === 0) {
-		return active;
+		return [...active, ...awaitingSubagent];
 	}
 
 	const sortedTerminal = [...terminal].sort(
 		(a, b) => (b.time_updated ?? 0) - (a.time_updated ?? 0),
 	);
 
-	return [...active, sortedTerminal[0]];
+	return [...active, ...awaitingSubagent, sortedTerminal[0]];
 };
 
 /**
@@ -446,6 +490,7 @@ export const getStandardNodeInfo = (node: HierarchyNode): StandardNodeInfo => {
 		modelID: node.modelID,
 		variant: node.variant,
 		depth: node.depth,
+		finishReason: node.original?.finishReason,
 	};
 };
 
@@ -736,9 +781,48 @@ export const STATUS_LABEL_MAP: Record<SessionStatus, string> = {
 	[SessionStatus.unknown]: "Unknown",
 } as const;
 
-/** Get display label for a status */
-export const getStatusLabel = (status: SessionStatus): string => {
-	return STATUS_LABEL_MAP[status] ?? STATUS_LABEL_MAP[SessionStatus.unknown];
+const AWAITING_SUBAGENT_STATUS_LABEL = "AWAITING SUBAGENT";
+
+export interface StatusDisplayOptions {
+	runningSubagents?: number;
+	finishReason?: string;
+}
+
+export const getDisplayStatus = (
+	status?: SessionStatus,
+	options: StatusDisplayOptions = {},
+): SessionStatus => {
+	const resolvedStatus = status ?? SessionStatus.unknown;
+
+	if (
+		resolvedStatus === SessionStatus.completed &&
+		(options.runningSubagents ?? 0) > 0
+	) {
+		return SessionStatus.running;
+	}
+
+	return resolvedStatus;
+};
+
+export const getStatusLabel = (
+	status?: SessionStatus,
+	options: StatusDisplayOptions = {},
+): string => {
+	if (
+		status === SessionStatus.completed &&
+		(options.runningSubagents ?? 0) > 0
+	) {
+		return AWAITING_SUBAGENT_STATUS_LABEL;
+	}
+
+	const displayStatus = getDisplayStatus(status, options);
+	const baseLabel =
+		STATUS_LABEL_MAP[displayStatus] ?? STATUS_LABEL_MAP[SessionStatus.unknown];
+	const finishReason = options.finishReason;
+	if (finishReason && finishReason !== "stop" && finishReason !== "tool-calls" && finishReason !== "error") {
+		return `${baseLabel} (${finishReason})`;
+	}
+	return baseLabel;
 };
 
 // ============================================================================
