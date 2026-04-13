@@ -22,6 +22,7 @@ import {
 	type RefreshRequest,
 	type RefreshResponse,
 } from "./refresh-worker-protocol";
+import { getWaitingSignalCandidateIds } from "./waitingSignalCandidates";
 
 interface WorkerScope {
 	onmessage: ((event: { data: unknown }) => void) | null;
@@ -186,7 +187,14 @@ const readSnapshot = (database: Database) => {
 	const sessionIds = rawSessions.map((session) => session.id);
 	const latestMessages = readLatestMessages(database, sessionIds);
 	const messageCounts = readMessageCounts(database, sessionIds);
-	const waitingSignals = readWaitingSignals(database, sessionIds);
+	const waitingSignalCandidateIds = getWaitingSignalCandidateIds(
+		sessionIds,
+		latestMessages,
+	);
+	const waitingSignals = readWaitingSignals(
+		database,
+		waitingSignalCandidateIds,
+	);
 
 	return buildSessionSnapshot({
 		rawSessions,
