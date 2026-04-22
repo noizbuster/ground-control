@@ -11,7 +11,7 @@ const CODEX_SESSION_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 const OPENCODE_COMMAND_NAME = "opencode";
-const OPENCODE_WRAPPED_BASENAMES = new Set(["opencode", ".opencode"]);
+const OPENCODE_WRAPPED_BASENAMES = new Set(["opencode"]);
 const NON_SESSION_OPENCODE_SUBCOMMANDS = new Set([
 	"completion",
 	"acp",
@@ -38,6 +38,7 @@ const NON_SESSION_OPENCODE_SUBCOMMANDS = new Set([
 ]);
 
 const CODEX_COMMAND_NAME = "codex";
+const INTERNAL_CODEX_VENDOR_PATH_MARKER = "/vendor/";
 const NON_SESSION_CODEX_SUBCOMMANDS = new Set([
 	"exec",
 	"review",
@@ -173,6 +174,21 @@ const isCodexToken = (token: string): boolean => {
 	}
 
 	return getBasename(normalizedToken) === CODEX_COMMAND_NAME;
+};
+
+const isInternalCodexVendorProcess = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	if (commandBasename !== CODEX_COMMAND_NAME || argumentTokens.length === 0) {
+		return false;
+	}
+
+	const executableToken = normalizeCommandToken(argumentTokens[0]);
+	return (
+		getBasename(executableToken) === CODEX_COMMAND_NAME &&
+		executableToken.includes(INTERNAL_CODEX_VENDOR_PATH_MARKER)
+	);
 };
 
 const containsCodexToken = (tokens: readonly string[]): boolean => {
@@ -396,10 +412,18 @@ const tryReadCodexSessionId = (
 };
 
 export const getExternalAttachedDirectoryKey = (
-	source: SessionSource,
+	_source: SessionSource,
 	directory: string,
 ): string => {
-	return `${source}:${directory}`;
+	return directory;
+};
+
+const incrementDirectoryProcessCount = (
+	directoryProcessCounts: Map<string, number>,
+	directoryKey: string,
+): void => {
+	const existingCount = directoryProcessCounts.get(directoryKey) ?? 0;
+	directoryProcessCounts.set(directoryKey, existingCount + 1);
 };
 
 export const parseAttachedSessionIdsFromProcessList = (
@@ -465,11 +489,9 @@ export const parseAttachedSessionIdsFromProcessList = (
 				"opencode",
 				processCwd,
 			);
-			const existingCount =
-				externalAttachedSignals.directoryProcessCounts.get(directoryKey) ?? 0;
-			externalAttachedSignals.directoryProcessCounts.set(
+			incrementDirectoryProcessCount(
+				externalAttachedSignals.directoryProcessCounts,
 				directoryKey,
-				existingCount + 1,
 			);
 			continue;
 		}
@@ -479,6 +501,10 @@ export const parseAttachedSessionIdsFromProcessList = (
 			isRuntimeWrappedCodexCommand(commandBasename, argumentTokens) ||
 			containsCodexToken(argumentTokens);
 		if (!isCodexInvocation) {
+			continue;
+		}
+
+		if (isInternalCodexVendorProcess(commandBasename, argumentTokens)) {
 			continue;
 		}
 
@@ -501,9 +527,10 @@ export const parseAttachedSessionIdsFromProcessList = (
 		}
 
 		const directoryKey = getExternalAttachedDirectoryKey("codex", processCwd);
-		if (!externalAttachedSignals.directoryProcessCounts.has(directoryKey)) {
-			externalAttachedSignals.directoryProcessCounts.set(directoryKey, 1);
-		}
+		incrementDirectoryProcessCount(
+			externalAttachedSignals.directoryProcessCounts,
+			directoryKey,
+		);
 	}
 
 	return externalAttachedSignals;

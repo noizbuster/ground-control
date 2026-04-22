@@ -38,6 +38,7 @@ import {
 	canAttachToSession,
 	canDeleteSession,
 	countSessionsBySource,
+	getAttachLaunchSpec,
 	getSessionSourceLabel,
 } from "./lib/sessionSource";
 import {
@@ -3091,7 +3092,16 @@ const main = async () => {
 			return;
 		}
 
-		const opencodeExecutable = Bun.which("opencode") ?? "opencode";
+		const attachLaunchSpec = getAttachLaunchSpec(selectedSession, {
+			fallbackDirectory: process.cwd(),
+		});
+		if (!attachLaunchSpec) {
+			showToast(
+				`${getSessionSourceLabel(selectedSession.sessionSource)} attach is not available yet`,
+			);
+			return;
+		}
+
 		state.isAttachingSession = true;
 		render();
 		renderer.intermediateRender();
@@ -3106,8 +3116,8 @@ const main = async () => {
 			clearTerminalScreen();
 
 			const child = Bun.spawn({
-				cmd: [opencodeExecutable, "--session", selectedSession.id],
-				cwd: sanitizeText(selectedSession.directory, process.cwd()),
+				cmd: attachLaunchSpec.cmd,
+				cwd: attachLaunchSpec.cwd,
 				stdin: "inherit",
 				stdout: "inherit",
 				stderr: "inherit",

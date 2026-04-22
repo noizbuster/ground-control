@@ -199,7 +199,7 @@ describe("buildCodexSessionSnapshot", () => {
 		expect(root.sessionSource).toBe("codex");
 		expect(root.status).toBe(SessionStatus.running);
 		expect(root.statusDetail).toBe("Awaiting 1 child thread");
-		expect(root.capabilities?.attach).toBe(false);
+		expect(root.capabilities?.attach).toBe(true);
 		expect(root.sourceMetadata?.sourceCategory).toBe("CLI");
 		expect(root.currentReasoningEffort).toBe("high");
 		expect(snapshot.messageCountBySessionId[root.id]).toBe(3);

@@ -4,6 +4,7 @@ import {
 	canAttachToSession,
 	canDeleteSession,
 	countSessionsBySource,
+	getAttachLaunchSpec,
 	getDefaultSessionCapabilities,
 	getSessionCapabilitySummary,
 	getSessionSourceLabel,
@@ -18,7 +19,7 @@ describe("sessionSource helpers", () => {
 			hierarchy: true,
 		});
 		expect(getDefaultSessionCapabilities("codex")).toEqual({
-			attach: false,
+			attach: true,
 			delete: true,
 			abortChildren: false,
 			hierarchy: true,
@@ -27,10 +28,48 @@ describe("sessionSource helpers", () => {
 
 	it("gates unsupported codex actions", () => {
 		const session = { sessionSource: "codex", capabilities: undefined } as const;
-		expect(canAttachToSession(session)).toBe(false);
+		expect(canAttachToSession(session)).toBe(true);
 		expect(canDeleteSession(session)).toBe(true);
 		expect(canAbortSessionChildren(session)).toBe(false);
-		expect(getSessionCapabilitySummary(session)).toBe("delete, hierarchy");
+		expect(getSessionCapabilitySummary(session)).toBe("attach, delete, hierarchy");
+	});
+
+	it("builds provider-specific attach commands", () => {
+		const resolveExecutable = (name: string) => `/usr/bin/${name}`;
+
+		expect(
+			getAttachLaunchSpec(
+				{
+					id: "open-session",
+					directory: "/repo/open",
+					sessionSource: "opencode",
+				},
+				{
+					resolveExecutable,
+					fallbackDirectory: "/fallback",
+				},
+			),
+		).toEqual({
+			cmd: ["/usr/bin/opencode", "--session", "open-session"],
+			cwd: "/repo/open",
+		});
+
+		expect(
+			getAttachLaunchSpec(
+				{
+					id: "codex-session",
+					directory: "/repo/codex",
+					sessionSource: "codex",
+				},
+				{
+					resolveExecutable,
+					fallbackDirectory: "/fallback",
+				},
+			),
+		).toEqual({
+			cmd: ["/usr/bin/codex", "resume", "codex-session"],
+			cwd: "/repo/codex",
+		});
 	});
 
 	it("summarizes session sources", () => {

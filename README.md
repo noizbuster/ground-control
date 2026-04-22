@@ -59,7 +59,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 | `s` | Cycle sort mode (`status → update → create`) |
 | `c` | Open hierarchy view |
 | `t` | Open hierarchy directly in timeline view |
-| `a` | Attach to the selected OpenCode session |
+| `a` | Attach to the selected session |
 | `i` | Copy the selected session ID |
 | `K` | Stop active child sessions when supported (detail/sideview mode only) |
 | `d` | Request delete for the selected session |
@@ -72,7 +72,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 Available in detail or sideview mode. Press `K` (Shift+K) to gracefully stop all active (non-completed, non-failed) child sessions of the selected session.
 
-OpenCode-only actions such as attach and child-abort remain hidden or disabled for Codex sessions. Codex sessions now support inspect/copy/hierarchy/delete flows, and their extra metadata appears in the detail panel and hierarchy header.
+Codex sessions now support attach/inspect/copy/hierarchy/delete flows, while child-abort remains OpenCode-only. Codex attach uses `codex resume <session-id>` and falls back to the selected session directory as the working directory.
 
 The stop flow works in two stages:
 
@@ -108,6 +108,7 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - Override the OpenCode database path with `GCTRL_DB_PATH=/custom/path/opencode.db`.
 - Override Codex paths with `GCTRL_CODEX_STATE_DB_PATH=/custom/path/state.sqlite`, `GCTRL_CODEX_SESSIONS_DIR=/custom/path/sessions`, `GCTRL_CODEX_ARCHIVED_SESSIONS_DIR=/custom/path/archived_sessions`, and `GCTRL_CODEX_SESSION_INDEX_PATH=/custom/path/session_index.jsonl`.
 - OpenCode attach/delete/child-abort actions use the `opencode` CLI.
+- Codex attach/delete actions use the local `codex` CLI.
 - Codex delete uses the local `codex app-server` archive flow plus cleanup of archived rollout files and local index/state entries.
 - Non-interactive mode (missing TTY stdin/stdout) prints a tab-separated snapshot and exits.
 
