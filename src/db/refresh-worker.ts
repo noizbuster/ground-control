@@ -1,15 +1,7 @@
-import type { Database } from "bun:sqlite";
-import { buildSessionSnapshot } from "../lib/sessionSnapshot";
-import type { SessionRecord } from "../types";
-import {
-	ACTIVE_SESSION_QUERY,
-	createQueryFailedDatabaseError,
-	getProjectLabel,
-	openReadOnlyDatabase,
-	readLatestMessagesFromDatabase,
-	readMessageCountsFromDatabase,
-	readWaitingSignalsFromDatabase,
-} from "./index";
+import { mergeSessionSnapshots } from "../lib/sessionSnapshot";
+import { getCodexSnapshot } from "./codex";
+import { createQueryFailedDatabaseError, type DatabaseError } from "./index";
+import { getOpenCodeSnapshot } from "./opencode";
 import {
 	createErrorResponse,
 	createSuccessResponse,
@@ -17,89 +9,51 @@ import {
 	type RefreshRequest,
 	type RefreshResponse,
 } from "./refresh-worker-protocol";
-import { getWaitingSignalCandidateIds } from "./waitingSignalCandidates";
 
 interface WorkerScope {
 	onmessage: ((event: { data: unknown }) => void) | null;
 	postMessage(response: RefreshResponse): void;
 }
 
-interface ActiveSessionRow {
-	id: string;
-	project_id: string;
-	title: string;
-	directory: string;
-	project_name: string | null;
-	project_worktree: string | null;
-	parent_id: string | null;
-	time_created: number;
-	time_updated: number;
-}
-
 const workerScope = globalThis as unknown as WorkerScope;
 const pendingRequests: RefreshRequest[] = [];
 let isProcessing = false;
 
-const openedDatabase = openReadOnlyDatabase();
-const persistentDatabase = openedDatabase.ok ? openedDatabase.value : null;
-const startupDatabaseError = openedDatabase.ok ? null : openedDatabase.error;
-
-const readActiveSessions = (database: Database): SessionRecord[] => {
-	const statement = database.query<ActiveSessionRow, []>(ACTIVE_SESSION_QUERY);
-	const rows = statement.all() as ActiveSessionRow[];
-
-	return rows.map((session) => ({
-		...session,
-		project_label: getProjectLabel(session),
-	}));
-};
-
-const readSnapshot = (database: Database) => {
-	const rawSessions = readActiveSessions(database);
-	const sessionIds = rawSessions.map((session) => session.id);
-	const latestMessages = readLatestMessagesFromDatabase(database, sessionIds);
-	const messageCounts = readMessageCountsFromDatabase(database, sessionIds);
-	const waitingSignalCandidateIds = getWaitingSignalCandidateIds(
-		sessionIds,
-		latestMessages,
-	);
-	const waitingSignals = readWaitingSignalsFromDatabase(
-		database,
-		waitingSignalCandidateIds,
-	);
-
-	return buildSessionSnapshot({
-		rawSessions,
-		latestMessages,
-		messageCounts,
-		waitingSignals,
-	});
+const formatSourceIssue = (source: string, error: DatabaseError): string => {
+	return `${source}: ${error.message}`;
 };
 
 const buildResponse = (request: RefreshRequest): RefreshResponse => {
-	if (startupDatabaseError) {
-		return createErrorResponse(request.requestId, startupDatabaseError);
+	const snapshots = [];
+	const sourceIssues: string[] = [];
+	const results = [
+		{ source: "OpenCode", result: getOpenCodeSnapshot() },
+		{ source: "Codex", result: getCodexSnapshot() },
+	] as const;
+
+	for (const { source, result } of results) {
+		if (result.ok) {
+			snapshots.push(result.value);
+			continue;
+		}
+
+		sourceIssues.push(formatSourceIssue(source, result.error));
 	}
 
-	if (!persistentDatabase) {
+	if (snapshots.length === 0) {
 		return createErrorResponse(
 			request.requestId,
 			createQueryFailedDatabaseError(
-				"Persistent database handle was not initialized.",
-				"Failed to open the OpenCode SQLite database.",
+				new Error(sourceIssues.join(" | ")),
+				"No session sources are currently readable.",
 			),
 		);
 	}
 
-	try {
-		const snapshot = readSnapshot(persistentDatabase);
-		return createSuccessResponse(request.requestId, snapshot);
-	} catch (error) {
-		return createErrorResponse(
-			request.requestId,
-			createQueryFailedDatabaseError(error),
-		);
-	}
+	return createSuccessResponse(
+		request.requestId,
+		mergeSessionSnapshots(snapshots, sourceIssues),
+	);
 };
 
 const processNextRequest = (): void => {
@@ -133,13 +87,3 @@ workerScope.onmessage = (event) => {
 	pendingRequests.push(event.data);
 	processNextRequest();
 };
-
-process.on("exit", () => {
-	if (!persistentDatabase) {
-		return;
-	}
-
-	try {
-		persistentDatabase.close();
-	} catch {}
-});

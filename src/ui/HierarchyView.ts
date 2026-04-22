@@ -15,6 +15,10 @@ import {
 	truncateLabelEnd,
 } from "../lib/hierarchyHelpers";
 import {
+	getSessionSourceColor,
+	getSessionSourceLabel,
+} from "../lib/sessionSource";
+import {
 	type HierarchyFilterMode,
 	type HierarchyInfoMode,
 	type HierarchyViewMode,
@@ -508,7 +512,10 @@ const getLineStatusDisplay = (
 	const runningSubagents = getLineRunningSubagentCount(line);
 
 	return {
-		label: getStatusLabel(line.standardInfo.status, { runningSubagents, finishReason: line.standardInfo.finishReason }),
+		label: getStatusLabel(line.standardInfo.status, {
+			runningSubagents,
+			finishReason: line.standardInfo.finishReason,
+		}),
 		colorStatus: getDisplayStatus(line.standardInfo.status, {
 			runningSubagents,
 		}),
@@ -1180,6 +1187,10 @@ export const createHierarchyViewContent = ({
 						},
 						Badge(sessionStatusLabel, STATUS_COLOR_MAP[sessionDisplayStatus]),
 						Badge(
+							getSessionSourceLabel(preparedSession.sessionSource),
+							getSessionSourceColor(preparedSession.sessionSource),
+						),
+						Badge(
 							formatAgentBadgeLabel(
 								currentAgentName,
 								preparedSession.currentModelID,
@@ -1187,6 +1198,14 @@ export const createHierarchyViewContent = ({
 							),
 							getAgentColor(preparedSession.currentAgent),
 						),
+						...(preparedSession.currentReasoningEffort
+							? [
+									Badge(
+										`Reasoning ${preparedSession.currentReasoningEffort}`,
+										VIEW_COLORS.flowAccent,
+									),
+								]
+							: []),
 					),
 				]
 			: []),

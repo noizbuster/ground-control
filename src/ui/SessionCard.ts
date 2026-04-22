@@ -10,6 +10,10 @@ import {
 	isRecentlyCompleted,
 	normalizeTimestamp,
 } from "../lib/recentCompletion";
+import {
+	getSessionSourceColor,
+	getSessionSourceLabel,
+} from "../lib/sessionSource";
 import { type Session, SessionStatus } from "../types";
 
 const CARD_WIDTH = 38;
@@ -276,6 +280,8 @@ export function SessionCard(props: SessionCardProps) {
 		projectLabel,
 		Math.min(contentWidth, 22),
 	);
+	const sourceLabel = getSessionSourceLabel(session.sessionSource);
+	const sourceColor = getSessionSourceColor(session.sessionSource);
 	const directoryLabel = shortenDirectoryPath(
 		session.directory,
 		Math.max(contentWidth - 7, 8),
@@ -286,7 +292,11 @@ export function SessionCard(props: SessionCardProps) {
 		session,
 		Math.max(contentWidth - 10, 8),
 	);
-	const statusLabel = formatStatus(status, runningSubagentCount, session.finishReason);
+	const statusLabel = formatStatus(
+		status,
+		runningSubagentCount,
+		session.finishReason,
+	);
 	const statusColor = STATUS_COLORS[displayStatus];
 	const waitingEdge = buildWaitingEdge(contentWidth);
 
@@ -304,7 +314,7 @@ export function SessionCard(props: SessionCardProps) {
 	const subagentLine = t`${dim("subagents ")}${fg(CARD_COLORS.title)(`${runningSubagentCount} / ${subagentCount}`)}`;
 	const subagentAgentsLine = t`${dim("nested  ")}${fg(CARD_COLORS.title)(subagentLabel)}`;
 	const directoryLine = t`${dim("dir     ")}${fg(CARD_COLORS.title)(directoryLabel)}`;
-	const projectLine = t`${dim("project ")}${fg(CARD_COLORS.title)(shortProjectLabel)}`;
+	const projectLine = t`${dim("project ")}${fg(sourceColor)(sourceLabel)}${dim(" · ")}${fg(CARD_COLORS.title)(shortProjectLabel)}`;
 	const createdLine = t`${dim("created ")}${fg(CARD_COLORS.title)(formatTimestamp(session.time_created))}`;
 	const updatedLine = t`${dim("updated ")}${fg(CARD_COLORS.title)(formatTimestamp(session.time_updated))}`;
 

@@ -212,7 +212,9 @@ export const filterSubagentSessions = (
 
 	const active = subagents.filter((s) => isActiveStatus(s.status));
 	const terminal = subagents.filter(
-		(s) => isTerminalStatus(s.status) && !hasActiveChildren(s.id, childrenByParentId),
+		(s) =>
+			isTerminalStatus(s.status) &&
+			!hasActiveChildren(s.id, childrenByParentId),
 	);
 	const awaitingSubagent = subagents.filter(
 		(s) =>
@@ -819,7 +821,12 @@ export const getStatusLabel = (
 	const baseLabel =
 		STATUS_LABEL_MAP[displayStatus] ?? STATUS_LABEL_MAP[SessionStatus.unknown];
 	const finishReason = options.finishReason;
-	if (finishReason && finishReason !== "stop" && finishReason !== "tool-calls" && finishReason !== "error") {
+	if (
+		finishReason &&
+		finishReason !== "stop" &&
+		finishReason !== "tool-calls" &&
+		finishReason !== "error"
+	) {
 		return `${baseLabel} (${finishReason})`;
 	}
 	return baseLabel;

@@ -7,6 +7,30 @@ export enum SessionStatus {
 	unknown = "unknown",
 }
 
+export type SessionSource = "opencode" | "codex";
+
+export interface SessionCapabilities {
+	attach: boolean;
+	delete: boolean;
+	abortChildren: boolean;
+	hierarchy: boolean;
+}
+
+export interface SessionSourceMetadata {
+	originator?: string;
+	cliVersion?: string;
+	rawSource?: string;
+	sourceCategory?: string;
+	agentRole?: string;
+	agentNickname?: string;
+	reasoningEffort?: string;
+	lastEventType?: string;
+	lastTurnId?: string;
+	abortedReason?: string;
+	openChildCount?: number;
+	closedChildCount?: number;
+}
+
 export interface MessageTimeData {
 	created: number;
 	completed?: number;
@@ -50,21 +74,31 @@ export interface SessionRecord {
 }
 
 export interface SubagentSession extends SessionRecord {
+	sessionSource: SessionSource;
+	capabilities?: SessionCapabilities;
 	currentAgent?: string;
 	currentModelID?: string;
 	currentVariant?: string;
+	currentReasoningEffort?: string;
 	status?: SessionStatus;
+	statusDetail?: string;
 	finishReason?: string;
 	providerID?: string;
+	sourceMetadata?: SessionSourceMetadata;
 }
 
 export interface Session extends SessionRecord {
+	sessionSource: SessionSource;
+	capabilities?: SessionCapabilities;
 	currentAgent?: string;
 	currentModelID?: string;
 	currentVariant?: string;
+	currentReasoningEffort?: string;
 	status?: SessionStatus;
+	statusDetail?: string;
 	finishReason?: string;
 	providerID?: string;
+	sourceMetadata?: SessionSourceMetadata;
 	subagentSessions?: SubagentSession[];
 }
 

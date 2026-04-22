@@ -18,6 +18,7 @@ export interface RefreshSnapshotPayload {
 	readonly statusBySessionId: Partial<Record<string, SessionStatus>>;
 	readonly messageCountBySessionId: Partial<Record<string, number>>;
 	readonly sessionIssues: Partial<Record<string, string>>;
+	readonly sourceIssues: string[];
 }
 
 export interface RefreshSuccessResponse {

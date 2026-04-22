@@ -1,7 +1,7 @@
 {
   "name": "gctrl",
   "version": "0.2.2",
-  "description": "Real-time OpenCode session monitor CLI",
+  "description": "Real-time OpenCode and Codex session monitor CLI",
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
@@ -25,7 +25,10 @@
     "tui",
     "node",
     "opentui",
-    "monitor"
+    "monitor",
+    "codex",
+    "openai",
+    "multi-source"
   ],
   "author": "NoizBuster <noizbuster@noizbuster.com>",
   "license": "MIT",

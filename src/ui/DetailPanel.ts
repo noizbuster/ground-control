@@ -6,6 +6,11 @@ import {
 	getStatusLabel,
 	getSubagentSummary,
 } from "../lib/hierarchyHelpers";
+import {
+	getSessionCapabilitySummary,
+	getSessionSourceColor,
+	getSessionSourceLabel,
+} from "../lib/sessionSource";
 import { type Session, SessionStatus } from "../types";
 
 type PanelSize = number | `${number}%` | "100%";
@@ -825,6 +830,27 @@ export const createDetailPanelContent = ({
 		DetailRow("Related scope", relatedGroup.label),
 	);
 
+	const sourceSection = Section(
+		"Source Metadata",
+		DetailRow(
+			"Source",
+			session ? getSessionSourceLabel(session.sessionSource) : "Unavailable",
+		),
+		DetailRow("Status detail", session?.statusDetail ?? "—"),
+		DetailRow("Capabilities", getSessionCapabilitySummary(session)),
+		DetailRow("Source channel", session?.sourceMetadata?.sourceCategory ?? "—"),
+		DetailRow("Originator", session?.sourceMetadata?.originator ?? "—"),
+		DetailRow("CLI version", session?.sourceMetadata?.cliVersion ?? "—"),
+		DetailRow("Agent role", session?.sourceMetadata?.agentRole ?? "—"),
+		DetailRow("Agent nickname", session?.sourceMetadata?.agentNickname ?? "—"),
+		DetailRow(
+			"Reasoning",
+			session?.currentReasoningEffort ??
+				session?.sourceMetadata?.reasoningEffort ??
+				"—",
+		),
+	);
+
 	const hierarchySection = Section(
 		"Hierarchy Stats",
 		Text({
@@ -995,6 +1021,7 @@ export const createDetailPanelContent = ({
 					},
 					overviewSection,
 					metadataSection,
+					sourceSection,
 					hierarchySection,
 					benchmarksSection,
 				);
@@ -1018,6 +1045,25 @@ export const createDetailPanelContent = ({
 				flexWrap: "wrap",
 			},
 			Badge(sessionStatusLabel, STATUS_COLOR_MAP[sessionDisplayStatus]),
+			...(session
+				? [
+						Badge(
+							getSessionSourceLabel(session.sessionSource),
+							getSessionSourceColor(session.sessionSource),
+						),
+					]
+				: []),
+			...(session?.sourceMetadata?.sourceCategory
+				? [Badge(session.sourceMetadata.sourceCategory, PANEL_COLORS.info)]
+				: []),
+			...(session?.currentReasoningEffort
+				? [
+						Badge(
+							`Reasoning ${session.currentReasoningEffort}`,
+							PANEL_COLORS.warning,
+						),
+					]
+				: []),
 			...(session?.currentAgent
 				? [
 						Badge(

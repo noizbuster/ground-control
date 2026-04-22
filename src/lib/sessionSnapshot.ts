@@ -5,6 +5,7 @@ import {
 	type WaitingSignalsBySessionId,
 } from "../db";
 import { type Session, type SessionRecord, SessionStatus } from "../types";
+import { getDefaultSessionCapabilities } from "./sessionSource";
 
 export type SessionStatusById = Partial<Record<string, SessionStatus>>;
 
@@ -13,6 +14,7 @@ export interface SessionSnapshot {
 	statusBySessionId: SessionStatusById;
 	messageCountBySessionId: Partial<Record<string, number>>;
 	sessionIssues: Partial<Record<string, string>>;
+	sourceIssues: string[];
 }
 
 interface BuildSessionSnapshotParams {
@@ -53,6 +55,37 @@ const resolveRootSession = (
 	return current ?? null;
 };
 
+export const mergeSessionSnapshots = (
+	snapshots: SessionSnapshot[],
+	sourceIssues: string[] = [],
+): SessionSnapshot => {
+	const mergedSessions = snapshots.flatMap((snapshot) => snapshot.sessions);
+	const mergedStatusBySessionId = Object.assign(
+		{},
+		...snapshots.map((snapshot) => snapshot.statusBySessionId),
+	);
+	const mergedMessageCountBySessionId = Object.assign(
+		{},
+		...snapshots.map((snapshot) => snapshot.messageCountBySessionId),
+	);
+	const mergedSessionIssues = Object.assign(
+		{},
+		...snapshots.map((snapshot) => snapshot.sessionIssues),
+	);
+	const mergedSourceIssues = [
+		...snapshots.flatMap((snapshot) => snapshot.sourceIssues ?? []),
+		...sourceIssues,
+	];
+
+	return {
+		sessions: mergedSessions,
+		statusBySessionId: mergedStatusBySessionId,
+		messageCountBySessionId: mergedMessageCountBySessionId,
+		sessionIssues: mergedSessionIssues,
+		sourceIssues: mergedSourceIssues,
+	};
+};
+
 export const buildSessionSnapshot = (
 	params: BuildSessionSnapshotParams,
 ): SessionSnapshot => {
@@ -65,6 +98,8 @@ export const buildSessionSnapshot = (
 	for (const rawSession of params.rawSessions) {
 		const session: Session = {
 			...rawSession,
+			sessionSource: "opencode",
+			capabilities: getDefaultSessionCapabilities("opencode"),
 			subagentSessions: [],
 		};
 
@@ -112,16 +147,17 @@ export const buildSessionSnapshot = (
 					session.finishReason = parseResult.value.finish;
 				}
 
-				const rawMessage = parseResult.value as unknown as Record<string, unknown>;
+				const rawMessage = parseResult.value as unknown as Record<
+					string,
+					unknown
+				>;
 				const providerID = getTrimmedValue(
 					rawMessage.providerID as string | undefined,
 				);
 				if (providerID) {
 					session.providerID = providerID;
 				}
-			}
-
-			if (!parseResult.ok) {
+			} else {
 				nextSessionIssues[session.id] =
 					`Data error: ${parseResult.error.message}`;
 			}
@@ -158,5 +194,6 @@ export const buildSessionSnapshot = (
 		statusBySessionId: nextStatusBySessionId,
 		messageCountBySessionId: nextMessageCountBySessionId,
 		sessionIssues: nextSessionIssues,
+		sourceIssues: [],
 	};
 };
