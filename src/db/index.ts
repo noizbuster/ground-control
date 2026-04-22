@@ -346,46 +346,41 @@ export const getActiveSessions = (): DatabaseResult<SessionRecord[]> =>
 export const getLatestMessages = (
 	sessionIds: string[],
 ): DatabaseResult<LatestMessageResultsBySessionId> => {
-	if (sessionIds.length === 0) {
-		return { ok: true, value: {} };
-	}
-
-	return withDatabase((database) => {
-		const statement = database.query<LatestMessageRow, string[]>(
-			buildLatestMessagesQuery(sessionIds.length),
-		);
-		const rows = statement.all(...sessionIds) as LatestMessageRow[];
-
-		return rows.reduce<LatestMessageResultsBySessionId>((results, row) => {
-			results[row.session_id] = {
-				sessionId: row.session_id,
-				rawData: row.data,
-				message: parseMessageData(row.data),
-			};
-
-			return results;
-		}, {});
-	});
+	return withDatabase((database) =>
+		readLatestMessagesFromDatabase(database, sessionIds),
+	);
 };
 
 export const getMessageCounts = (
 	sessionIds: string[],
 ): DatabaseResult<MessageCountsBySessionId> => {
+	return withDatabase((database) =>
+		readMessageCountsFromDatabase(database, sessionIds),
+	);
+};
+
+export const readLatestMessagesFromDatabase = (
+	database: Database,
+	sessionIds: string[],
+): LatestMessageResultsBySessionId => {
 	if (sessionIds.length === 0) {
-		return { ok: true, value: {} };
+		return {};
 	}
 
-	return withDatabase((database) => {
-		const statement = database.query<MessageCountRow, string[]>(
-			buildMessageCountsQuery(sessionIds.length),
-		);
-		const rows = statement.all(...sessionIds) as MessageCountRow[];
+	const statement = database.query<LatestMessageRow, string[]>(
+		buildLatestMessagesQuery(sessionIds.length),
+	);
+	const rows = statement.all(...sessionIds) as LatestMessageRow[];
 
-		return rows.reduce<MessageCountsBySessionId>((results, row) => {
-			results[row.session_id] = row.message_count;
-			return results;
-		}, {});
-	});
+	return rows.reduce<LatestMessageResultsBySessionId>((results, row) => {
+		results[row.session_id] = {
+			sessionId: row.session_id,
+			rawData: row.data,
+			message: parseMessageData(row.data),
+		};
+
+		return results;
+	}, {});
 };
 
 const isQuestionToolRunning = (raw: string): boolean => {
@@ -406,47 +401,72 @@ const isQuestionToolRunning = (raw: string): boolean => {
 	}
 };
 
+export const readMessageCountsFromDatabase = (
+	database: Database,
+	sessionIds: string[],
+): MessageCountsBySessionId => {
+	if (sessionIds.length === 0) {
+		return {};
+	}
+
+	const statement = database.query<MessageCountRow, string[]>(
+		buildMessageCountsQuery(sessionIds.length),
+	);
+	const rows = statement.all(...sessionIds) as MessageCountRow[];
+
+	return rows.reduce<MessageCountsBySessionId>((results, row) => {
+		results[row.session_id] = row.message_count;
+		return results;
+	}, {});
+};
+
 export const getWaitingSignals = (
 	sessionIds: string[],
 ): DatabaseResult<WaitingSignalsBySessionId> => {
+	return withDatabase((database) =>
+		readWaitingSignalsFromDatabase(database, sessionIds),
+	);
+};
+
+export const readWaitingSignalsFromDatabase = (
+	database: Database,
+	sessionIds: string[],
+): WaitingSignalsBySessionId => {
 	if (sessionIds.length === 0) {
-		return { ok: true, value: {} };
+		return {};
 	}
 
-	return withDatabase((database) => {
-		const waitingSignals: WaitingSignalsBySessionId = {};
+	const waitingSignals: WaitingSignalsBySessionId = {};
 
-		const userTimesStatement = database.query<
-			LatestUserMessageTimeRow,
-			string[]
-		>(buildLatestUserMessageTimesQuery(sessionIds.length));
-		const userTimeRows = userTimesStatement.all(
-			...sessionIds,
-		) as LatestUserMessageTimeRow[];
-		for (const row of userTimeRows) {
-			waitingSignals[row.session_id] = {
-				...(waitingSignals[row.session_id] ?? { questionToolRunning: false }),
-				latestUserMessageTime: row.latest_user_time,
-			};
-		}
+	const userTimesStatement = database.query<LatestUserMessageTimeRow, string[]>(
+		buildLatestUserMessageTimesQuery(sessionIds.length),
+	);
+	const userTimeRows = userTimesStatement.all(
+		...sessionIds,
+	) as LatestUserMessageTimeRow[];
+	for (const row of userTimeRows) {
+		waitingSignals[row.session_id] = {
+			...(waitingSignals[row.session_id] ?? { questionToolRunning: false }),
+			latestUserMessageTime: row.latest_user_time,
+		};
+	}
 
-		const questionPartsStatement = database.query<
-			LatestQuestionToolPartRow,
-			string[]
-		>(buildLatestQuestionToolPartsQuery(sessionIds.length));
-		const questionPartRows = questionPartsStatement.all(
-			...sessionIds,
-		) as LatestQuestionToolPartRow[];
-		for (const row of questionPartRows) {
-			waitingSignals[row.session_id] = {
-				...(waitingSignals[row.session_id] ?? { questionToolRunning: false }),
-				latestQuestionToolTime: row.time_created,
-				questionToolRunning: isQuestionToolRunning(row.data),
-			};
-		}
+	const questionPartsStatement = database.query<
+		LatestQuestionToolPartRow,
+		string[]
+	>(buildLatestQuestionToolPartsQuery(sessionIds.length));
+	const questionPartRows = questionPartsStatement.all(
+		...sessionIds,
+	) as LatestQuestionToolPartRow[];
+	for (const row of questionPartRows) {
+		waitingSignals[row.session_id] = {
+			...(waitingSignals[row.session_id] ?? { questionToolRunning: false }),
+			latestQuestionToolTime: row.time_created,
+			questionToolRunning: isQuestionToolRunning(row.data),
+		};
+	}
 
-		return waitingSignals;
-	});
+	return waitingSignals;
 };
 
 export const getLatestMessage = (

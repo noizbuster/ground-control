@@ -1,6 +1,7 @@
 type AgentName =
 	| "atlas"
 	| "build"
+	| "compaction"
 	| "explore"
 	| "hephaestus"
 	| "librarian"
@@ -18,6 +19,7 @@ export type AgentColorOverrides = Partial<Record<string, `#${string}`>>;
 const AGENT_DISPLAY_NAME_MAP: Readonly<Record<AgentName, string>> = {
 	atlas: "Atlas",
 	build: "Build",
+	compaction: "Compaction",
 	explore: "Explore",
 	hephaestus: "Hephaestus",
 	librarian: "Librarian",
@@ -31,8 +33,53 @@ const AGENT_DISPLAY_NAME_MAP: Readonly<Record<AgentName, string>> = {
 	unknown: "Unknown",
 };
 
+const CANONICAL_AGENT_NAMES = Object.keys(AGENT_DISPLAY_NAME_MAP).filter(
+	(agentName): agentName is Exclude<AgentName, "unknown"> =>
+		agentName !== "unknown",
+);
+
+const INVISIBLE_AGENT_CHARACTERS_RE =
+	/(?:\u200B|\u200C|\u200D|\u2060|\uFEFF)/gu;
+
+const normalizeAgentText = (value?: string): string => {
+	return (value ?? "")
+		.normalize("NFKC")
+		.replace(INVISIBLE_AGENT_CHARACTERS_RE, "");
+};
+
+const hasAgentAliasPrefix = (value: string, prefix: string): boolean => {
+	return (
+		value === prefix ||
+		value.startsWith(`${prefix} (`) ||
+		value.startsWith(`${prefix} - `)
+	);
+};
+
+const matchCanonicalAgentAlias = (agentName?: string): AgentName | null => {
+	const normalizedText = normalizeAgentText(agentName).trim().toLowerCase();
+	if (!normalizedText) {
+		return null;
+	}
+
+	for (const canonical of CANONICAL_AGENT_NAMES) {
+		if (
+			hasAgentAliasPrefix(normalizedText, canonical) ||
+			hasAgentAliasPrefix(
+				normalizedText,
+				AGENT_DISPLAY_NAME_MAP[canonical].toLowerCase(),
+			)
+		) {
+			return canonical;
+		}
+	}
+
+	return null;
+};
+
 const stripAgentSuffix = (agentName?: string): string => {
-	return (agentName ?? "").replace(/\s*\([^)]*\)\s*$/u, "").trim();
+	return normalizeAgentText(agentName)
+		.replace(/\s*\([^)]*\)\s*$/u, "")
+		.trim();
 };
 
 const normalizeAgentLookup = (agentName?: string): string => {
@@ -53,6 +100,7 @@ export const AGENT_COLOR_MAP: Readonly<Record<AgentName, `#${string}`>> = {
 	metis: "#06B6D4",
 	momus: "#EF4444",
 	build: "#3B82F6",
+	compaction: "#6C6C6C",
 	explore: "#22C55E",
 	librarian: "#A855F7",
 	quick: "#F59E0B",
@@ -87,6 +135,11 @@ const isAgentName = (agentName: string): agentName is AgentName =>
 	Object.hasOwn(AGENT_COLOR_MAP, agentName);
 
 export const getCanonicalAgentName = (agentName?: string): AgentName => {
+	const aliasMatch = matchCanonicalAgentAlias(agentName);
+	if (aliasMatch) {
+		return aliasMatch;
+	}
+
 	const normalized = normalizeAgentLookup(agentName);
 	if (!isAgentName(normalized)) {
 		return "unknown";
