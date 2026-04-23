@@ -59,6 +59,20 @@ const NON_SESSION_CODEX_SUBCOMMANDS = new Set([
 ]);
 const HELP_OR_VERSION_FLAGS = new Set(["-h", "--help", "-v", "--version"]);
 
+const CLAUDE_COMMAND_NAME = "claude";
+const CLAUDE_WRAPPED_BASENAMES = new Set(["claude"]);
+const NON_SESSION_CLAUDE_SUBCOMMANDS = new Set([
+	"update",
+	"auth",
+	"agents",
+	"auto-mode",
+	"mcp",
+	"plugin",
+	"plugins",
+	"remote-control",
+	"setup-token",
+]);
+
 const getBasename = (value: string): string => {
 	return value.split(/[\\/]/u).at(-1)?.toLowerCase() ?? "";
 };
@@ -165,6 +179,203 @@ const isNonSessionOpencodeInvocation = (
 	}
 
 	return hasOnlyHelpOrVersionFlag;
+};
+
+const isClaudeToken = (token: string): boolean => {
+	const normalizedToken = normalizeCommandToken(token);
+	if (normalizedToken.length === 0) {
+		return false;
+	}
+
+	return CLAUDE_WRAPPED_BASENAMES.has(getBasename(normalizedToken));
+};
+
+const containsClaudeToken = (tokens: readonly string[]): boolean => {
+	return tokens.some((token) => isClaudeToken(token));
+};
+
+const getClaudeExecutableTokenIndex = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): number => {
+	const tokenIndex = argumentTokens.findIndex((token) => isClaudeToken(token));
+	if (tokenIndex >= 0) {
+		return tokenIndex;
+	}
+
+	return commandBasename === CLAUDE_COMMAND_NAME ? 0 : -1;
+};
+
+const isDirectClaudeCommand = (
+	commandBasename: string,
+	firstArgumentBasename: string,
+): boolean => {
+	return (
+		commandBasename === CLAUDE_COMMAND_NAME ||
+		firstArgumentBasename === CLAUDE_COMMAND_NAME
+	);
+};
+
+const isRuntimeWrappedClaudeCommand = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	return (
+		isRuntimeWrapperCommand(commandBasename) &&
+		argumentTokens.length >= 2 &&
+		CLAUDE_WRAPPED_BASENAMES.has(
+			getBasename(normalizeCommandToken(argumentTokens[1])),
+		)
+	);
+};
+
+const getFirstClaudePositionalToken = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): string | undefined => {
+	const executableTokenIndex = getClaudeExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return undefined;
+	}
+
+	let hasPendingFlagValue = false;
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken || normalizedToken === "--") {
+			continue;
+		}
+
+		if (hasPendingFlagValue) {
+			hasPendingFlagValue = false;
+			continue;
+		}
+
+		if (
+			normalizedToken === "--add-dir" ||
+			normalizedToken === "--agent" ||
+			normalizedToken === "--append-system-prompt" ||
+			normalizedToken === "--mcp-config" ||
+			normalizedToken === "-m" ||
+			normalizedToken === "--model" ||
+			normalizedToken === "--output-format" ||
+			normalizedToken === "--permission-mode" ||
+			normalizedToken === "--permission-prompt-tool" ||
+			normalizedToken === "-p" ||
+			normalizedToken === "--print" ||
+			normalizedToken === "-r" ||
+			normalizedToken === "--resume" ||
+			normalizedToken === "--session-id" ||
+			normalizedToken === "--settings" ||
+			normalizedToken === "--system-prompt"
+		) {
+			hasPendingFlagValue = true;
+			continue;
+		}
+
+		if (
+			normalizedToken === "-c" ||
+			normalizedToken === "--continue" ||
+			HELP_OR_VERSION_FLAGS.has(normalizedToken)
+		) {
+			continue;
+		}
+
+		if (normalizedToken.startsWith("-")) {
+			continue;
+		}
+
+		return normalizedToken;
+	}
+
+	return undefined;
+};
+
+const isClaudeSessionBearingInvocation = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	const executableTokenIndex = getClaudeExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return false;
+	}
+
+	const firstPositionalToken = getFirstClaudePositionalToken(
+		commandBasename,
+		argumentTokens,
+	);
+	if (!firstPositionalToken) {
+		return true;
+	}
+
+	return !NON_SESSION_CLAUDE_SUBCOMMANDS.has(getBasename(firstPositionalToken));
+};
+
+const hasClaudePrintFlag = (argumentTokens: readonly string[]): boolean => {
+	return argumentTokens.some((token) => {
+		const normalizedToken = normalizeCommandToken(token);
+		return (
+			normalizedToken === "-p" ||
+			normalizedToken === "--print" ||
+			normalizedToken.startsWith("--print=")
+		);
+	});
+};
+
+const tryReadClaudeSessionId = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): string | undefined => {
+	const executableTokenIndex = getClaudeExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return undefined;
+	}
+
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken || normalizedToken === "--") {
+			continue;
+		}
+
+		if (
+			normalizedToken === "-r" ||
+			normalizedToken === "--resume" ||
+			normalizedToken === "--session-id"
+		) {
+			const nextToken = normalizeCommandToken(
+				argumentTokens[tokenIndex + 1] ?? "",
+			);
+			return nextToken || undefined;
+		}
+
+		if (normalizedToken.startsWith("--resume=")) {
+			return normalizeCommandToken(normalizedToken.slice("--resume=".length));
+		}
+
+		if (normalizedToken.startsWith("--session-id=")) {
+			return normalizeCommandToken(
+				normalizedToken.slice("--session-id=".length),
+			);
+		}
+	}
+
+	return undefined;
 };
 
 const isCodexToken = (token: string): boolean => {
@@ -500,24 +711,59 @@ export const parseAttachedSessionIdsFromProcessList = (
 			isDirectCodexCommand(commandBasename, firstArgumentBasename) ||
 			isRuntimeWrappedCodexCommand(commandBasename, argumentTokens) ||
 			containsCodexToken(argumentTokens);
-		if (!isCodexInvocation) {
+		if (isCodexInvocation) {
+			if (isInternalCodexVendorProcess(commandBasename, argumentTokens)) {
+				continue;
+			}
+
+			const codexSessionId = tryReadCodexSessionId(
+				commandBasename,
+				argumentTokens,
+			);
+			if (codexSessionId) {
+				externalAttachedSignals.sessionIds.add(codexSessionId);
+				continue;
+			}
+
+			if (!isCodexSessionBearingInvocation(commandBasename, argumentTokens)) {
+				continue;
+			}
+
+			const processCwd = readProcessCwd(pid);
+			if (!processCwd) {
+				continue;
+			}
+
+			const directoryKey = getExternalAttachedDirectoryKey("codex", processCwd);
+			incrementDirectoryProcessCount(
+				externalAttachedSignals.directoryProcessCounts,
+				directoryKey,
+			);
 			continue;
 		}
 
-		if (isInternalCodexVendorProcess(commandBasename, argumentTokens)) {
+		const isClaudeInvocation =
+			isDirectClaudeCommand(commandBasename, firstArgumentBasename) ||
+			isRuntimeWrappedClaudeCommand(commandBasename, argumentTokens) ||
+			containsClaudeToken(argumentTokens);
+		if (!isClaudeInvocation) {
 			continue;
 		}
 
-		const codexSessionId = tryReadCodexSessionId(
+		if (hasClaudePrintFlag(argumentTokens)) {
+			continue;
+		}
+
+		const claudeSessionId = tryReadClaudeSessionId(
 			commandBasename,
 			argumentTokens,
 		);
-		if (codexSessionId) {
-			externalAttachedSignals.sessionIds.add(codexSessionId);
+		if (claudeSessionId) {
+			externalAttachedSignals.sessionIds.add(claudeSessionId);
 			continue;
 		}
 
-		if (!isCodexSessionBearingInvocation(commandBasename, argumentTokens)) {
+		if (!isClaudeSessionBearingInvocation(commandBasename, argumentTokens)) {
 			continue;
 		}
 
@@ -526,7 +772,7 @@ export const parseAttachedSessionIdsFromProcessList = (
 			continue;
 		}
 
-		const directoryKey = getExternalAttachedDirectoryKey("codex", processCwd);
+		const directoryKey = getExternalAttachedDirectoryKey("claude", processCwd);
 		incrementDirectoryProcessCount(
 			externalAttachedSignals.directoryProcessCounts,
 			directoryKey,

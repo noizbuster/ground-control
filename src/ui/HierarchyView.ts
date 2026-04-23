@@ -1,4 +1,13 @@
-import { Box, bold, dim, fg, MouseButton, Text, t } from "@opentui/core";
+import {
+	Box,
+	bold,
+	dim,
+	fg,
+	MouseButton,
+	StyledText,
+	Text,
+	t,
+} from "@opentui/core";
 
 import { getAgentColor, getAgentDisplayName } from "../config/colors";
 import {
@@ -93,6 +102,11 @@ const STATUS_COLOR_MAP: Record<SessionStatus, `#${string}`> = {
 	[SessionStatus.completed]: VIEW_COLORS.text,
 	[SessionStatus.failed]: "#EF4444",
 	[SessionStatus.unknown]: "#64748B",
+};
+
+const TIMELINE_STATUS_COLOR_MAP: Record<SessionStatus, `#${string}`> = {
+	...STATUS_COLOR_MAP,
+	[SessionStatus.completed]: "#64748B",
 };
 
 type HierarchyViewChild = ReturnType<typeof Box> | ReturnType<typeof Text>;
@@ -346,6 +360,47 @@ interface TimelineLayout {
 	scrollLeft: number;
 }
 
+const trimTimelineSegmentsLeft = (
+	segments: Array<{
+		content: string;
+		highlighted: boolean;
+	}>,
+	trimCount: number,
+): Array<{
+	content: string;
+	highlighted: boolean;
+}> => {
+	if (trimCount <= 0) {
+		return segments;
+	}
+
+	let remainingTrim = trimCount;
+	const trimmedSegments: Array<{
+		content: string;
+		highlighted: boolean;
+	}> = [];
+
+	for (const segment of segments) {
+		if (remainingTrim >= segment.content.length) {
+			remainingTrim -= segment.content.length;
+			continue;
+		}
+
+		if (remainingTrim > 0) {
+			trimmedSegments.push({
+				content: segment.content.slice(remainingTrim),
+				highlighted: segment.highlighted,
+			});
+			remainingTrim = 0;
+			continue;
+		}
+
+		trimmedSegments.push(segment);
+	}
+
+	return trimmedSegments;
+};
+
 const getTimelineRowWindow = (
 	line: HierarchyLine,
 ): TimelineRowWindow | null => {
@@ -518,6 +573,7 @@ const getLineStatusDisplay = (
 		}),
 		colorStatus: getDisplayStatus(line.standardInfo.status, {
 			runningSubagents,
+			finishReason: line.standardInfo.finishReason,
 		}),
 	};
 };
@@ -595,17 +651,28 @@ const getTimelineTrackEndMarker = (status: SessionStatus): string => {
 	}
 };
 
+const getTimelineViewportEdgeMarker = (status: SessionStatus): string => {
+	switch (status) {
+		case SessionStatus.running:
+		case SessionStatus.waiting:
+		case SessionStatus.pending:
+			return ">";
+		default:
+			return getTimelineTrackEndMarker(status);
+	}
+};
+
 const buildTimelineTrackSegments = (params: {
 	status: SessionStatus;
+	activityStatus: SessionStatus;
 	rowWindow: TimelineRowWindow | null;
 	timelineWindow: TimelineWindow | null;
 	layout: TimelineLayout;
-}): {
-	leading: string;
-	segment: string;
-	trailing: string;
-} => {
-	const { status, rowWindow, timelineWindow, layout } = params;
+}): Array<{
+	content: string;
+	highlighted: boolean;
+}> => {
+	const { status, activityStatus, rowWindow, timelineWindow, layout } = params;
 	const fullTrack = Array.from({ length: layout.trackWidth }, () => "·");
 	let trackStartIndex = 0;
 	let trackEndIndex = -1;
@@ -644,53 +711,80 @@ const buildTimelineTrackSegments = (params: {
 		}
 	}
 
-	const visibleTrack = fullTrack
+	const visibleStart = layout.scrollLeft;
+	const visibleEnd = visibleStart + layout.viewportWidth;
+	const visibleChars = fullTrack
 		.join("")
-		.slice(layout.scrollLeft, layout.scrollLeft + layout.viewportWidth);
+		.slice(visibleStart, visibleEnd)
+		.split("");
+	const colorStates = Array.from({ length: visibleChars.length }, () => false);
 
 	if (!rowWindow || !timelineWindow || trackEndIndex < trackStartIndex) {
-		return {
-			leading: visibleTrack,
-			segment: "",
-			trailing: "",
-		};
+		return visibleChars.length > 0
+			? [{ content: visibleChars.join(""), highlighted: false }]
+			: [];
 	}
 
-	const visibleStart = layout.scrollLeft;
-	const visibleEnd = visibleStart + visibleTrack.length;
+	const visibleEndWithinTrack = visibleStart + visibleChars.length;
 	const highlightedStart = Math.max(trackStartIndex, visibleStart);
-	const highlightedEnd = Math.min(trackEndIndex + 1, visibleEnd);
+	const highlightedEnd = Math.min(trackEndIndex + 1, visibleEndWithinTrack);
 
-	if (highlightedStart >= highlightedEnd) {
-		if (isActiveStatus(status) && visibleTrack.length > 0) {
-			const edgeIndex =
-				trackStartIndex < visibleStart ? 0 : visibleTrack.length - 1;
-			const marker = getTimelineTrackEndMarker(status);
-			const patchedTrack = visibleTrack.split("");
-			patchedTrack[edgeIndex] = marker;
+	if (highlightedStart < highlightedEnd) {
+		const localStart = highlightedStart - visibleStart;
+		const localEnd = highlightedEnd - visibleStart;
 
-			return {
-				leading: patchedTrack.slice(0, edgeIndex).join(""),
-				segment: marker,
-				trailing: patchedTrack.slice(edgeIndex + 1).join(""),
-			};
+		for (let index = localStart; index < localEnd; index += 1) {
+			colorStates[index] = true;
+		}
+	}
+
+	if (isActiveStatus(activityStatus) && visibleChars.length > 0) {
+		const edgeIndex =
+			highlightedStart >= highlightedEnd
+				? trackStartIndex < visibleStart
+					? 0
+					: visibleChars.length - 1
+				: visibleChars.length - 1;
+
+		visibleChars[edgeIndex] = getTimelineViewportEdgeMarker(activityStatus);
+		colorStates[edgeIndex] = true;
+	}
+
+	const segments: Array<{ content: string; highlighted: boolean }> = [];
+	let currentHighlight: boolean | null = null;
+	let buffer = "";
+
+	for (let index = 0; index < visibleChars.length; index += 1) {
+		const highlighted = colorStates[index] ?? false;
+		const char = visibleChars[index] ?? "";
+
+		if (currentHighlight === null) {
+			currentHighlight = highlighted;
+			buffer = char;
+			continue;
 		}
 
-		return {
-			leading: visibleTrack,
-			segment: "",
-			trailing: "",
-		};
+		if (currentHighlight === highlighted) {
+			buffer += char;
+			continue;
+		}
+
+		segments.push({
+			content: buffer,
+			highlighted: currentHighlight,
+		});
+		currentHighlight = highlighted;
+		buffer = char;
 	}
 
-	const localStart = highlightedStart - visibleStart;
-	const localEnd = highlightedEnd - visibleStart;
+	if (buffer.length > 0 && currentHighlight !== null) {
+		segments.push({
+			content: buffer,
+			highlighted: currentHighlight,
+		});
+	}
 
-	return {
-		leading: visibleTrack.slice(0, localStart),
-		segment: visibleTrack.slice(localStart, localEnd),
-		trailing: visibleTrack.slice(localEnd),
-	};
+	return segments;
 };
 
 const buildTimelineAxisSlice = (layout: TimelineLayout): string => {
@@ -951,6 +1045,7 @@ const renderTimelineHierarchyLine = (
 	params: {
 		layout: TimelineLayout;
 		timelineWindow: TimelineWindow | null;
+		baseDetailPrefixWidth: number;
 		showSpacer?: boolean;
 	},
 ) => {
@@ -960,7 +1055,7 @@ const renderTimelineHierarchyLine = (
 	const agentName = getAgentDisplayName(info.agent);
 	const modelLabel = getModelLabel(info.modelID, info.variant);
 	const statusDisplay = getLineStatusDisplay(line);
-	const statusColor = STATUS_COLOR_MAP[statusDisplay.colorStatus];
+	const statusColor = TIMELINE_STATUS_COLOR_MAP[statusDisplay.colorStatus];
 	const titleColor = line.node.isRoot
 		? VIEW_COLORS.flowAccent
 		: VIEW_COLORS.text;
@@ -986,13 +1081,25 @@ const renderTimelineHierarchyLine = (
 	const primaryAgentLabel = truncateLabelEnd(agentName, agentWidth);
 	const primaryTitleLabel = truncateLabelEnd(normalizedTitle, titleWidth);
 	const trackSegments = buildTimelineTrackSegments({
-		status: info.status,
+		status: statusDisplay.colorStatus,
+		activityStatus: line.standardInfo.status,
 		rowWindow,
 		timelineWindow: params.timelineWindow,
 		layout: params.layout,
 	});
+	const trimmedTrackSegments = trimTimelineSegmentsLeft(
+		trackSegments,
+		Math.max(detailPrefix.length - params.baseDetailPrefixWidth, 0),
+	);
 	const standardPrimaryContent = t`${fg(VIEW_COLORS.muted)(linePrefix)}${fg(getAgentColor(info.agent))(primaryAgentLabel)}${dim(" : ")}${bold(fg(titleColor)(primaryTitleLabel))}${dim(" (")}${fg(statusColor)(spanLabel)}${dim(")")}`;
-	const standardTimelineContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${fg(VIEW_COLORS.muted)(trackSegments.leading)}${fg(statusColor)(trackSegments.segment)}${fg(VIEW_COLORS.muted)(trackSegments.trailing)}`;
+	const standardTimelineContent = new StyledText([
+		fg(VIEW_COLORS.muted)(detailPrefix),
+		...trimmedTrackSegments.map((segment) =>
+			segment.highlighted
+				? fg(statusColor)(segment.content)
+				: fg(VIEW_COLORS.muted)(segment.content),
+		),
+	]);
 	const detailedAdditionalContent = t`${fg(VIEW_COLORS.muted)(detailPrefix)}${dim("status ")}${fg(statusColor)(statusDisplay.label)}${dim("  started ")}${formatRelativeTime(rowWindow?.startMs)}${dim("  updated ")}${formatRelativeTime(rowWindow?.endMs)}${modelLabel ? dim("  model ") : ""}${modelLabel ? fg(VIEW_COLORS.muted)(modelLabel) : ""}${line.detailedInfo ? dim("  msgs ") : ""}${line.detailedInfo ? formatMessageCount(line.detailedInfo.messageCount) : ""}${line.detailedInfo ? dim("  children ") : ""}${line.detailedInfo ? formatSubagentCount(line.detailedInfo.subagentCount) : ""}`;
 
 	return Box(
@@ -1045,6 +1152,8 @@ const renderTimelineHierarchy = (
 	const showAxisLine = params.showAxisLine ?? true;
 	const showIntroLine = params.showIntroLine ?? true;
 	const axisData = getTimelineAxisData(lines, params.layout);
+	const baseDetailPrefixWidth =
+		lines.length > 0 ? getDetailPrefix(lines[0]).length : 0;
 	const children: HierarchyViewChild[] = [];
 
 	if (showIntroLine) {
@@ -1064,6 +1173,7 @@ const renderTimelineHierarchy = (
 			renderTimelineHierarchyLine(line, {
 				layout: params.layout,
 				timelineWindow,
+				baseDetailPrefixWidth,
 				showSpacer: line.infoMode === "detailed" && index < lines.length - 1,
 			}),
 		);
@@ -1148,6 +1258,7 @@ export const createHierarchyViewContent = ({
 	const sessionStatus = preparedSession?.status ?? SessionStatus.unknown;
 	const sessionDisplayStatus = getDisplayStatus(sessionStatus, {
 		runningSubagents: summary.running,
+		finishReason: preparedSession?.finishReason,
 	});
 	const sessionStatusLabel = getStatusLabel(sessionStatus, {
 		runningSubagents: summary.running,

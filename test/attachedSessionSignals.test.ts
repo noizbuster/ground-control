@@ -5,10 +5,11 @@ import {
 } from "../src/lib/attachedSessionSignals";
 
 describe("parseAttachedSessionIdsFromProcessList", () => {
-	it("extracts explicit OpenCode and Codex session ids", () => {
+	it("extracts explicit OpenCode, Codex, and Claude session ids", () => {
 		const processList = [
 			'101 MainThread node /usr/bin/opencode --session "ses_123"',
 			"202 MainThread node /usr/bin/codex resume 019db4b3-fb8c-7290-8308-a04afb48001b",
+			"303 claude claude --resume 3a3d1d4d-06cc-4fba-ad8f-511a9381f82e",
 		].join("\n");
 
 		const result = parseAttachedSessionIdsFromProcessList(
@@ -18,6 +19,7 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 
 		expect([...result.sessionIds].sort()).toEqual([
 			"019db4b3-fb8c-7290-8308-a04afb48001b",
+			"3a3d1d4d-06cc-4fba-ad8f-511a9381f82e",
 			"ses_123",
 		]);
 	});
@@ -80,6 +82,25 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		expect(
 			result.directoryProcessCounts.get(
 				getExternalAttachedDirectoryKey("codex", "/repo/codex"),
+			),
+		).toBe(1);
+	});
+
+	it("treats interactive Claude invocations as session-bearing and ignores print mode", () => {
+		const processList = [
+			"701 claude claude",
+			'702 claude claude -p "summarize this diff"',
+		].join("\n");
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/claude",
+		);
+
+		expect(result.sessionIds.size).toBe(0);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("claude", "/repo/claude"),
 			),
 		).toBe(1);
 	});

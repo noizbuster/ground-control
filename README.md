@@ -4,16 +4,17 @@
 
 # Ground Control
 
-`gctrl` is a terminal TUI for monitoring OpenCode and Codex sessions in real time. It presents session status, active agents, subagent activity, richer Codex metadata, and recent updates in one card-based interface, while also supporting source-native session deletion flows.
+`gctrl` is a terminal TUI for monitoring OpenCode, Codex, and Claude Code sessions in real time. It presents session status, active agents, subagent activity, richer source metadata, and recent updates in one card-based interface, while also supporting source-native session deletion flows where the upstream CLI exposes them and conservative local cleanup for Claude Code sessions.
 
 ## Quick Start
 
 Make sure these are available before running `gctrl`:
 
 - Node.js 22.13.0 or later
-- OpenCode and/or Codex installed on the same machine
+- OpenCode, Codex, and/or Claude Code installed on the same machine
 - `~/.local/share/opencode/opencode.db` exists for OpenCode monitoring
 - `~/.codex/state_*.sqlite` and `~/.codex/sessions/` exist for Codex monitoring
+- `~/.claude/projects/` and/or `~/.claude/sessions/` exist for Claude Code monitoring
 
 ### Run with `bunx`
 
@@ -39,9 +40,9 @@ npx gctrl
 
 ## Overview
 
-- Displays OpenCode and Codex sessions in a live terminal list
+- Displays OpenCode, Codex, and Claude Code sessions in a live terminal list
 - Refreshes automatically every 2 seconds
-- Shows status, source, project label, session ID, update time, and richer Codex thread metadata
+- Shows status, source, project label, session ID, update time, and richer source metadata
 - Supports source-aware actions, copy ID, refresh, and keyboard navigation
 
 ## Usage
@@ -72,7 +73,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 Available in detail or sideview mode. Press `K` (Shift+K) to gracefully stop all active (non-completed, non-failed) child sessions of the selected session.
 
-Codex sessions now support attach/inspect/copy/hierarchy/delete flows, while child-abort remains OpenCode-only. Codex attach uses `codex resume <session-id>` and falls back to the selected session directory as the working directory.
+Codex sessions support attach/inspect/copy/hierarchy/delete flows, Claude Code sessions support attach/inspect/copy/hierarchy/delete flows, and child-abort remains OpenCode-only. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, and both fall back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID.
 
 The stop flow works in two stages:
 
@@ -105,11 +106,15 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - `bun` is optional and only used as an alternate launcher (`bunx gctrl`).
 - The monitor reads OpenCode session data from `~/.local/share/opencode/opencode.db`.
 - The monitor reads Codex thread state from the newest `~/.codex/state_*.sqlite` file and enriches it with `~/.codex/sessions/**/*.jsonl`.
+- The monitor reads Claude Code session state from `~/.claude/sessions/*.json` and enriches it with `~/.claude/projects/**/*.jsonl`.
 - Override the OpenCode database path with `GCTRL_DB_PATH=/custom/path/opencode.db`.
 - Override Codex paths with `GCTRL_CODEX_STATE_DB_PATH=/custom/path/state.sqlite`, `GCTRL_CODEX_SESSIONS_DIR=/custom/path/sessions`, `GCTRL_CODEX_ARCHIVED_SESSIONS_DIR=/custom/path/archived_sessions`, and `GCTRL_CODEX_SESSION_INDEX_PATH=/custom/path/session_index.jsonl`.
+- Override Claude Code paths with `GCTRL_CLAUDE_PROJECTS_DIR=/custom/path/projects` and `GCTRL_CLAUDE_SESSIONS_DIR=/custom/path/sessions`.
 - OpenCode attach/delete/child-abort actions use the `opencode` CLI.
 - Codex attach/delete actions use the local `codex` CLI.
+- Claude Code attach actions use the local `claude` CLI.
 - Codex delete uses the local `codex app-server` archive flow plus cleanup of archived rollout files and local index/state entries.
+- Claude Code delete intentionally refuses live sessions, then removes matching `projects/`, `file-history/`, `session-env/`, `tasks/`, and stale `sessions/*.json` artifacts from local `.claude/` storage. This follows the official `.claude` storage guidance: Claude Code does not expose a delete subcommand, but its local session data can be removed directly.
 - Non-interactive mode (missing TTY stdin/stdout) prints a tab-separated snapshot and exits.
 
 ## Local Development
@@ -134,7 +139,7 @@ bun run check
 
 ```text
 bin/          CLI wrapper
-src/db/       OpenCode + Codex read-only data adapters
+src/db/       OpenCode + Codex + Claude Code data adapters
 src/ui/       TUI components
 src/config/   color and agent configuration
 src/lib/      status detection logic
@@ -143,7 +148,7 @@ dist/         compiled output
 
 ## Session Status Detection
 
-OpenCode status is derived from the latest message in the OpenCode SQLite database. The detection pipeline reads the most recent `message` row per session, parses its JSON `data` column, and applies status detectors in priority order. Codex status is mapped conservatively from thread/task events plus `thread_spawn_edges`, with richer raw detail surfaced separately in the UI.
+OpenCode status is derived from the latest message in the OpenCode SQLite database. The detection pipeline reads the most recent `message` row per session, parses its JSON `data` column, and applies status detectors in priority order. Codex status is mapped conservatively from thread/task events plus `thread_spawn_edges`, while Claude Code status is mapped from local session registries plus JSONL conversation logs and subagent transcripts. Richer raw detail is surfaced separately in the UI.
 
 ### Status Priority
 

@@ -16,6 +16,7 @@ import {
 	type TextRenderable,
 	t,
 } from "@opentui/core";
+import { deleteClaudeSession } from "./db/claude";
 import { deleteCodexSession } from "./db/codex";
 import {
 	createRequest,
@@ -91,7 +92,10 @@ const SORT_SHORTCUT_LABEL = "s";
 const TIMELINE_SHORTCUT_LABEL = "t";
 const HIERARCHY_NARROW_THRESHOLD = 56;
 const HIERARCHY_SHORTCUT_LABEL = "c";
+const HIERARCHY_CONTAINER_HORIZONTAL_INSET = 2;
 const HIERARCHY_FRAME_VERTICAL_INSET = 2;
+const HIERARCHY_SCROLLBOX_CONTENT_HORIZONTAL_INSET = 2;
+const HIERARCHY_TIMELINE_SECTION_HORIZONTAL_INSET = 4;
 const ROOT_PADDING_TOP = 1;
 const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
@@ -514,7 +518,7 @@ const createBannerText = (state: AppState): string => {
 	}
 
 	const sourceCounts = countSessionsBySource(state.allSessions);
-	const sourceSummary = (["opencode", "codex"] as const)
+	const sourceSummary = (["opencode", "codex", "claude"] as const)
 		.map((sourceKey) => {
 			const count = sourceCounts[sourceKey] ?? 0;
 			return count > 0 ? `${getSessionSourceLabel(sourceKey)} ${count}` : null;
@@ -2481,23 +2485,42 @@ const main = async () => {
 				? Math.max(Math.floor(paneWidth), 1)
 				: Math.max(width - ROOT_PADDING_X, 1);
 		const contextWidth = getCurrentHierarchyTimelineContextWidth(paneWidth);
-
-		if (typeof paneWidth === "number" && Number.isFinite(paneWidth)) {
-			return Math.max(fallbackInnerWidth - contextWidth - 4, 12);
-		}
-
 		const hierarchyScrollBox = renderer.root.findDescendantById(
 			HIERARCHY_SCROLLBOX_ID,
 		);
-		const measuredPaneWidth =
-			isScrollBoxRenderable(hierarchyScrollBox) && hierarchyScrollBox.visible
+		const hierarchyScrollbarInset =
+			isScrollBoxRenderable(hierarchyScrollBox) &&
+			hierarchyScrollBox.visible &&
+			hierarchyScrollBox.verticalScrollBar.visible
 				? Math.max(
-						getSafeNumber(hierarchyScrollBox.width, fallbackInnerWidth),
+						getSafeNumber(hierarchyScrollBox.verticalScrollBar.width, 1),
 						1,
 					)
-				: fallbackInnerWidth;
+				: 0;
+		const fallbackViewportWidth = Math.max(
+			fallbackInnerWidth -
+				HIERARCHY_CONTAINER_HORIZONTAL_INSET -
+				hierarchyScrollbarInset,
+			1,
+		);
+		const measuredViewportWidth =
+			isScrollBoxRenderable(hierarchyScrollBox) && hierarchyScrollBox.visible
+				? Math.max(
+						getSafeNumber(
+							hierarchyScrollBox.viewport.width,
+							fallbackViewportWidth,
+						),
+						1,
+					)
+				: fallbackViewportWidth;
 
-		return Math.max(measuredPaneWidth - contextWidth - 4, 12);
+		return Math.max(
+			measuredViewportWidth -
+				contextWidth -
+				HIERARCHY_SCROLLBOX_CONTENT_HORIZONTAL_INSET -
+				HIERARCHY_TIMELINE_SECTION_HORIZONTAL_INSET,
+			12,
+		);
 	};
 
 	const clampNumber = (value: number, min: number, max: number): number => {
@@ -2750,6 +2773,17 @@ const main = async () => {
 					state.deleteConfirmationError = sanitizeText(
 						deleteResult.error.message,
 						"Codex session delete failed.",
+					);
+					render();
+					return;
+				}
+			} else if (selectedSession?.sessionSource === "claude") {
+				const deleteResult = await deleteClaudeSession(sessionId);
+				if (!deleteResult.ok) {
+					state.isDeletingSession = false;
+					state.deleteConfirmationError = sanitizeText(
+						deleteResult.error.message,
+						"Claude Code session delete failed.",
 					);
 					render();
 					return;

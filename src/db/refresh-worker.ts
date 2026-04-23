@@ -1,4 +1,5 @@
 import { mergeSessionSnapshots } from "../lib/sessionSnapshot";
+import { getClaudeSnapshot } from "./claude";
 import { getCodexSnapshot } from "./codex";
 import { createQueryFailedDatabaseError, type DatabaseError } from "./index";
 import { getOpenCodeSnapshot } from "./opencode";
@@ -29,6 +30,7 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 	const results = [
 		{ source: "OpenCode", result: getOpenCodeSnapshot() },
 		{ source: "Codex", result: getCodexSnapshot() },
+		{ source: "Claude Code", result: getClaudeSnapshot() },
 	] as const;
 
 	for (const { source, result } of results) {

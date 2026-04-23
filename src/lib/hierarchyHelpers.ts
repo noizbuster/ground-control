@@ -784,6 +784,8 @@ export const STATUS_LABEL_MAP: Record<SessionStatus, string> = {
 } as const;
 
 const AWAITING_SUBAGENT_STATUS_LABEL = "AWAITING SUBAGENT";
+const IDLE_STATUS_LABEL = "Idle";
+const IDLE_WAITING_FINISH_REASONS = new Set(["end_turn", "active_session"]);
 
 export interface StatusDisplayOptions {
 	runningSubagents?: number;
@@ -795,6 +797,14 @@ export const getDisplayStatus = (
 	options: StatusDisplayOptions = {},
 ): SessionStatus => {
 	const resolvedStatus = status ?? SessionStatus.unknown;
+
+	if (
+		resolvedStatus === SessionStatus.waiting &&
+		options.finishReason &&
+		IDLE_WAITING_FINISH_REASONS.has(options.finishReason)
+	) {
+		return SessionStatus.completed;
+	}
 
 	if (
 		resolvedStatus === SessionStatus.completed &&
@@ -815,6 +825,14 @@ export const getStatusLabel = (
 		(options.runningSubagents ?? 0) > 0
 	) {
 		return AWAITING_SUBAGENT_STATUS_LABEL;
+	}
+
+	if (
+		status === SessionStatus.waiting &&
+		options.finishReason &&
+		IDLE_WAITING_FINISH_REASONS.has(options.finishReason)
+	) {
+		return IDLE_STATUS_LABEL;
 	}
 
 	const displayStatus = getDisplayStatus(status, options);

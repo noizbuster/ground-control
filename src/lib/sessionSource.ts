@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import type { Session, SessionCapabilities, SessionSource } from "../types";
 
 const OPENCODE_CAPABILITIES: SessionCapabilities = {
@@ -14,22 +15,36 @@ const CODEX_CAPABILITIES: SessionCapabilities = {
 	hierarchy: true,
 };
 
+const CLAUDE_CAPABILITIES: SessionCapabilities = {
+	attach: true,
+	delete: true,
+	abortChildren: false,
+	hierarchy: true,
+};
+
 const SESSION_SOURCE_LABELS: Record<SessionSource, string> = {
 	opencode: "OpenCode",
 	codex: "Codex",
+	claude: "Claude Code",
 };
 
 const SESSION_SOURCE_COLORS: Record<SessionSource, `#${string}`> = {
 	opencode: "#14B8A6",
 	codex: "#60A5FA",
+	claude: "#D97706",
 };
 
 export const getDefaultSessionCapabilities = (
 	source: SessionSource,
 ): SessionCapabilities => {
-	return source === "codex"
-		? { ...CODEX_CAPABILITIES }
-		: { ...OPENCODE_CAPABILITIES };
+	switch (source) {
+		case "codex":
+			return { ...CODEX_CAPABILITIES };
+		case "claude":
+			return { ...CLAUDE_CAPABILITIES };
+		default:
+			return { ...OPENCODE_CAPABILITIES };
+	}
 };
 
 export const getSessionCapabilities = (
@@ -74,7 +89,20 @@ const sanitizeLaunchDirectory = (
 	fallbackDirectory: string,
 ): string => {
 	const trimmed = directory?.trim();
-	return trimmed && trimmed.length > 0 ? trimmed : fallbackDirectory;
+	if (!trimmed || trimmed.length === 0) {
+		return fallbackDirectory;
+	}
+
+	try {
+		return statSync(trimmed).isDirectory() ? trimmed : fallbackDirectory;
+	} catch {
+		return fallbackDirectory;
+	}
+};
+
+const getClaudeAttachSessionId = (sessionId: string): string => {
+	const separatorIndex = sessionId.indexOf(":");
+	return separatorIndex > 0 ? sessionId.slice(0, separatorIndex) : sessionId;
 };
 
 export const getAttachLaunchSpec = (
@@ -98,6 +126,17 @@ export const getAttachLaunchSpec = (
 	if (session.sessionSource === "codex") {
 		return {
 			cmd: [resolveCommand("codex"), "resume", session.id],
+			cwd,
+		};
+	}
+
+	if (session.sessionSource === "claude") {
+		return {
+			cmd: [
+				resolveCommand("claude"),
+				"--resume",
+				getClaudeAttachSessionId(session.id),
+			],
 			cwd,
 		};
 	}

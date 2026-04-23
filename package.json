@@ -1,7 +1,7 @@
 {
   "name": "gctrl",
-  "version": "0.2.2",
-  "description": "Real-time OpenCode and Codex session monitor CLI",
+  "version": "0.2.3",
+  "description": "Real-time OpenCode, Codex, and Claude Code session monitor CLI",
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
@@ -27,6 +27,8 @@
     "opentui",
     "monitor",
     "codex",
+    "claude-code",
+    "anthropic",
     "openai",
     "multi-source"
   ],

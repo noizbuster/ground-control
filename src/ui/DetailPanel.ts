@@ -676,6 +676,7 @@ export const createDetailPanelContent = ({
 		: { total: 0, active: 0, running: 0, terminal: 0 };
 	const sessionDisplayStatus = getDisplayStatus(sessionStatus, {
 		runningSubagents: subagentSummary.running,
+		finishReason: session?.finishReason,
 	});
 	const sessionStatusLabel = getStatusLabel(sessionStatus, {
 		runningSubagents: subagentSummary.running,

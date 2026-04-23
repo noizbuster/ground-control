@@ -181,14 +181,25 @@ const formatStatus = (
 	status: SessionStatus,
 	runningSubagents: number = 0,
 	finishReason?: string,
-): string =>
-	status === SessionStatus.waiting
-		? "AWAITING USER"
-		: getStatusLabel(status, { runningSubagents, finishReason }).toUpperCase();
+): string => {
+	const baseLabel = getStatusLabel(status, { runningSubagents, finishReason });
+	if (status !== SessionStatus.waiting) {
+		return baseLabel.toUpperCase();
+	}
 
-const buildWaitingEdge = (contentWidth: number): string => {
+	return baseLabel === "Waiting" ? "AWAITING USER" : baseLabel.toUpperCase();
+};
+
+const buildWaitingEdge = (
+	contentWidth: number,
+	finishReason?: string,
+): string => {
 	const edgeWidth = Math.max(contentWidth, 11);
-	const label = "[awaiting user]";
+	const waitingLabel = getStatusLabel(SessionStatus.waiting, { finishReason });
+	const label =
+		waitingLabel === "Waiting"
+			? "[awaiting user]"
+			: `[${waitingLabel.toLowerCase()}]`;
 
 	if (edgeWidth <= label.length + 2) {
 		return truncateText(label, edgeWidth);
@@ -239,21 +250,24 @@ export function SessionCard(props: SessionCardProps) {
 		? SessionStatus.waiting
 		: resolvedStatus;
 	const agentColor = getAgentColor(session.currentAgent);
-	const waitingPulsePhase = isWaiting
-		? (Date.now() % WAITING_PULSE_INTERVAL_MS) / WAITING_PULSE_INTERVAL_MS
-		: 0;
-	const waitingPulseStrength = isWaiting
-		? (1 - Math.cos(waitingPulsePhase * Math.PI * 2)) / 2
-		: 0;
 	const runningSubagentCount = countRunningSubagents(session);
 	const displayStatus = getDisplayStatus(status, {
 		runningSubagents: runningSubagentCount,
+		finishReason: session.finishReason,
 	});
+	const showWaitingTreatment =
+		isWaiting && displayStatus === SessionStatus.waiting;
+	const waitingPulsePhase = showWaitingTreatment
+		? (Date.now() % WAITING_PULSE_INTERVAL_MS) / WAITING_PULSE_INTERVAL_MS
+		: 0;
+	const waitingPulseStrength = showWaitingTreatment
+		? (1 - Math.cos(waitingPulsePhase * Math.PI * 2)) / 2
+		: 0;
 	const isRecentlyCompletedSession = isRecentlyCompleted(
 		displayStatus,
 		session.time_updated,
 	);
-	const borderColor = isWaiting
+	const borderColor = showWaitingTreatment
 		? interpolateHexColor(
 				agentColor,
 				CARD_COLORS.waitingEdge,
@@ -298,13 +312,13 @@ export function SessionCard(props: SessionCardProps) {
 		session.finishReason,
 	);
 	const statusColor = STATUS_COLORS[displayStatus];
-	const waitingEdge = buildWaitingEdge(contentWidth);
+	const waitingEdge = buildWaitingEdge(contentWidth, session.finishReason);
 
 	const idLine = t`${dim(shortId)}`;
 
 	const statusLine = t`${dim("status  ")}${bold(fg(statusColor)(statusLabel))}`;
 
-	const waitingEdgeLine = isWaiting
+	const waitingEdgeLine = showWaitingTreatment
 		? t`${bold(fg(interpolateHexColor(CARD_COLORS.meta, CARD_COLORS.waitingEdge, waitingPulseStrength))(waitingEdge))}`
 		: undefined;
 	const recentCompletionEdgeLine = isRecentlyCompletedSession
