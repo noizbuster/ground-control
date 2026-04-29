@@ -19,6 +19,7 @@ import {
 import { deleteClaudeSession } from "./db/claude";
 import { deleteCodexSession } from "./db/codex";
 import {
+	createErrorResponse,
 	createRequest,
 	isRefreshResponse,
 	type RefreshResponse,
@@ -127,9 +128,16 @@ interface SessionFilterResult {
 }
 
 interface SelectionSnapshot {
-	selectedRenderables: Renderable[];
+	isDragging?: boolean;
+	isStart?: boolean;
 	getSelectedText(): string;
 }
+
+const getSelectionText = (selection: SelectionSnapshot | null): string => {
+	return typeof selection?.getSelectedText === "function"
+		? selection.getSelectedText().trim()
+		: "";
+};
 
 const APP_PALETTE = {
 	bg: "#020617",
@@ -628,23 +636,6 @@ const isBoxRenderable = (
 	);
 };
 
-const isDescendantRenderable = (
-	renderable: Renderable,
-	ancestor: Renderable,
-): boolean => {
-	let current: Renderable | null = renderable;
-
-	while (current) {
-		if (current === ancestor) {
-			return true;
-		}
-
-		current = current.parent;
-	}
-
-	return false;
-};
-
 const clearTerminalScreen = () => {
 	try {
 		process.stdout.write(CLEAR_TERMINAL_SEQUENCE);
@@ -1091,6 +1082,9 @@ const main = async () => {
 	let lastWaitingPulseFrameRenderAt = 0;
 	let isRefreshApplying = false;
 	let isRefreshingExternalAttachedSessions = false;
+	let pendingSelectionRefreshResponse: RefreshResponse | null = null;
+	let pendingSelectionRender = false;
+	let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const renderStatsPath = process.env.GCTRL_RENDER_STATS || "";
 	const renderStats = renderStatsPath
@@ -1621,6 +1615,13 @@ const main = async () => {
 	};
 
 	const render = () => {
+		if (hasActiveTextSelection()) {
+			pendingSelectionRender = true;
+			return;
+		}
+
+		pendingSelectionRender = false;
+
 		const existingRoot = renderer.root.findDescendantById(APP_ROOT_ID);
 		const existingGridScrollBox =
 			renderer.root.findDescendantById(GRID_SCROLLBOX_ID);
@@ -2294,24 +2295,107 @@ const main = async () => {
 		}
 	};
 
+	const hasActiveTextSelection = (): boolean => {
+		const selection = renderer.getSelection() as SelectionSnapshot | null;
+		return Boolean(selection?.isDragging && !selection.isStart);
+	};
+
+	const applyRefreshResponseState = (response: RefreshResponse) => {
+		isRefreshApplying = true;
+		if (renderStats) renderStats.applyTriggeredRenders++;
+		try {
+			if (!response.ok) {
+				applyRefreshErrorState(response.error.message);
+				return;
+			}
+
+			applyRefreshSnapshotState(response.snapshot);
+		} finally {
+			isRefreshApplying = false;
+		}
+	};
+
+	const applyPendingSelectionRefresh = (): boolean => {
+		if (!pendingSelectionRefreshResponse || hasActiveTextSelection()) {
+			return false;
+		}
+
+		const response = pendingSelectionRefreshResponse;
+		pendingSelectionRefreshResponse = null;
+		applyRefreshResponseState(response);
+		return true;
+	};
+
+	const applyPendingSelectionWork = (): boolean => {
+		if (applyPendingSelectionRefresh()) {
+			return true;
+		}
+
+		if (pendingSelectionRender && !hasActiveTextSelection()) {
+			render();
+			return true;
+		}
+
+		return false;
+	};
+
+	const clearCompletedTextSelection = (): boolean => {
+		const selection = renderer.getSelection() as SelectionSnapshot | null;
+		if (!selection || hasActiveTextSelection()) {
+			return false;
+		}
+
+		renderer.clearSelection();
+		applyPendingSelectionWork();
+		return true;
+	};
+
+	const copyCompletedTextSelection = (): boolean => {
+		const selection = renderer.getSelection() as SelectionSnapshot | null;
+		if (!selection || hasActiveTextSelection()) {
+			return false;
+		}
+
+		const selectedText = getSelectionText(selection);
+		if (!selectedText) {
+			return clearCompletedTextSelection();
+		}
+
+		if (selectionCopyTimer) {
+			clearTimeout(selectionCopyTimer);
+			selectionCopyTimer = null;
+		}
+
+		renderer.copyToClipboardOSC52(selectedText);
+		renderer.clearSelection();
+		applyPendingSelectionWork();
+		showToast("Copied selected text to clipboard");
+		return true;
+	};
+
+	const scheduleCompletedSelectionCopy = () => {
+		if (selectionCopyTimer) {
+			clearTimeout(selectionCopyTimer);
+		}
+
+		selectionCopyTimer = setTimeout(() => {
+			selectionCopyTimer = null;
+			copyCompletedTextSelection();
+		}, 0);
+	};
+
 	const handleRefreshResponse = (response: RefreshResponse) => {
 		try {
 			if (!refreshCoordinator.shouldApplyResponse(response.requestId)) {
 				return;
 			}
 
-			isRefreshApplying = true;
-			if (renderStats) renderStats.applyTriggeredRenders++;
-			try {
-				if (!response.ok) {
-					applyRefreshErrorState(response.error.message);
-					return;
-				}
-
-				applyRefreshSnapshotState(response.snapshot);
-			} finally {
-				isRefreshApplying = false;
+			if (hasActiveTextSelection()) {
+				pendingSelectionRefreshResponse = response;
+				return;
 			}
+
+			applyRefreshResponseState(response);
 		} finally {
 			completeRefreshRequest(response.requestId);
 		}
@@ -2320,6 +2404,10 @@ const main = async () => {
 	const failActiveRefreshRequest = (errorMessage: string) => {
 		const activeRequestId = refreshCoordinator.getSnapshot().activeRequestId;
 		if (activeRequestId === null) {
+			if (hasActiveTextSelection()) {
+				return;
+			}
+
 			state.dbError = errorMessage;
 			render();
 			return;
@@ -2327,13 +2415,16 @@ const main = async () => {
 
 		try {
 			if (refreshCoordinator.shouldApplyResponse(activeRequestId)) {
-				isRefreshApplying = true;
-				if (renderStats) renderStats.applyTriggeredRenders++;
-				try {
-					applyRefreshErrorState(errorMessage);
-				} finally {
-					isRefreshApplying = false;
+				const response = createErrorResponse(activeRequestId, {
+					code: "query_failed",
+					message: errorMessage,
+				});
+				if (hasActiveTextSelection()) {
+					pendingSelectionRefreshResponse = response;
+					return;
 				}
+
+				applyRefreshResponseState(response);
 			}
 		} finally {
 			completeRefreshRequest(activeRequestId);
@@ -2363,6 +2454,10 @@ const main = async () => {
 	};
 
 	const refreshSessions = () => {
+		if (applyPendingSelectionWork()) {
+			return;
+		}
+
 		const requestId = refreshCoordinator.requestRefresh();
 		if (requestId === null) {
 			return;
@@ -3053,18 +3148,18 @@ const main = async () => {
 		try {
 			const opencodeExecutable = Bun.which("opencode") ?? "opencode";
 			const results = await Promise.allSettled(
-				confirmedIds.map((childId) => {
+				confirmedIds.map(async (childId) => {
 					const child = Bun.spawn({
 						cmd: [opencodeExecutable, "session", "delete", childId],
 						stdout: "pipe",
 						stderr: "pipe",
 					});
-					return child.exited.then((exitCode) => {
-						if (exitCode !== 0) {
-							throw new Error(`Failed to delete ${childId}`);
-						}
-						return childId;
-					});
+					const exitCode = await child.exited;
+					if (exitCode !== 0) {
+						throw new Error(`Failed to delete ${childId}`);
+					}
+
+					return childId;
 				}),
 			);
 			const failedCount = results.filter((r) => r.status === "rejected").length;
@@ -3230,6 +3325,11 @@ const main = async () => {
 			isResizeDebouncing.value = null;
 		}
 
+		if (selectionCopyTimer) {
+			clearTimeout(selectionCopyTimer);
+			selectionCopyTimer = null;
+		}
+
 		if (isWaitingPulseLive) {
 			renderer.dropLive();
 			isWaitingPulseLive = false;
@@ -3245,37 +3345,12 @@ const main = async () => {
 
 	renderer.on("resize", scheduleRender);
 	renderer.on("selection", (selection: SelectionSnapshot | null) => {
-		const detailContent = renderer.root.findDescendantById(DETAIL_CONTENT_ID);
-		if (!isBoxRenderable(detailContent)) {
+		if (!selection) {
+			clearCompletedTextSelection();
 			return;
 		}
 
-		if (
-			!selection ||
-			!Array.isArray(selection.selectedRenderables) ||
-			selection.selectedRenderables.length === 0
-		) {
-			return;
-		}
-
-		const isDetailSelection = selection.selectedRenderables.some(
-			(renderable) =>
-				isRenderable(renderable) &&
-				isDescendantRenderable(renderable, detailContent),
-		);
-		if (!isDetailSelection) {
-			return;
-		}
-
-		const selectedText =
-			typeof selection.getSelectedText === "function"
-				? selection.getSelectedText().trim()
-				: "";
-		if (!selectedText) {
-			return;
-		}
-
-		renderer.copyToClipboardOSC52(selectedText);
+		scheduleCompletedSelectionCopy();
 	});
 	createStaticLayout();
 
@@ -3288,6 +3363,8 @@ const main = async () => {
 			shutdown();
 			return;
 		}
+
+		copyCompletedTextSelection();
 
 		if (state.pendingDeleteSessionId) {
 			if (state.isDeletingSession) {
@@ -3621,7 +3698,7 @@ const main = async () => {
 		render();
 	});
 
-	await renderer.start();
+	renderer.start();
 	void refreshExternalAttachedSessionSignals();
 	refreshSessions();
 	startPolling();
