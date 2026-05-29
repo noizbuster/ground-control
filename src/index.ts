@@ -1,4 +1,12 @@
-import { readlinkSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	chmodSync,
+	mkdirSync,
+	readlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
 	Box,
 	type BoxRenderable,
@@ -18,6 +26,7 @@ import {
 } from "@opentui/core";
 import { deleteClaudeSession } from "./db/claude";
 import { deleteCodexSession } from "./db/codex";
+import { deleteOmpSession, deletePiSession } from "./db/pi";
 import {
 	createErrorResponse,
 	createRequest,
@@ -34,12 +43,20 @@ import {
 	createRefreshCoordinator,
 	type RefreshRequestId,
 } from "./lib/refreshCoordinator";
+import {
+	applySessionFilter,
+	applySessionSort,
+	normalizeDirectoryPath,
+	type SessionFilterMode,
+	type SessionSortMode,
+} from "./lib/sessionList";
 import type { SessionStatusById } from "./lib/sessionSnapshot";
 import {
 	canAbortSessionChildren,
 	canAttachToSession,
 	canDeleteSession,
 	countSessionsBySource,
+	getAttachLaunchEnvironment,
 	getAttachLaunchSpec,
 	getSessionSourceLabel,
 } from "./lib/sessionSource";
@@ -102,11 +119,14 @@ const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
 const FOOTER_INLINE_GAP = 1;
 const CLEAR_TERMINAL_SEQUENCE = "\u001B[2J\u001B[3J\u001B[H";
+const ATTACH_DEBUG_OUTPUT_TAIL_LENGTH = 4000;
+const ATTACH_DEBUG_DIRECTORY = join(homedir(), ".cache", "gctrl");
+const DEFAULT_ATTACH_DEBUG_PATH = join(
+	ATTACH_DEBUG_DIRECTORY,
+	"attach-debug.log",
+);
 
 type FocusPane = "grid" | "detail";
-type SessionFilterMode = "active" | "recent" | "busy" | "all";
-type SessionSortMode = "status" | "update" | "create";
-
 const SESSION_FILTER_CYCLE: SessionFilterMode[] = [
 	"active",
 	"recent",
@@ -121,11 +141,6 @@ const HIERARCHY_FILTER_CYCLE: HierarchyFilterMode[] = [
 ];
 const HIERARCHY_VIEW_CYCLE: HierarchyViewMode[] = ["tree", "flow"];
 const HIERARCHY_INFO_CYCLE: HierarchyInfoMode[] = ["standard", "detailed"];
-
-interface SessionFilterResult {
-	sessions: Session[];
-	hiddenCompletedCount: number;
-}
 
 interface SelectionSnapshot {
 	isDragging?: boolean;
@@ -162,13 +177,6 @@ const sanitizeText = (
 ): string => {
 	const trimmed = value?.trim();
 	return trimmed && trimmed.length > 0 ? trimmed : fallback;
-};
-
-const shouldNormalizeDirectoryCase = process.platform === "win32";
-
-const normalizeDirectoryPath = (directory: string): string => {
-	const normalized = directory.trim().replace(/[\\/]+$/gu, "");
-	return shouldNormalizeDirectoryCase ? normalized.toLowerCase() : normalized;
 };
 
 const clampSelection = (sessions: Session[], selectedIndex: number): number => {
@@ -278,120 +286,6 @@ const moveSelectionInGrid = (params: {
 	}
 };
 
-const isNonCompletedSessionStatus = (status?: SessionStatus): boolean =>
-	status !== SessionStatus.completed;
-
-const getSessionStatusSortRank = (status?: SessionStatus): number => {
-	if (status === SessionStatus.waiting) {
-		return 0;
-	}
-
-	if (status === SessionStatus.running) {
-		return 1;
-	}
-
-	if (status === SessionStatus.completed) {
-		return 3;
-	}
-
-	return 2;
-};
-
-const applySessionFilter = (
-	sessions: Session[],
-	filterMode: SessionFilterMode,
-	pinnedSessionIds: ReadonlySet<string> = new Set(),
-	latestCompletedSessionId: string | null = null,
-): SessionFilterResult => {
-	switch (filterMode) {
-		case "all":
-			return { sessions, hiddenCompletedCount: 0 };
-
-		case "busy":
-			return {
-				sessions: sessions.filter((session) =>
-					isNonCompletedSessionStatus(session.status),
-				),
-				hiddenCompletedCount: 0,
-			};
-
-		case "recent": {
-			const orderedSessions = [...sessions].sort(
-				(left, right) => right.time_updated - left.time_updated,
-			);
-			const latestSessionIdsByProject = new Set<string>();
-			const seenProjectDirectories = new Set<string>();
-			for (const session of orderedSessions) {
-				const projectDirectoryKey = normalizeDirectoryPath(session.directory);
-				if (seenProjectDirectories.has(projectDirectoryKey)) {
-					continue;
-				}
-
-				seenProjectDirectories.add(projectDirectoryKey);
-				latestSessionIdsByProject.add(session.id);
-			}
-			let hiddenCompletedCount = 0;
-
-			const filteredSessions = orderedSessions.filter((session) => {
-				if (isNonCompletedSessionStatus(session.status)) {
-					return true;
-				}
-
-				if (pinnedSessionIds.has(session.id)) {
-					return true;
-				}
-
-				if (latestSessionIdsByProject.has(session.id)) {
-					return true;
-				}
-
-				if (
-					latestCompletedSessionId !== null &&
-					session.id === latestCompletedSessionId
-				) {
-					return true;
-				}
-
-				if (session.status === SessionStatus.completed) {
-					hiddenCompletedCount += 1;
-				}
-
-				return false;
-			});
-
-			return {
-				sessions: filteredSessions,
-				hiddenCompletedCount,
-			};
-		}
-
-		case "active": {
-			const orderedSessions = [...sessions].sort(
-				(left, right) => right.time_updated - left.time_updated,
-			);
-			let hiddenCompletedCount = 0;
-
-			const filteredSessions = orderedSessions.filter((session) => {
-				if (isNonCompletedSessionStatus(session.status)) {
-					return true;
-				}
-
-				if (pinnedSessionIds.has(session.id)) {
-					return true;
-				}
-
-				hiddenCompletedCount += 1;
-				return false;
-			});
-
-			return {
-				sessions: filteredSessions,
-				hiddenCompletedCount,
-			};
-		}
-	}
-};
-
 const getNextSessionFilterMode = (
 	currentMode: SessionFilterMode,
 ): SessionFilterMode => {
@@ -401,57 +295,6 @@ const getNextSessionFilterMode = (
 	}
 
 	return SESSION_FILTER_CYCLE[(currentIndex + 1) % SESSION_FILTER_CYCLE.length];
-};
-
-const applySessionSort = (
-	sessions: Session[],
-	sortMode: SessionSortMode,
-): Session[] => {
-	const orderedSessions = [...sessions];
-
-	orderedSessions.sort((left, right) => {
-		switch (sortMode) {
-			case "create": {
-				if (left.time_created !== right.time_created) {
-					return right.time_created - left.time_created;
-				}
-				break;
-			}
-
-			case "update": {
-				if (left.time_updated !== right.time_updated) {
-					return right.time_updated - left.time_updated;
-				}
-				break;
-			}
-
-			case "status": {
-				const leftRank = getSessionStatusSortRank(left.status);
-				const rightRank = getSessionStatusSortRank(right.status);
-
-				if (leftRank !== rightRank) {
-					return leftRank - rightRank;
-				}
-
-				if (left.time_updated !== right.time_updated) {
-					return right.time_updated - left.time_updated;
-				}
-				break;
-			}
-		}
-
-		if (left.time_updated !== right.time_updated) {
-			return right.time_updated - left.time_updated;
-		}
-
-		if (left.time_created !== right.time_created) {
-			return right.time_created - left.time_created;
-		}
-
-		return left.id.localeCompare(right.id);
-	});
-
-	return orderedSessions;
 };
 
 const getNextSessionSortMode = (
@@ -640,6 +483,108 @@ const clearTerminalScreen = () => {
 	try {
 		process.stdout.write(CLEAR_TERMINAL_SEQUENCE);
 	} catch {}
+};
+
+const getAttachDebugPath = (): string | null => {
+	const rawPath = process.env.GCTRL_ATTACH_DEBUG?.trim();
+	if (!rawPath) {
+		return null;
+	}
+
+	return rawPath === "1" || rawPath.toLowerCase() === "true"
+		? DEFAULT_ATTACH_DEBUG_PATH
+		: rawPath;
+};
+
+const isAttachDebugEnabled = (): boolean => getAttachDebugPath() !== null;
+
+const isAttachDebugOutputEnabled = (): boolean => {
+	const value = process.env.GCTRL_ATTACH_DEBUG_OUTPUT?.trim().toLowerCase();
+	return value === "1" || value === "true";
+};
+
+const ensurePrivateAttachDebugTarget = (debugPath: string): void => {
+	if (debugPath === DEFAULT_ATTACH_DEBUG_PATH) {
+		mkdirSync(ATTACH_DEBUG_DIRECTORY, { recursive: true, mode: 0o700 });
+		chmodSync(ATTACH_DEBUG_DIRECTORY, 0o700);
+	}
+};
+
+const writeAttachDebug = (
+	event: string,
+	details: Record<string, unknown> = {},
+): void => {
+	const debugPath = getAttachDebugPath();
+	if (!debugPath) {
+		return;
+	}
+
+	try {
+		ensurePrivateAttachDebugTarget(debugPath);
+		appendFileSync(
+			debugPath,
+			`${new Date().toISOString()} ${event} ${JSON.stringify(details)}\n`,
+			{ mode: 0o600 },
+		);
+		if (debugPath === DEFAULT_ATTACH_DEBUG_PATH) {
+			chmodSync(debugPath, 0o600);
+		}
+	} catch (error) {
+		void error;
+	}
+};
+
+const appendOutputTail = (currentTail: string, chunk: Uint8Array): string => {
+	if (!isAttachDebugOutputEnabled()) {
+		return currentTail;
+	}
+
+	const nextTail = `${currentTail}${new TextDecoder().decode(chunk)}`;
+	return nextTail.length > ATTACH_DEBUG_OUTPUT_TAIL_LENGTH
+		? nextTail.slice(-ATTACH_DEBUG_OUTPUT_TAIL_LENGTH)
+		: nextTail;
+};
+
+const getAttachDebugOutputDetails = (
+	outputTail: string,
+): Record<string, unknown> =>
+	isAttachDebugOutputEnabled() ? { outputTail } : {};
+
+const getTerminalColumnCount = (): number =>
+	getSafeNumber(process.stdout.columns, 80) || 80;
+
+const getTerminalRowCount = (): number =>
+	getSafeNumber(process.stdout.rows, 24) || 24;
+
+const canUseAttachPty = (): boolean =>
+	process.platform !== "win32" &&
+	process.stdin.isTTY === true &&
+	process.stdout.isTTY === true;
+
+const writePtyInput = (terminal: Bun.Terminal, chunk: unknown): void => {
+	if (typeof chunk === "string") {
+		terminal.write(chunk);
+		return;
+	}
+
+	if (chunk instanceof Uint8Array) {
+		terminal.write(chunk);
+	}
+};
+
+const setStdinRawMode = (enabled: boolean): boolean => {
+	const setRawMode = process.stdin.setRawMode;
+	if (typeof setRawMode !== "function") {
+		return false;
+	}
+
+	try {
+		setRawMode.call(process.stdin, enabled);
+		return true;
+	} catch (error) {
+		void error;
+		return false;
+	}
 };
 
 const replaceChildren = (parent: Renderable, children: unknown[]): void => {
@@ -1182,6 +1127,95 @@ const main = async () => {
 				return null;
 			}
 		});
+	};
+
+	const runAttachedSession = async (
+		attachLaunchSpec: NonNullable<ReturnType<typeof getAttachLaunchSpec>>,
+	): Promise<number> => {
+		const useAttachPty = canUseAttachPty();
+		const attachEnvironment = getAttachLaunchEnvironment(attachLaunchSpec);
+		writeAttachDebug("run:start", {
+			cmd: attachLaunchSpec.cmd,
+			cwd: attachLaunchSpec.cwd,
+			path: attachEnvironment.PATH,
+			stdinTTY: process.stdin.isTTY,
+			stdoutTTY: process.stdout.isTTY,
+			platform: process.platform,
+			useAttachPty,
+		});
+
+		if (!useAttachPty) {
+			const child = Bun.spawn({
+				cmd: attachLaunchSpec.cmd,
+				cwd: attachLaunchSpec.cwd,
+				env: attachEnvironment,
+				stdin: "inherit",
+				stdout: "inherit",
+				stderr: "inherit",
+			});
+			writeAttachDebug("run:spawn", { pid: child.pid, mode: "inherit" });
+
+			const exitCode = await child.exited;
+			writeAttachDebug("run:exit", { exitCode, mode: "inherit" });
+			return exitCode;
+		}
+
+		let outputTail = "";
+		const terminal = new Bun.Terminal({
+			cols: getTerminalColumnCount(),
+			rows: getTerminalRowCount(),
+			data: (_terminal, data) => {
+				outputTail = appendOutputTail(outputTail, data);
+				process.stdout.write(data);
+			},
+			exit: (_terminal, exitCode, signalCode) => {
+				writeAttachDebug("run:terminal-exit", {
+					exitCode,
+					signalCode,
+					...getAttachDebugOutputDetails(outputTail),
+				});
+			},
+		});
+		const forwardStdin = (chunk: unknown) => writePtyInput(terminal, chunk);
+		const resizeTerminal = () => {
+			terminal.resize(getTerminalColumnCount(), getTerminalRowCount());
+		};
+
+		process.stdin.on("data", forwardStdin);
+		process.stdin.resume();
+		process.on("SIGWINCH", resizeTerminal);
+		const restoredRawMode = setStdinRawMode(true);
+		writeAttachDebug("run:pty-ready", { restoredRawMode });
+
+		try {
+			const child = Bun.spawn({
+				cmd: attachLaunchSpec.cmd,
+				cwd: attachLaunchSpec.cwd,
+				env: attachEnvironment,
+				terminal,
+			});
+			writeAttachDebug("run:spawn", { pid: child.pid, mode: "pty" });
+
+			const exitCode = await child.exited;
+			writeAttachDebug("run:exit", {
+				exitCode,
+				mode: "pty",
+				...getAttachDebugOutputDetails(outputTail),
+			});
+			return exitCode;
+		} finally {
+			writeAttachDebug("run:cleanup", { restoredRawMode });
+			if (restoredRawMode) {
+				setStdinRawMode(false);
+			}
+			process.stdin.off("data", forwardStdin);
+			process.off("SIGWINCH", resizeTerminal);
+			try {
+				terminal.close();
+			} catch (error) {
+				void error;
+			}
+		}
 	};
 
 	const refreshExternalAttachedSessionSignals = async () => {
@@ -2201,7 +2235,7 @@ const main = async () => {
 		if (state.externalAttachedSessionDirectoryCounts.size > 0) {
 			const nonCompletedCountByDirectory = new Map<string, number>();
 			for (const session of snapshot.sessions) {
-				if (!isNonCompletedSessionStatus(session.status)) {
+				if (session.status === SessionStatus.completed) {
 					continue;
 				}
 
@@ -2883,6 +2917,32 @@ const main = async () => {
 					render();
 					return;
 				}
+			} else if (selectedSession?.sessionSource === "pi") {
+				const deleteResult = await deletePiSession(sessionId, {
+					sessionPath: selectedSession.sourceMetadata?.sessionPath,
+				});
+				if (!deleteResult.ok) {
+					state.isDeletingSession = false;
+					state.deleteConfirmationError = sanitizeText(
+						deleteResult.error.message,
+						"Pi session delete failed.",
+					);
+					render();
+					return;
+				}
+			} else if (selectedSession?.sessionSource === "omp") {
+				const deleteResult = await deleteOmpSession(sessionId, {
+					sessionPath: selectedSession.sourceMetadata?.sessionPath,
+				});
+				if (!deleteResult.ok) {
+					state.isDeletingSession = false;
+					state.deleteConfirmationError = sanitizeText(
+						deleteResult.error.message,
+						"omp session delete failed.",
+					);
+					render();
+					return;
+				}
 			} else {
 				const opencodeExecutable = Bun.which("opencode") ?? "opencode";
 				const child = Bun.spawn({
@@ -3203,7 +3263,16 @@ const main = async () => {
 	};
 
 	const attachToSelectedSession = async () => {
+		writeAttachDebug("attach:requested", {
+			isAttachingSession: state.isAttachingSession,
+			selectedSessionId: state.selectedSessionId,
+			visibleSessionCount: state.sessions.length,
+		});
+
 		if (state.isAttachingSession || !state.selectedSessionId) {
+			writeAttachDebug("attach:blocked", {
+				reason: state.isAttachingSession ? "already-attaching" : "no-selection",
+			});
 			return;
 		}
 
@@ -3211,10 +3280,21 @@ const main = async () => {
 			(session) => session.id === state.selectedSessionId,
 		);
 		if (!selectedSession) {
+			writeAttachDebug("attach:blocked", { reason: "selection-not-found" });
 			return;
 		}
+		writeAttachDebug("attach:selected", {
+			id: selectedSession.id,
+			title: selectedSession.title,
+			source: selectedSession.sessionSource,
+			status: selectedSession.status,
+			directory: selectedSession.directory,
+			parentId: selectedSession.parent_id,
+			sessionPath: selectedSession.sourceMetadata?.sessionPath,
+		});
 
 		if (!canAttachToSession(selectedSession)) {
+			writeAttachDebug("attach:blocked", { reason: "capability-disabled" });
 			showToast(
 				`${getSessionSourceLabel(selectedSession.sessionSource)} attach is not available yet`,
 			);
@@ -3225,11 +3305,16 @@ const main = async () => {
 			fallbackDirectory: process.cwd(),
 		});
 		if (!attachLaunchSpec) {
+			writeAttachDebug("attach:blocked", { reason: "no-launch-spec" });
 			showToast(
 				`${getSessionSourceLabel(selectedSession.sessionSource)} attach is not available yet`,
 			);
 			return;
 		}
+		writeAttachDebug("attach:launch-spec", {
+			cmd: attachLaunchSpec.cmd,
+			cwd: attachLaunchSpec.cwd,
+		});
 
 		state.isAttachingSession = true;
 		render();
@@ -3240,25 +3325,39 @@ const main = async () => {
 			interval = null;
 		}
 
+		let attachExitCode: number | null = null;
+		let attachErrorMessage: string | null = null;
+
 		try {
 			renderer.suspend();
 			clearTerminalScreen();
-
-			const child = Bun.spawn({
-				cmd: attachLaunchSpec.cmd,
-				cwd: attachLaunchSpec.cwd,
-				stdin: "inherit",
-				stdout: "inherit",
-				stderr: "inherit",
-			});
-
-			await child.exited;
+			attachExitCode = await runAttachedSession(attachLaunchSpec);
+		} catch (error) {
+			attachErrorMessage =
+				error instanceof Error
+					? error.message
+					: "Failed to start attach session.";
+			writeAttachDebug("attach:error", { message: attachErrorMessage });
 		} finally {
+			writeAttachDebug("attach:finally", {
+				exitCode: attachExitCode,
+				errorMessage: attachErrorMessage,
+			});
 			state.isAttachingSession = false;
 			clearTerminalScreen();
 			renderer.resume();
 			refreshSessions();
 			startPolling();
+			if (attachErrorMessage) {
+				showToast(attachErrorMessage);
+			} else if (attachExitCode !== null && attachExitCode !== 0) {
+				const message = `${getSessionSourceLabel(selectedSession.sessionSource)} attach exited with code ${attachExitCode}`;
+				showToast(
+					isAttachDebugEnabled()
+						? `${message} (debug: ${getAttachDebugPath()})`
+						: message,
+				);
+			}
 			render();
 			renderer.intermediateRender();
 		}

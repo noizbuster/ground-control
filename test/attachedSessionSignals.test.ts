@@ -5,11 +5,13 @@ import {
 } from "../src/lib/attachedSessionSignals";
 
 describe("parseAttachedSessionIdsFromProcessList", () => {
-	it("extracts explicit OpenCode, Codex, and Claude session ids", () => {
+	it("extracts explicit OpenCode, Codex, Claude, Pi, and omp session ids", () => {
 		const processList = [
 			'101 MainThread node /usr/bin/opencode --session "ses_123"',
 			"202 MainThread node /usr/bin/codex resume 019db4b3-fb8c-7290-8308-a04afb48001b",
 			"303 claude claude --resume 3a3d1d4d-06cc-4fba-ad8f-511a9381f82e",
+			"304 pi pi --session pi-session-id",
+			"305 omp omp --resume=omp-session-id",
 		].join("\n");
 
 		const result = parseAttachedSessionIdsFromProcessList(
@@ -20,14 +22,17 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		expect([...result.sessionIds].sort()).toEqual([
 			"019db4b3-fb8c-7290-8308-a04afb48001b",
 			"3a3d1d4d-06cc-4fba-ad8f-511a9381f82e",
+			"omp-session-id",
+			"pi-session-id",
 			"ses_123",
 		]);
 	});
 
-	it("shares directory slots across sources and ignores codex app-server", () => {
+	it("shares directory slots across non-Pi-family sources and ignores codex app-server", () => {
 		const processList = [
 			"301 MainThread node /usr/bin/opencode",
 			"401 MainThread node /usr/bin/codex 현재 attach 여부를 점검해줘",
+			"701 claude claude",
 			"499 codex /vendor/codex/codex app-server --analytics-default-enabled",
 		].join("\n");
 
@@ -41,11 +46,54 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 			getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
 		).toBe(getExternalAttachedDirectoryKey("codex", "/repo/shared"));
 		expect(
+			getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
+		).toBe(getExternalAttachedDirectoryKey("claude", "/repo/shared"));
+		expect(
 			result.directoryProcessCounts.get(
 				getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
 			),
-		).toBe(2);
+		).toBe(3);
 		expect(result.directoryProcessCounts.size).toBe(1);
+	});
+
+	it("keeps Pi and omp directory slots isolated from other sources", () => {
+		const processList = [
+			"301 MainThread node /usr/bin/opencode",
+			"801 pi pi --session /tmp/pi-session.jsonl",
+			"802 MainThread node /usr/bin/omp --resume /tmp/omp-session.jsonl",
+		].join("\n");
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/shared",
+		);
+
+		expect(result.sessionIds.size).toBe(0);
+		expect(
+			getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
+		).not.toBe(getExternalAttachedDirectoryKey("pi", "/repo/shared"));
+		expect(
+			getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
+		).not.toBe(getExternalAttachedDirectoryKey("omp", "/repo/shared"));
+		expect(
+			getExternalAttachedDirectoryKey("pi", "/repo/shared"),
+		).not.toBe(getExternalAttachedDirectoryKey("omp", "/repo/shared"));
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
+			),
+		).toBe(1);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("pi", "/repo/shared"),
+			),
+		).toBe(1);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("omp", "/repo/shared"),
+			),
+		).toBe(1);
+		expect(result.directoryProcessCounts.size).toBe(3);
 	});
 
 	it("ignores internal opencode and codex helper binaries for slot counting", () => {
@@ -103,6 +151,34 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 				getExternalAttachedDirectoryKey("claude", "/repo/claude"),
 			),
 		).toBe(1);
+	});
+
+	it("treats interactive Pi and omp invocations as session-bearing and ignores machine modes", () => {
+		const processList = [
+			"801 pi pi --session /tmp/pi-session.jsonl",
+			"802 MainThread node /usr/bin/omp --resume /tmp/omp-session.jsonl",
+			"803 pi pi --print summarize",
+			"804 omp omp export",
+			"805 omp omp --json",
+		].join("\n");
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/pi",
+		);
+
+		expect(result.sessionIds.size).toBe(0);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("pi", "/repo/pi"),
+			),
+		).toBe(1);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("omp", "/repo/pi"),
+			),
+		).toBe(1);
+		expect(result.directoryProcessCounts.size).toBe(2);
 	});
 
 	it("does not add fallback directory slots for internal codex vendor children of resumed sessions", () => {

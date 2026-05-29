@@ -3,6 +3,7 @@ import { getClaudeSnapshot } from "./claude";
 import { getCodexSnapshot } from "./codex";
 import { createQueryFailedDatabaseError, type DatabaseError } from "./index";
 import { getOpenCodeSnapshot } from "./opencode";
+import { getOmpSnapshot, getPiSnapshot } from "./pi";
 import {
 	createErrorResponse,
 	createSuccessResponse,
@@ -31,6 +32,8 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 		{ source: "OpenCode", result: getOpenCodeSnapshot() },
 		{ source: "Codex", result: getCodexSnapshot() },
 		{ source: "Claude Code", result: getClaudeSnapshot() },
+		{ source: "Pi", result: getPiSnapshot() },
+		{ source: "omp", result: getOmpSnapshot() },
 	] as const;
 
 	for (const { source, result } of results) {

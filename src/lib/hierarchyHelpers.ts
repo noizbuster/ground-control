@@ -785,7 +785,12 @@ export const STATUS_LABEL_MAP: Record<SessionStatus, string> = {
 
 const AWAITING_SUBAGENT_STATUS_LABEL = "AWAITING SUBAGENT";
 const IDLE_STATUS_LABEL = "Idle";
-const IDLE_WAITING_FINISH_REASONS = new Set(["end_turn", "active_session"]);
+const IDLE_WAITING_FINISH_REASONS = new Set([
+	"end_turn",
+	"active_session",
+	"toolUse",
+	"tool_use",
+]);
 
 export interface StatusDisplayOptions {
 	runningSubagents?: number;

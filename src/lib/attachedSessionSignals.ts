@@ -73,6 +73,25 @@ const NON_SESSION_CLAUDE_SUBCOMMANDS = new Set([
 	"setup-token",
 ]);
 
+const PI_COMMAND_NAME = "pi";
+const OMP_COMMAND_NAME = "omp";
+const PI_FAMILY_COMMAND_NAMES = new Set([PI_COMMAND_NAME, OMP_COMMAND_NAME]);
+const NON_SESSION_PI_FAMILY_SUBCOMMANDS = new Set([
+	"help",
+	"completion",
+	"config",
+	"auth",
+	"login",
+	"logout",
+	"mcp",
+	"admin",
+	"package",
+	"packages",
+	"export",
+	"rpc",
+	"acp",
+]);
+
 const getBasename = (value: string): string => {
 	return value.split(/[\\/]/u).at(-1)?.toLowerCase() ?? "";
 };
@@ -622,10 +641,214 @@ const tryReadCodexSessionId = (
 	return undefined;
 };
 
+const isPiFamilyToken = (token: string): boolean => {
+	const normalizedToken = normalizeCommandToken(token);
+	return PI_FAMILY_COMMAND_NAMES.has(getBasename(normalizedToken));
+};
+
+const containsPiFamilyToken = (tokens: readonly string[]): boolean => {
+	return tokens.some((token) => isPiFamilyToken(token));
+};
+
+const getPiFamilyExecutableTokenIndex = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): number => {
+	const tokenIndex = argumentTokens.findIndex((token) =>
+		isPiFamilyToken(token),
+	);
+	if (tokenIndex >= 0) {
+		return tokenIndex;
+	}
+
+	return PI_FAMILY_COMMAND_NAMES.has(commandBasename) ? 0 : -1;
+};
+
+const getPiFamilyCommandName = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): typeof PI_COMMAND_NAME | typeof OMP_COMMAND_NAME | undefined => {
+	const executableTokenIndex = getPiFamilyExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return undefined;
+	}
+
+	const token =
+		argumentTokens[executableTokenIndex] ??
+		(PI_FAMILY_COMMAND_NAMES.has(commandBasename) ? commandBasename : "");
+	const basename = getBasename(normalizeCommandToken(token)) || commandBasename;
+	return basename === OMP_COMMAND_NAME ? OMP_COMMAND_NAME : PI_COMMAND_NAME;
+};
+
+const isDirectPiFamilyCommand = (
+	commandBasename: string,
+	firstArgumentBasename: string,
+): boolean => {
+	return (
+		PI_FAMILY_COMMAND_NAMES.has(commandBasename) ||
+		PI_FAMILY_COMMAND_NAMES.has(firstArgumentBasename)
+	);
+};
+
+const isRuntimeWrappedPiFamilyCommand = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	return (
+		isRuntimeWrapperCommand(commandBasename) &&
+		argumentTokens.length >= 2 &&
+		isPiFamilyToken(argumentTokens[1])
+	);
+};
+
+const looksLikePathSessionReference = (value: string): boolean =>
+	value.includes("/") || value.includes("\\\\") || value.endsWith(".jsonl");
+
+const tryReadPiFamilySessionId = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): string | undefined => {
+	const executableTokenIndex = getPiFamilyExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	const commandName = getPiFamilyCommandName(commandBasename, argumentTokens);
+	if (executableTokenIndex < 0 || !commandName) {
+		return undefined;
+	}
+
+	const sessionFlags =
+		commandName === OMP_COMMAND_NAME
+			? new Set(["--resume", "-r", "--session"])
+			: new Set(["--session", "--session-id"]);
+	const sessionFlagPrefixes =
+		commandName === OMP_COMMAND_NAME
+			? ["--resume=", "--session="]
+			: ["--session=", "--session-id="];
+
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken || normalizedToken === "--") {
+			continue;
+		}
+
+		if (sessionFlags.has(normalizedToken)) {
+			const nextToken = normalizeCommandToken(
+				argumentTokens[tokenIndex + 1] ?? "",
+			);
+			return nextToken && !looksLikePathSessionReference(nextToken)
+				? nextToken
+				: undefined;
+		}
+
+		for (const prefix of sessionFlagPrefixes) {
+			if (normalizedToken.startsWith(prefix)) {
+				const value = normalizeCommandToken(
+					normalizedToken.slice(prefix.length),
+				);
+				return value && !looksLikePathSessionReference(value)
+					? value
+					: undefined;
+			}
+		}
+	}
+
+	return undefined;
+};
+
+const isPiFamilyPrintOrMachineMode = (
+	argumentTokens: readonly string[],
+): boolean => {
+	return argumentTokens.some((token) => {
+		const normalizedToken = normalizeCommandToken(token);
+		return (
+			normalizedToken === "-p" ||
+			normalizedToken === "--print" ||
+			normalizedToken.startsWith("--print=") ||
+			normalizedToken === "--json" ||
+			normalizedToken === "--rpc" ||
+			normalizedToken === "--acp" ||
+			normalizedToken === "--export" ||
+			normalizedToken.startsWith("--json=") ||
+			normalizedToken.startsWith("--rpc=") ||
+			normalizedToken.startsWith("--acp=")
+		);
+	});
+};
+
+const isPiFamilySessionBearingInvocation = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	const executableTokenIndex = getPiFamilyExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return false;
+	}
+
+	let hasPendingFlagValue = false;
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken || normalizedToken === "--") {
+			continue;
+		}
+
+		if (hasPendingFlagValue) {
+			hasPendingFlagValue = false;
+			continue;
+		}
+
+		if (
+			normalizedToken === "--session" ||
+			normalizedToken === "--session-id" ||
+			normalizedToken === "--resume" ||
+			normalizedToken === "-r" ||
+			normalizedToken === "--session-dir" ||
+			normalizedToken === "-c" ||
+			normalizedToken === "--config" ||
+			normalizedToken === "-m" ||
+			normalizedToken === "--model" ||
+			normalizedToken === "--provider"
+		) {
+			hasPendingFlagValue = true;
+			continue;
+		}
+
+		if (HELP_OR_VERSION_FLAGS.has(normalizedToken)) {
+			return false;
+		}
+
+		if (normalizedToken.startsWith("-")) {
+			continue;
+		}
+
+		return !NON_SESSION_PI_FAMILY_SUBCOMMANDS.has(getBasename(normalizedToken));
+	}
+
+	return true;
+};
+
 export const getExternalAttachedDirectoryKey = (
-	_source: SessionSource,
+	source: SessionSource,
 	directory: string,
 ): string => {
+	if (source === "pi" || source === "omp") {
+		return `${source}:${directory}`;
+	}
+
 	return directory;
 };
 
@@ -735,6 +958,47 @@ export const parseAttachedSessionIdsFromProcessList = (
 			}
 
 			const directoryKey = getExternalAttachedDirectoryKey("codex", processCwd);
+			incrementDirectoryProcessCount(
+				externalAttachedSignals.directoryProcessCounts,
+				directoryKey,
+			);
+			continue;
+		}
+
+		const isPiFamilyInvocation =
+			isDirectPiFamilyCommand(commandBasename, firstArgumentBasename) ||
+			isRuntimeWrappedPiFamilyCommand(commandBasename, argumentTokens) ||
+			containsPiFamilyToken(argumentTokens);
+		if (isPiFamilyInvocation) {
+			if (isPiFamilyPrintOrMachineMode(argumentTokens)) {
+				continue;
+			}
+
+			const piFamilySessionId = tryReadPiFamilySessionId(
+				commandBasename,
+				argumentTokens,
+			);
+			if (piFamilySessionId) {
+				externalAttachedSignals.sessionIds.add(piFamilySessionId);
+				continue;
+			}
+
+			if (
+				!isPiFamilySessionBearingInvocation(commandBasename, argumentTokens)
+			) {
+				continue;
+			}
+
+			const processCwd = readProcessCwd(pid);
+			if (!processCwd) {
+				continue;
+			}
+
+			const source = getPiFamilyCommandName(commandBasename, argumentTokens);
+			const directoryKey = getExternalAttachedDirectoryKey(
+				source ?? "pi",
+				processCwd,
+			);
 			incrementDirectoryProcessCount(
 				externalAttachedSignals.directoryProcessCounts,
 				directoryKey,

@@ -1,6 +1,6 @@
 import { Box, bold, dim, fg, ScrollBox, Text, t } from "@opentui/core";
 
-import { getAgentColor, getAgentDisplayName } from "../config/colors";
+import { getAgentColor } from "../config/colors";
 import {
 	getDisplayStatus,
 	getStatusLabel,
@@ -12,6 +12,7 @@ import {
 	getSessionSourceLabel,
 } from "../lib/sessionSource";
 import { type Session, SessionStatus } from "../types";
+import { getSessionAgentDisplayName } from "./sessionAgentDisplay";
 
 type PanelSize = number | `${number}%` | "100%";
 type MessageCountBySessionId = Partial<Record<string, number>>;
@@ -285,16 +286,24 @@ const sumNumberSet = (
 
 const collectSessionAgents = (session?: Session | null): string[] => {
 	const agentNames = [
-		session?.currentAgent,
-		...(session?.subagentSessions ?? []).map(
-			(subagent) => subagent.currentAgent,
-		),
-	]
-		.filter(
-			(agent): agent is string =>
-				typeof agent === "string" && agent.trim().length > 0,
-		)
-		.map((agent) => getAgentDisplayName(agent));
+		...(typeof session?.currentAgent === "string" &&
+		session.currentAgent.trim().length > 0
+			? [
+					getSessionAgentDisplayName(session.currentAgent, {
+						isRoot: session.parent_id === null,
+					}),
+				]
+			: []),
+		...(session?.subagentSessions ?? [])
+			.filter(
+				(subagent) =>
+					typeof subagent.currentAgent === "string" &&
+					subagent.currentAgent.trim().length > 0,
+			)
+			.map((subagent) =>
+				getSessionAgentDisplayName(subagent.currentAgent, { isRoot: false }),
+			),
+	];
 
 	const seen = new Set<string>();
 	return agentNames.filter((agent) => {
@@ -682,6 +691,17 @@ export const createDetailPanelContent = ({
 		runningSubagents: subagentSummary.running,
 		finishReason: session?.finishReason,
 	});
+	const shouldShowCurrentAgent =
+		session !== undefined &&
+		session !== null &&
+		(session.parent_id === null ||
+			(typeof session.currentAgent === "string" &&
+				session.currentAgent.trim().length > 0));
+	const currentAgentName = shouldShowCurrentAgent
+		? getSessionAgentDisplayName(session.currentAgent, {
+				isRoot: session.parent_id === null,
+			})
+		: "Unavailable";
 	const relatedGroup = getRelatedSessionGroup(session, sessions);
 	const rootMessageCount =
 		typeof messageCount === "number" && Number.isFinite(messageCount)
@@ -820,12 +840,7 @@ export const createDetailPanelContent = ({
 		DetailRow("Status", sessionStatusLabel),
 		DetailRow("Finish reason", session?.finishReason ?? "—"),
 		DetailRow("Provider", session?.providerID ?? "—"),
-		DetailRow(
-			"Current agent",
-			session?.currentAgent
-				? getAgentDisplayName(session.currentAgent)
-				: "Unavailable",
-		),
+		DetailRow("Current agent", currentAgentName),
 		DetailRow("Model", session?.currentModelID ?? "Unavailable"),
 		DetailRow("Variant", session?.currentVariant ?? "Unavailable"),
 		DetailRow("Related scope", relatedGroup.label),
@@ -1065,10 +1080,10 @@ export const createDetailPanelContent = ({
 						),
 					]
 				: []),
-			...(session?.currentAgent
+			...(shouldShowCurrentAgent && session
 				? [
 						Badge(
-							`Current ${getAgentDisplayName(session.currentAgent)}`,
+							`Current ${currentAgentName}`,
 							getAgentColor(session.currentAgent),
 						),
 					]

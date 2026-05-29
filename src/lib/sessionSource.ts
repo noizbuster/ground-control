@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { delimiter, dirname, isAbsolute } from "node:path";
 import type { Session, SessionCapabilities, SessionSource } from "../types";
 
 const OPENCODE_CAPABILITIES: SessionCapabilities = {
@@ -22,28 +23,42 @@ const CLAUDE_CAPABILITIES: SessionCapabilities = {
 	hierarchy: true,
 };
 
+const PI_FAMILY_CAPABILITIES: SessionCapabilities = {
+	attach: true,
+	delete: true,
+	abortChildren: false,
+	hierarchy: true,
+};
+
 const SESSION_SOURCE_LABELS: Record<SessionSource, string> = {
 	opencode: "OpenCode",
 	codex: "Codex",
 	claude: "Claude Code",
+	pi: "Pi",
+	omp: "omp",
 };
 
 const SESSION_SOURCE_COLORS: Record<SessionSource, `#${string}`> = {
 	opencode: "#14B8A6",
 	codex: "#60A5FA",
 	claude: "#D97706",
+	pi: "#A78BFA",
+	omp: "#F472B6",
 };
 
 export const getDefaultSessionCapabilities = (
 	source: SessionSource,
 ): SessionCapabilities => {
 	switch (source) {
+		case "opencode":
+			return { ...OPENCODE_CAPABILITIES };
 		case "codex":
 			return { ...CODEX_CAPABILITIES };
 		case "claude":
 			return { ...CLAUDE_CAPABILITIES };
-		default:
-			return { ...OPENCODE_CAPABILITIES };
+		case "pi":
+		case "omp":
+			return { ...PI_FAMILY_CAPABILITIES };
 	}
 };
 
@@ -84,6 +99,23 @@ export interface SessionAttachLaunchSpec {
 	cwd: string;
 }
 
+export const getAttachLaunchEnvironment = (
+	attachLaunchSpec: SessionAttachLaunchSpec,
+	baseEnvironment: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> => {
+	const executablePath = attachLaunchSpec.cmd[0];
+	const executableDirectory = isAbsolute(executablePath)
+		? dirname(executablePath)
+		: null;
+
+	return {
+		...baseEnvironment,
+		PATH: [executableDirectory, baseEnvironment.PATH]
+			.filter((entry): entry is string => Boolean(entry))
+			.join(delimiter),
+	};
+};
+
 const sanitizeLaunchDirectory = (
 	directory: string | undefined,
 	fallbackDirectory: string,
@@ -105,8 +137,30 @@ const getClaudeAttachSessionId = (sessionId: string): string => {
 	return separatorIndex > 0 ? sessionId.slice(0, separatorIndex) : sessionId;
 };
 
+const getPiAttachTarget = (
+	session: Pick<Session, "id" | "parent_id" | "sourceMetadata">,
+): string => {
+	if (!session.parent_id) {
+		return session.id;
+	}
+
+	return session.sourceMetadata?.sessionPath ?? session.id;
+};
+
+const getOmpAttachTarget = (
+	session: Pick<Session, "id" | "sourceMetadata">,
+): string => session.sourceMetadata?.sessionPath ?? session.id;
+
 export const getAttachLaunchSpec = (
-	session: Pick<Session, "id" | "directory" | "sessionSource" | "capabilities">,
+	session: Pick<
+		Session,
+		| "id"
+		| "parent_id"
+		| "directory"
+		| "sessionSource"
+		| "capabilities"
+		| "sourceMetadata"
+	>,
 	options?: {
 		fallbackDirectory?: string;
 		resolveExecutable?: (name: string) => string | undefined;
@@ -122,6 +176,13 @@ export const getAttachLaunchSpec = (
 	const resolveCommand = (name: string): string =>
 		resolveExecutable(name) ?? name;
 	const cwd = sanitizeLaunchDirectory(session.directory, fallbackDirectory);
+
+	if (session.sessionSource === "opencode") {
+		return {
+			cmd: [resolveCommand("opencode"), "--session", session.id],
+			cwd,
+		};
+	}
 
 	if (session.sessionSource === "codex") {
 		return {
@@ -141,8 +202,15 @@ export const getAttachLaunchSpec = (
 		};
 	}
 
+	if (session.sessionSource === "pi") {
+		return {
+			cmd: [resolveCommand("pi"), "--session", getPiAttachTarget(session)],
+			cwd,
+		};
+	}
+
 	return {
-		cmd: [resolveCommand("opencode"), "--session", session.id],
+		cmd: [resolveCommand("omp"), "--resume", getOmpAttachTarget(session)],
 		cwd,
 	};
 };

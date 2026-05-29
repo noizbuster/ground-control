@@ -4,17 +4,19 @@
 
 # Ground Control
 
-`gctrl` is a terminal TUI for monitoring OpenCode, Codex, and Claude Code sessions in real time. It presents session status, active agents, subagent activity, richer source metadata, and recent updates in one card-based interface, while also supporting source-native session deletion flows where the upstream CLI exposes them and conservative local cleanup for Claude Code sessions.
+`gctrl` is a terminal TUI for monitoring OpenCode, Codex, Claude Code, Pi, and omp sessions in real time. It presents session status, active agents, subagent activity, richer source metadata, and recent updates in one card-based interface, while also supporting source-native session deletion flows where the upstream CLI exposes them and conservative local cleanup for file-backed sources.
 
 ## Quick Start
 
 Make sure these are available before running `gctrl`:
 
 - Node.js 22.13.0 or later
-- OpenCode, Codex, and/or Claude Code installed on the same machine
+- OpenCode, Codex, Claude Code, Pi, and/or omp installed on the same machine
 - `~/.local/share/opencode/opencode.db` exists for OpenCode monitoring
 - `~/.codex/state_*.sqlite` and `~/.codex/sessions/` exist for Codex monitoring
 - `~/.claude/projects/` and/or `~/.claude/sessions/` exist for Claude Code monitoring
+- `~/.pi/agent/sessions/` exists for Pi monitoring
+- `~/.omp/agent/sessions/` exists for omp monitoring
 
 ### Run with `bunx`
 
@@ -40,7 +42,7 @@ npx gctrl
 
 ## Overview
 
-- Displays OpenCode, Codex, and Claude Code sessions in a live terminal list
+- Displays OpenCode, Codex, Claude Code, Pi, and omp sessions in a live terminal list
 - Refreshes automatically every 2 seconds
 - Shows status, source, project label, session ID, update time, and richer source metadata
 - Supports source-aware actions, copy ID, refresh, and keyboard navigation
@@ -73,7 +75,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 Available in detail or sideview mode. Press `K` (Shift+K) to gracefully stop all active (non-completed, non-failed) child sessions of the selected session.
 
-Codex sessions support attach/inspect/copy/hierarchy/delete flows, Claude Code sessions support attach/inspect/copy/hierarchy/delete flows, and child-abort remains OpenCode-only. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, and both fall back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID.
+Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows, and child-abort remains OpenCode-only. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID.
 
 The stop flow works in two stages:
 
@@ -107,12 +109,18 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - The monitor reads OpenCode session data from `~/.local/share/opencode/opencode.db`.
 - The monitor reads Codex thread state from the newest `~/.codex/state_*.sqlite` file and enriches it with `~/.codex/sessions/**/*.jsonl`.
 - The monitor reads Claude Code session state from `~/.claude/sessions/*.json` and enriches it with `~/.claude/projects/**/*.jsonl`.
+- The monitor reads Pi JSONL sessions from `~/.pi/agent/sessions/**/*.jsonl`.
+- The monitor reads omp JSONL sessions from `~/.omp/agent/sessions/**/*.jsonl`.
 - Override the OpenCode database path with `GCTRL_DB_PATH=/custom/path/opencode.db`.
 - Override Codex paths with `GCTRL_CODEX_STATE_DB_PATH=/custom/path/state.sqlite`, `GCTRL_CODEX_SESSIONS_DIR=/custom/path/sessions`, `GCTRL_CODEX_ARCHIVED_SESSIONS_DIR=/custom/path/archived_sessions`, and `GCTRL_CODEX_SESSION_INDEX_PATH=/custom/path/session_index.jsonl`.
 - Override Claude Code paths with `GCTRL_CLAUDE_PROJECTS_DIR=/custom/path/projects` and `GCTRL_CLAUDE_SESSIONS_DIR=/custom/path/sessions`.
+- Override Pi sessions with `GCTRL_PI_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are also honored.
+- Override omp sessions with `GCTRL_OMP_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`, and XDG omp candidates are also honored.
 - OpenCode attach/delete/child-abort actions use the `opencode` CLI.
 - Codex attach/delete actions use the local `codex` CLI.
 - Claude Code attach actions use the local `claude` CLI.
+- Pi attach actions use the local `pi` CLI; Pi delete removes the selected JSONL session and any loaded descendant JSONL sessions.
+- omp attach actions use the local `omp` CLI; omp delete removes the selected JSONL session, loaded descendant JSONL sessions, and sibling artifact directories, but not shared blob storage.
 - Codex delete uses the local `codex app-server` archive flow plus cleanup of archived rollout files and local index/state entries.
 - Claude Code delete intentionally refuses live sessions, then removes matching `projects/`, `file-history/`, `session-env/`, `tasks/`, and stale `sessions/*.json` artifacts from local `.claude/` storage. This follows the official `.claude` storage guidance: Claude Code does not expose a delete subcommand, but its local session data can be removed directly.
 - Non-interactive mode (missing TTY stdin/stdout) prints a tab-separated snapshot and exits.
@@ -139,7 +147,7 @@ bun run check
 
 ```text
 bin/          CLI wrapper
-src/db/       OpenCode + Codex + Claude Code data adapters
+src/db/       OpenCode + Codex + Claude Code + Pi/omp data adapters
 src/ui/       TUI components
 src/config/   color and agent configuration
 src/lib/      status detection logic
@@ -148,7 +156,7 @@ dist/         compiled output
 
 ## Session Status Detection
 
-OpenCode status is derived from the latest message in the OpenCode SQLite database. The detection pipeline reads the most recent `message` row per session, parses its JSON `data` column, and applies status detectors in priority order. Codex status is mapped conservatively from thread/task events plus `thread_spawn_edges`, while Claude Code status is mapped from local session registries plus JSONL conversation logs and subagent transcripts. Richer raw detail is surfaced separately in the UI.
+OpenCode status is derived from the latest message in the OpenCode SQLite database. The detection pipeline reads the most recent `message` row per session, parses its JSON `data` column, and applies status detectors in priority order. Codex status is mapped conservatively from thread/task events plus `thread_spawn_edges`, Claude Code status is mapped from local session registries plus JSONL conversation logs and subagent transcripts, and Pi/omp status is mapped conservatively from JSONL message/model/thinking events. Richer raw detail is surfaced separately in the UI.
 
 ### Status Priority
 

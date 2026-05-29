@@ -16,6 +16,16 @@ describe("hierarchy status helpers", () => {
 		).toBe("Idle");
 		expect(
 			getStatusLabel(SessionStatus.waiting, {
+				finishReason: "toolUse",
+			}),
+		).toBe("Idle");
+		expect(
+			getStatusLabel(SessionStatus.waiting, {
+				finishReason: "tool_use",
+			}),
+		).toBe("Idle");
+		expect(
+			getStatusLabel(SessionStatus.waiting, {
 				finishReason: "tool-calls",
 			}),
 		).toBe("Waiting");
@@ -31,6 +41,16 @@ describe("hierarchy status helpers", () => {
 		expect(
 			getDisplayStatus(SessionStatus.waiting, {
 				finishReason: "active_session",
+			}),
+		).toBe(SessionStatus.completed);
+		expect(
+			getDisplayStatus(SessionStatus.waiting, {
+				finishReason: "toolUse",
+			}),
+		).toBe(SessionStatus.completed);
+		expect(
+			getDisplayStatus(SessionStatus.waiting, {
+				finishReason: "tool_use",
 			}),
 		).toBe(SessionStatus.completed);
 		expect(

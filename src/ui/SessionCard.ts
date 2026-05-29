@@ -1,6 +1,6 @@
 import { Box, bold, dim, fg, MouseButton, Text, t } from "@opentui/core";
 
-import { getAgentColor, getAgentDisplayName } from "../config/colors";
+import { getAgentColor } from "../config/colors";
 import {
 	countRunningSubagents,
 	getDisplayStatus,
@@ -15,6 +15,7 @@ import {
 	getSessionSourceLabel,
 } from "../lib/sessionSource";
 import { type Session, SessionStatus } from "../types";
+import { getSessionAgentDisplayName } from "./sessionAgentDisplay";
 
 const CARD_WIDTH = 38;
 const MIN_CARD_WIDTH = 30;
@@ -128,7 +129,10 @@ const shortenMiddle = (value: string, maxLength: number): string => {
 	return `${value.slice(0, left)}...${value.slice(-right)}`;
 };
 
-const shortenDirectoryPath = (value: string, maxLength: number): string => {
+export const shortenDirectoryPath = (
+	value: string,
+	maxLength: number,
+): string => {
 	const trimmed = value.trim();
 	if (!trimmed) {
 		return "--";
@@ -139,16 +143,21 @@ const shortenDirectoryPath = (value: string, maxLength: number): string => {
 	}
 
 	const segments = trimmed.split(/[\\/]+/u).filter(Boolean);
-	if (segments.length < 2) {
+	if (segments.length === 0) {
 		return truncateText(trimmed, maxLength);
 	}
 
-	const suffix = `.../${segments.slice(-2).join("/")}`;
-	if (suffix.length <= maxLength) {
-		return suffix;
+	const tail = segments.slice(-3).join("/");
+	const preferred = segments.length > 3 ? `...${tail}` : tail;
+	if (preferred.length <= maxLength) {
+		return preferred;
 	}
 
-	return `.../${truncateText(segments.slice(-2).join("/"), Math.max(maxLength - 4, 1))}`;
+	if (maxLength <= 3) {
+		return ".".repeat(maxLength);
+	}
+
+	return `...${tail.slice(-(maxLength - 3))}`;
 };
 
 const pad2 = (value: number): string => value.toString().padStart(2, "0");
@@ -219,28 +228,14 @@ const buildRecentCompletionEdge = (contentWidth: number): string => {
 	return `${label}${"+".repeat(edgeWidth - label.length)}`;
 };
 
-const buildSubagentSummary = (session: Session, maxLength: number): string => {
-	const subagents = session.subagentSessions ?? [];
-	if (subagents.length === 0) {
-		return "none";
-	}
-
-	const labels = subagents.map((subagent) => {
-		const agent = getAgentDisplayName(subagent.currentAgent);
-		return agent && agent.length > 0
-			? agent
-			: subagent.title.trim() || "unknown";
-	});
-
-	return truncateText(labels.join(", "), maxLength);
-};
-
 export function SessionCard(props: SessionCardProps) {
 	const width = clampWidth(props.width);
 	const contentWidth = width - CONTENT_WIDTH_OFFSET;
 
 	const session = props.session;
-	const currentAgent = getAgentDisplayName(session.currentAgent);
+	const currentAgent = getSessionAgentDisplayName(session.currentAgent, {
+		isRoot: session.parent_id === null,
+	});
 	const resolvedStatus: SessionStatus =
 		props.status ??
 		session.status ??
@@ -298,14 +293,16 @@ export function SessionCard(props: SessionCardProps) {
 	const sourceColor = getSessionSourceColor(session.sessionSource);
 	const directoryLabel = shortenDirectoryPath(
 		session.directory,
-		Math.max(contentWidth - 7, 8),
+		Math.max(contentWidth - "dir     ".length, 1),
 	);
-	const agentLabel = truncateText(currentAgent, Math.max(contentWidth - 7, 8));
+	const agentLabel = truncateText(
+		currentAgent,
+		Math.max(
+			contentWidth - "agent   ".length - sourceLabel.length - " · ".length,
+			1,
+		),
+	);
 	const subagentCount = session.subagentSessions?.length ?? 0;
-	const subagentLabel = buildSubagentSummary(
-		session,
-		Math.max(contentWidth - 10, 8),
-	);
 	const statusLabel = formatStatus(
 		status,
 		runningSubagentCount,
@@ -324,11 +321,10 @@ export function SessionCard(props: SessionCardProps) {
 	const recentCompletionEdgeLine = isRecentlyCompletedSession
 		? t`${bold(fg(CARD_COLORS.recentCompletedEdge)(buildRecentCompletionEdge(contentWidth)))}`
 		: undefined;
-	const agentLine = t`${dim("agent   ")}${fg(agentColor)(agentLabel)}`;
+	const agentLine = t`${dim("agent   ")}${fg(sourceColor)(sourceLabel)}${dim(" · ")}${fg(agentColor)(agentLabel)}`;
 	const subagentLine = t`${dim("subagents ")}${fg(CARD_COLORS.title)(`${runningSubagentCount} / ${subagentCount}`)}`;
-	const subagentAgentsLine = t`${dim("nested  ")}${fg(CARD_COLORS.title)(subagentLabel)}`;
 	const directoryLine = t`${dim("dir     ")}${fg(CARD_COLORS.title)(directoryLabel)}`;
-	const projectLine = t`${dim("project ")}${fg(sourceColor)(sourceLabel)}${dim(" · ")}${fg(CARD_COLORS.title)(shortProjectLabel)}`;
+	const projectLine = t`${dim("project ")}${fg(CARD_COLORS.title)(shortProjectLabel)}`;
 	const createdLine = t`${dim("created ")}${fg(CARD_COLORS.title)(formatTimestamp(session.time_created))}`;
 	const updatedLine = t`${dim("updated ")}${fg(CARD_COLORS.title)(formatTimestamp(session.time_updated))}`;
 
@@ -363,6 +359,8 @@ export function SessionCard(props: SessionCardProps) {
 					Text({
 						content: waitingEdgeLine,
 						width: contentWidth,
+						wrapMode: "none",
+						truncate: true,
 					}),
 				]
 			: []),
@@ -371,49 +369,65 @@ export function SessionCard(props: SessionCardProps) {
 					Text({
 						content: recentCompletionEdgeLine,
 						width: contentWidth,
+						wrapMode: "none",
+						truncate: true,
 					}),
 				]
 			: []),
 		Text({
 			content: t`${bold(fg(isActiveSelection ? CARD_COLORS.selectedAccent : CARD_COLORS.title)(title))}`,
 			width: contentWidth,
+			wrapMode: "none",
+			truncate: true,
 		}),
 		Text({
 			content: idLine,
 			width: contentWidth,
 			fg: CARD_COLORS.meta,
+			wrapMode: "none",
+			truncate: true,
 		}),
 		Text({
 			content: statusLine,
 			width: contentWidth,
+			wrapMode: "none",
+			truncate: true,
 		}),
 		Text({
 			content: agentLine,
 			width: contentWidth,
+			wrapMode: "none",
+			truncate: true,
 		}),
 		Text({
 			content: subagentLine,
 			width: contentWidth,
-		}),
-		Text({
-			content: subagentAgentsLine,
-			width: contentWidth,
+			wrapMode: "none",
+			truncate: true,
 		}),
 		Text({
 			content: projectLine,
 			width: contentWidth,
+			wrapMode: "none",
+			truncate: true,
 		}),
 		Text({
 			content: directoryLine,
 			width: contentWidth,
+			wrapMode: "none",
+			truncate: true,
 		}),
 		Text({
 			content: createdLine,
 			width: contentWidth,
+			wrapMode: "none",
+			truncate: true,
 		}),
 		Text({
 			content: updatedLine,
 			width: contentWidth,
+			wrapMode: "none",
+			truncate: true,
 		}),
 	);
 }

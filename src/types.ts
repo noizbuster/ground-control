@@ -7,7 +7,7 @@ export enum SessionStatus {
 	unknown = "unknown",
 }
 
-export type SessionSource = "opencode" | "codex" | "claude";
+export type SessionSource = "opencode" | "codex" | "claude" | "pi" | "omp";
 
 export interface SessionCapabilities {
 	attach: boolean;
@@ -24,11 +24,15 @@ export interface SessionSourceMetadata {
 	agentRole?: string;
 	agentNickname?: string;
 	reasoningEffort?: string;
+	modelRole?: string;
+	activeToolNames?: string[];
 	lastEventType?: string;
 	lastTurnId?: string;
 	abortedReason?: string;
 	openChildCount?: number;
 	closedChildCount?: number;
+	sessionPath?: string;
+	parentSessionPath?: string;
 }
 
 export interface MessageTimeData {

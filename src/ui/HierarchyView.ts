@@ -9,7 +9,7 @@ import {
 	t,
 } from "@opentui/core";
 
-import { getAgentColor, getAgentDisplayName } from "../config/colors";
+import { getAgentColor } from "../config/colors";
 import {
 	buildHierarchyLines,
 	countRunningSubagents,
@@ -34,6 +34,7 @@ import {
 	type Session,
 	SessionStatus,
 } from "../types";
+import { getSessionAgentDisplayName } from "./sessionAgentDisplay";
 
 type PanelSize = number | `${number}%` | "100%";
 type HierarchySectionMode = "all" | "header" | "body";
@@ -936,7 +937,9 @@ const renderTreeHierarchyLine = (
 	options: { showSpacer?: boolean; onCopyId?: (id: string) => void } = {},
 ) => {
 	const info = line.standardInfo;
-	const agentName = getAgentDisplayName(info.agent);
+	const agentName = getSessionAgentDisplayName(info.agent, {
+		isRoot: line.node.isRoot,
+	});
 	const modelLabel = getModelLabel(info.modelID, info.variant);
 	const statusDisplay = getLineStatusDisplay(line);
 	const statusColor = STATUS_COLOR_MAP[statusDisplay.colorStatus];
@@ -1052,7 +1055,9 @@ const renderTimelineHierarchyLine = (
 	const info = line.standardInfo;
 	const isDetailedMode = line.infoMode === "detailed";
 	const showSpacer = params.showSpacer ?? false;
-	const agentName = getAgentDisplayName(info.agent);
+	const agentName = getSessionAgentDisplayName(info.agent, {
+		isRoot: line.node.isRoot,
+	});
 	const modelLabel = getModelLabel(info.modelID, info.variant);
 	const statusDisplay = getLineStatusDisplay(line);
 	const statusColor = TIMELINE_STATUS_COLOR_MAP[statusDisplay.colorStatus];
@@ -1264,7 +1269,9 @@ export const createHierarchyViewContent = ({
 		runningSubagents: summary.running,
 		finishReason: preparedSession?.finishReason,
 	});
-	const currentAgentName = getAgentDisplayName(preparedSession?.currentAgent);
+	const currentAgentName = preparedSession
+		? getSessionAgentDisplayName(preparedSession.currentAgent, { isRoot: true })
+		: "Unknown";
 	const timelineLayout = getTimelineLayout(
 		timelineViewportWidth,
 		timelineScrollLeft,
