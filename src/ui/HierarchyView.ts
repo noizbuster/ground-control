@@ -22,6 +22,7 @@ import {
 	sortSubagentsByStatus,
 	type TreeIndentMeta,
 	truncateLabelEnd,
+	truncateLabelStart,
 } from "../lib/hierarchyHelpers";
 import {
 	getSessionSourceColor,
@@ -1084,7 +1085,7 @@ const renderTimelineHierarchyLine = (
 		agentName.length,
 	);
 	const primaryAgentLabel = truncateLabelEnd(agentName, agentWidth);
-	const primaryTitleLabel = truncateLabelEnd(normalizedTitle, titleWidth);
+	const primaryTitleLabel = truncateLabelStart(normalizedTitle, titleWidth);
 	const trackSegments = buildTimelineTrackSegments({
 		status: statusDisplay.colorStatus,
 		activityStatus: line.standardInfo.status,
@@ -1281,7 +1282,7 @@ export const createHierarchyViewContent = ({
 	const headerSection = Section(
 		"Agent Hierarchy",
 		Text({
-			content: t`${bold(fg(VIEW_COLORS.text)(narrowMode ? truncateLabelEnd(sessionTitle, 40) : sessionTitle))}`,
+			content: t`${bold(fg(VIEW_COLORS.text)(narrowMode ? truncateLabelStart(sessionTitle, 40) : sessionTitle))}`,
 			fg: VIEW_COLORS.text,
 			width: "100%",
 			wrapMode: "word",

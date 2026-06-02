@@ -31,6 +31,7 @@ const DEFAULT_CODEX_SESSIONS_DIR = `${CODEX_ROOT}/sessions`;
 const DEFAULT_CODEX_ARCHIVED_SESSIONS_DIR = `${CODEX_ROOT}/archived_sessions`;
 const DEFAULT_CODEX_SESSION_INDEX_PATH = `${CODEX_ROOT}/session_index.jsonl`;
 const LOG_INDEX_REFRESH_MS = 10_000;
+const EXEC_COMMAND_STALE_GRACE_MS = 10_000;
 
 export interface CodexDeleteResult {
 	deletedThreadIds: string[];
@@ -79,8 +80,17 @@ export interface CodexSessionMetaPayload {
 	cwd?: string;
 	originator?: string;
 	cli_version?: string;
-	source?: string;
+	source?: unknown;
 	model_provider?: string;
+	thread_source?: string;
+	agent_nickname?: string;
+	agent_role?: string;
+	agent_path?: string;
+}
+
+interface CodexSubagentAssignment {
+	readonly recipient?: string;
+	readonly content: string;
 }
 
 export interface CodexSessionLogSummary {
@@ -89,7 +99,11 @@ export interface CodexSessionLogSummary {
 	lastEventType?: string;
 	lastTurnId?: string;
 	lastAgentMessage?: string;
+	subagentAssignment?: CodexSubagentAssignment;
 	taskState?: "running" | "completed" | "aborted" | "unknown";
+	waitingForApproval?: boolean;
+	waitingForUser?: boolean;
+	activeToolNames?: string[];
 	abortedReason?: string;
 	startedAtMs?: number;
 	completedAtMs?: number;
@@ -102,6 +116,7 @@ interface ParsedCodexThreadSource {
 	parentThreadId?: string;
 	agentRole?: string;
 	agentNickname?: string;
+	agentPath?: string;
 }
 
 interface ThreadEdgeStats {
@@ -113,6 +128,12 @@ interface CodexStatusResolution {
 	status: SessionStatus;
 	finishReason?: string;
 	statusDetail?: string;
+}
+
+interface ActiveCodexToolCall {
+	name: string;
+	expiresAtMs?: number;
+	requiresApproval: boolean;
 }
 
 const trimToUndefined = (
@@ -143,6 +164,147 @@ const parseIsoTimestampMs = (value: string | undefined): number | undefined => {
 
 	const timestamp = Date.parse(value);
 	return Number.isFinite(timestamp) ? timestamp : undefined;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+const parseJsonRecord = (
+	value: string | undefined,
+): Record<string, unknown> => {
+	if (!value) {
+		return {};
+	}
+
+	try {
+		const parsed: unknown = JSON.parse(value);
+		return isRecord(parsed) ? parsed : {};
+	} catch {
+		return {};
+	}
+};
+
+const getPayloadString = (
+	payload: Record<string, unknown>,
+	key: string,
+): string | undefined => {
+	const value = payload[key];
+	return typeof value === "string" ? trimToUndefined(value) : undefined;
+};
+
+const getPayloadBoolean = (
+	payload: Record<string, unknown>,
+	key: string,
+): boolean | undefined => {
+	const value = payload[key];
+	return typeof value === "boolean" ? value : undefined;
+};
+
+const getPayloadNumber = (
+	payload: Record<string, unknown>,
+	key: string,
+): number | undefined => {
+	const value = payload[key];
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
+};
+
+const isApprovalRequiredFunctionCall = (
+	payload: Record<string, unknown>,
+): boolean => {
+	const argumentsJson = getPayloadString(payload, "arguments");
+	const args = parseJsonRecord(argumentsJson);
+	return (
+		args.sandbox_permissions === "require_escalated" ||
+		typeof args.justification === "string"
+	);
+};
+
+const getExecCommandExpiresAtMs = (params: {
+	toolName: string;
+	argumentsJson?: string;
+	timestampMs?: number;
+}): number | undefined => {
+	if (params.toolName !== "exec_command" || !params.timestampMs) {
+		return undefined;
+	}
+
+	const args = parseJsonRecord(params.argumentsJson);
+	const yieldTimeMs =
+		typeof args.yield_time_ms === "number" &&
+		Number.isFinite(args.yield_time_ms)
+			? args.yield_time_ms
+			: undefined;
+
+	if (!yieldTimeMs || yieldTimeMs <= 0) {
+		return undefined;
+	}
+
+	return params.timestampMs + yieldTimeMs + EXEC_COMMAND_STALE_GRACE_MS;
+};
+
+const getResponseMessageText = (
+	payload: Record<string, unknown>,
+): string | undefined => {
+	const content = payload.content;
+	if (typeof content === "string") {
+		return trimToUndefined(content);
+	}
+
+	if (!Array.isArray(content)) {
+		return undefined;
+	}
+
+	const chunks: string[] = [];
+	for (const part of content) {
+		if (typeof part === "string") {
+			chunks.push(part);
+			continue;
+		}
+
+		if (!isRecord(part)) {
+			continue;
+		}
+
+		const text =
+			getPayloadString(part, "text") ?? getPayloadString(part, "content");
+		if (text) {
+			chunks.push(text);
+		}
+	}
+
+	return trimToUndefined(chunks.join(""));
+};
+
+const parseSubagentAssignment = (
+	messageText: string | undefined,
+): CodexSubagentAssignment | undefined => {
+	const parsed = parseJsonRecord(messageText);
+	const triggerTurn = getPayloadBoolean(parsed, "trigger_turn");
+	const content = getPayloadString(parsed, "content");
+	if (triggerTurn !== true || !content) {
+		return undefined;
+	}
+
+	return {
+		recipient: getPayloadString(parsed, "recipient"),
+		content,
+	};
+};
+
+const isAssignmentForCurrentSubagent = (
+	summary: CodexSessionLogSummary,
+	assignment: CodexSubagentAssignment,
+): boolean => {
+	const sessionMeta = summary.sessionMeta;
+	const agentPath = trimToUndefined(sessionMeta?.agent_path);
+	if (!agentPath) {
+		return sessionMeta?.thread_source === "subagent";
+	}
+
+	return assignment.recipient === agentPath;
 };
 
 const toHumanCountLabel = (count: number, label: string): string => {
@@ -188,6 +350,81 @@ const normalizeTitle = (
 	return `${normalized.slice(0, 157)}...`;
 };
 
+const humanizeIdentifier = (value: string): string | undefined => {
+	const normalized = trimToUndefined(value.replace(/[_-]+/gu, " "));
+	if (!normalized) {
+		return undefined;
+	}
+
+	const lower = normalized.toLowerCase();
+	return lower.charAt(0).toUpperCase() + lower.slice(1);
+};
+
+const getLastPathSegment = (value: string | undefined): string | undefined => {
+	const trimmed = trimToUndefined(value);
+	if (!trimmed) {
+		return undefined;
+	}
+
+	const segments = trimmed.split("/").filter(Boolean);
+	return trimToUndefined(segments.at(-1));
+};
+
+const buildAgentTaskLabel = (
+	agentPath: string | undefined,
+): string | undefined => {
+	const segment = getLastPathSegment(agentPath);
+	if (!segment) {
+		return undefined;
+	}
+
+	return humanizeIdentifier(segment);
+};
+
+const resolveSubagentTitleCandidate = (params: {
+	thread: CodexThreadRow;
+	summary?: CodexSessionLogSummary;
+	parsedSource: ParsedCodexThreadSource;
+}): string | undefined => {
+	const assignment = params.summary?.subagentAssignment;
+	if (assignment) {
+		return assignment.content;
+	}
+
+	const agentPath =
+		trimToUndefined(params.summary?.sessionMeta?.agent_path) ??
+		trimToUndefined(params.parsedSource.agentPath);
+	const taskLabel = buildAgentTaskLabel(agentPath);
+	if (taskLabel) {
+		return taskLabel;
+	}
+
+	const agentNickname = trimToUndefined(params.thread.agent_nickname);
+	const agentRole = trimToUndefined(params.thread.agent_role);
+	if (agentNickname && agentRole) {
+		return `${agentNickname} (${agentRole})`;
+	}
+
+	return agentNickname ?? agentRole;
+};
+
+const resolveCodexTitle = (params: {
+	thread: CodexThreadRow;
+	summary?: CodexSessionLogSummary;
+	parsedSource: ParsedCodexThreadSource;
+	directory: string;
+}): string => {
+	const explicitTitle = trimToUndefined(params.thread.title);
+	if (explicitTitle) {
+		return normalizeTitle(explicitTitle, params.thread.id);
+	}
+
+	return normalizeTitle(
+		resolveSubagentTitleCandidate(params),
+		params.thread.id,
+	);
+};
+
 const parseCodexThreadSource = (
 	rawSource: string | null | undefined,
 ): ParsedCodexThreadSource => {
@@ -207,6 +444,7 @@ const parseCodexThreadSource = (
 						parent_thread_id?: string;
 						agent_role?: string;
 						agent_nickname?: string;
+						agent_path?: string;
 					};
 				};
 			};
@@ -218,6 +456,7 @@ const parseCodexThreadSource = (
 				parentThreadId: trimToUndefined(threadSpawn?.parent_thread_id),
 				agentRole: trimToUndefined(threadSpawn?.agent_role),
 				agentNickname: trimToUndefined(threadSpawn?.agent_nickname),
+				agentPath: trimToUndefined(threadSpawn?.agent_path),
 			};
 		} catch {
 			return {
@@ -330,6 +569,7 @@ export const summarizeCodexSessionLogContent = (
 		messageCount: 0,
 		taskState: "unknown",
 	};
+	const activeToolCalls = new Map<string, ActiveCodexToolCall>();
 
 	for (const line of content.split(/\r?\n/gu)) {
 		if (!line.trim()) {
@@ -342,6 +582,53 @@ export const summarizeCodexSessionLogContent = (
 			payload?: Record<string, unknown>;
 		};
 		const payload = (entry.payload ?? {}) as Record<string, unknown>;
+		const payloadType = getPayloadString(payload, "type");
+		const timestampMs = parseIsoTimestampMs(entry.timestamp);
+
+		if (
+			entry.type === "response_item" &&
+			(payloadType === "function_call" || payloadType === "custom_tool_call")
+		) {
+			const callId = getPayloadString(payload, "call_id");
+			const toolName =
+				getPayloadString(payload, "name") ??
+				`${payloadType.replace(/_/gu, " ")}`;
+			const status = getPayloadString(payload, "status");
+			if (callId && status !== "completed") {
+				activeToolCalls.set(callId, {
+					name: toolName,
+					expiresAtMs: getExecCommandExpiresAtMs({
+						toolName,
+						argumentsJson: getPayloadString(payload, "arguments"),
+						timestampMs,
+					}),
+					requiresApproval:
+						payloadType === "function_call" &&
+						isApprovalRequiredFunctionCall(payload),
+				});
+			}
+			continue;
+		}
+
+		if (
+			entry.type === "response_item" &&
+			(payloadType === "function_call_output" ||
+				payloadType === "custom_tool_call_output")
+		) {
+			const callId = getPayloadString(payload, "call_id");
+			if (callId) {
+				activeToolCalls.delete(callId);
+			}
+			continue;
+		}
+
+		if (entry.type === "event_msg" && payloadType === "mcp_tool_call_end") {
+			const callId = getPayloadString(payload, "call_id");
+			if (callId) {
+				activeToolCalls.delete(callId);
+			}
+			continue;
+		}
 
 		if (entry.type === "session_meta") {
 			summary.sessionMeta = payload as CodexSessionMetaPayload;
@@ -349,6 +636,14 @@ export const summarizeCodexSessionLogContent = (
 		}
 
 		if (entry.type === "response_item" && payload.type === "message") {
+			if (!summary.subagentAssignment) {
+				const assignment = parseSubagentAssignment(
+					getResponseMessageText(payload),
+				);
+				if (assignment && isAssignmentForCurrentSubagent(summary, assignment)) {
+					summary.subagentAssignment = assignment;
+				}
+			}
 			summary.messageCount += 1;
 			continue;
 		}
@@ -371,35 +666,64 @@ export const summarizeCodexSessionLogContent = (
 
 		if (eventType === "task_started") {
 			summary.taskState = "running";
+			summary.waitingForApproval = false;
+			summary.waitingForUser = false;
 			summary.abortedReason = undefined;
 			summary.completedAtMs = undefined;
 			summary.startedAtMs =
-				normalizeTimestampMs(payload.started_at as number | undefined) ??
+				normalizeTimestampMs(getPayloadNumber(payload, "started_at")) ??
 				parseIsoTimestampMs(entry.timestamp);
+			activeToolCalls.clear();
 			continue;
 		}
 
 		if (eventType === "task_complete") {
 			summary.taskState = "completed";
+			summary.waitingForApproval = false;
+			summary.waitingForUser = false;
 			summary.abortedReason = undefined;
 			summary.completedAtMs =
-				normalizeTimestampMs(payload.completed_at as number | undefined) ??
+				normalizeTimestampMs(getPayloadNumber(payload, "completed_at")) ??
 				parseIsoTimestampMs(entry.timestamp);
 			summary.lastAgentMessage = trimToUndefined(
 				payload.last_agent_message as string | undefined,
 			);
+			activeToolCalls.clear();
 			continue;
 		}
 
 		if (eventType === "turn_aborted") {
 			summary.taskState = "aborted";
+			summary.waitingForApproval = false;
+			summary.waitingForUser = false;
 			summary.abortedReason = trimToUndefined(
 				payload.reason as string | undefined,
 			);
 			summary.completedAtMs =
-				normalizeTimestampMs(payload.completed_at as number | undefined) ??
+				normalizeTimestampMs(getPayloadNumber(payload, "completed_at")) ??
 				parseIsoTimestampMs(entry.timestamp);
+			activeToolCalls.clear();
 		}
+	}
+
+	if (summary.taskState === "running") {
+		const nowMs = Date.now();
+		const activeCalls = [...activeToolCalls.values()];
+		const approvalCalls = activeCalls.filter((call) => call.requiresApproval);
+		const regularCalls = activeCalls.filter((call) => !call.requiresApproval);
+		const unexpiredRegularCalls = regularCalls.filter(
+			(call) => !call.expiresAtMs || call.expiresAtMs > nowMs,
+		);
+		summary.activeToolNames =
+			unexpiredRegularCalls.length > 0
+				? [...new Set(unexpiredRegularCalls.map((call) => call.name))]
+				: undefined;
+		summary.waitingForApproval =
+			unexpiredRegularCalls.length === 0 && approvalCalls.length > 0;
+		summary.waitingForUser =
+			!summary.waitingForApproval &&
+			regularCalls.length > 0 &&
+			unexpiredRegularCalls.length === 0;
 	}
 
 	return summary;
@@ -506,6 +830,22 @@ export const resolveCodexStatus = (params: {
 	const lastEventType = trimToUndefined(summary?.lastEventType);
 
 	if (summary?.taskState === "running") {
+		if (summary.waitingForApproval) {
+			return {
+				status: SessionStatus.waiting,
+				finishReason: "awaiting_approval",
+				statusDetail: "Awaiting approval",
+			};
+		}
+
+		if (summary.waitingForUser) {
+			return {
+				status: SessionStatus.waiting,
+				finishReason: "awaiting_user",
+				statusDetail: "Awaiting user input",
+			};
+		}
+
 		return {
 			status: SessionStatus.running,
 			finishReason: "task_started",
@@ -610,7 +950,12 @@ const buildCodexSessionRecord = (params: {
 
 	return {
 		id: thread.id,
-		title: normalizeTitle(thread.title, thread.id),
+		title: resolveCodexTitle({
+			thread,
+			summary,
+			parsedSource,
+			directory,
+		}),
 		directory,
 		project_id: projectId,
 		project_label: projectLabel,

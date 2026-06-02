@@ -476,6 +476,17 @@ export const truncateLabelEnd = (
 	return ELLIPSIS + label.slice(-(maxLength - ELLIPSIS.length));
 };
 
+export const truncateLabelStart = (
+	label: string,
+	maxLength: number = DEFAULT_MAX_LABEL_LENGTH,
+): string => {
+	if (label.length <= maxLength) {
+		return label;
+	}
+
+	return label.slice(0, maxLength - ELLIPSIS.length) + ELLIPSIS;
+};
+
 // ============================================================================
 // Node Info Helpers
 // ============================================================================

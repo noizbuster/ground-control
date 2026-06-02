@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { getDisplayStatus, getStatusLabel } from "../src/lib/hierarchyHelpers";
+import {
+	getDisplayStatus,
+	getStatusLabel,
+	truncateLabelStart,
+} from "../src/lib/hierarchyHelpers";
 import { SessionStatus } from "../src/types";
 
 describe("hierarchy status helpers", () => {
@@ -58,5 +62,18 @@ describe("hierarchy status helpers", () => {
 				finishReason: "tool-calls",
 			}),
 		).toBe(SessionStatus.waiting);
+	});
+});
+
+describe("hierarchy label helpers", () => {
+	it("preserves the start of long titles and places ellipses at the end", () => {
+		const title = truncateLabelStart(
+			"TASK: Determine likely test/build/QA infrastructure implied by specs",
+			24,
+		);
+
+		expect(title).toStartWith("TASK: Determine");
+		expect(title).toEndWith("...");
+		expect(title).not.toStartWith("...");
 	});
 });
