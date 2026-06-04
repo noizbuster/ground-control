@@ -93,6 +93,18 @@ interface CodexSubagentAssignment {
 	readonly content: string;
 }
 
+interface CodexSubagentNotificationStatus {
+	readonly completed?: string;
+	readonly blocked?: string;
+}
+
+interface CodexListedAgentState {
+	readonly agentName: string;
+	readonly agentStatus: string;
+	readonly lastTaskMessage?: string;
+	readonly observedAtMs?: number;
+}
+
 export interface CodexSessionLogSummary {
 	sessionMeta?: CodexSessionMetaPayload;
 	messageCount: number;
@@ -104,6 +116,7 @@ export interface CodexSessionLogSummary {
 	waitingForApproval?: boolean;
 	waitingForUser?: boolean;
 	activeToolNames?: string[];
+	latestAgentStates?: CodexListedAgentState[];
 	abortedReason?: string;
 	startedAtMs?: number;
 	completedAtMs?: number;
@@ -292,6 +305,76 @@ const parseSubagentAssignment = (
 		recipient: getPayloadString(parsed, "recipient"),
 		content,
 	};
+};
+
+const extractSubagentNotificationContent = (
+	messageText: string | undefined,
+): string | undefined => {
+	const directContent = trimToUndefined(messageText);
+	if (!directContent) {
+		return undefined;
+	}
+
+	const envelope =
+		getPayloadString(parseJsonRecord(directContent), "content") ??
+		directContent;
+	const match = envelope?.match(
+		/<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>/u,
+	);
+
+	return trimToUndefined(match?.[1]);
+};
+
+const parseSubagentNotificationStatus = (
+	messageText: string | undefined,
+): CodexSubagentNotificationStatus | undefined => {
+	const notificationContent = extractSubagentNotificationContent(messageText);
+	const notification = parseJsonRecord(notificationContent);
+	const status = notification.status;
+	if (!isRecord(status)) {
+		return undefined;
+	}
+
+	const completed = getPayloadString(status, "completed");
+	const blocked = getPayloadString(status, "blocked");
+	if (!completed && !blocked) {
+		return undefined;
+	}
+
+	return { completed, blocked };
+};
+
+const parseListAgentsOutput = (
+	output: string | undefined,
+	observedAtMs: number | undefined,
+): CodexListedAgentState[] | undefined => {
+	const parsed = parseJsonRecord(output);
+	const agents = parsed.agents;
+	if (!Array.isArray(agents)) {
+		return undefined;
+	}
+
+	const agentStates: CodexListedAgentState[] = [];
+	for (const agent of agents) {
+		if (!isRecord(agent)) {
+			continue;
+		}
+
+		const agentName = getPayloadString(agent, "agent_name");
+		const agentStatus = getPayloadString(agent, "agent_status");
+		if (!agentName || !agentStatus) {
+			continue;
+		}
+
+		agentStates.push({
+			agentName,
+			agentStatus,
+			lastTaskMessage: getPayloadString(agent, "last_task_message"),
+			observedAtMs,
+		});
+	}
+
+	return agentStates.length > 0 ? agentStates : undefined;
 };
 
 const isAssignmentForCurrentSubagent = (
@@ -616,6 +699,16 @@ export const summarizeCodexSessionLogContent = (
 				payloadType === "custom_tool_call_output")
 		) {
 			const callId = getPayloadString(payload, "call_id");
+			const activeCall = callId ? activeToolCalls.get(callId) : undefined;
+			if (activeCall?.name === "list_agents") {
+				const agentStates = parseListAgentsOutput(
+					getPayloadString(payload, "output"),
+					timestampMs,
+				);
+				if (agentStates) {
+					summary.latestAgentStates = agentStates;
+				}
+			}
 			if (callId) {
 				activeToolCalls.delete(callId);
 			}
@@ -636,10 +729,27 @@ export const summarizeCodexSessionLogContent = (
 		}
 
 		if (entry.type === "response_item" && payload.type === "message") {
+			const messageText = getResponseMessageText(payload);
+			const notificationStatus = parseSubagentNotificationStatus(messageText);
+			if (notificationStatus?.completed) {
+				summary.taskState = "completed";
+				summary.waitingForApproval = false;
+				summary.waitingForUser = false;
+				summary.abortedReason = undefined;
+				summary.completedAtMs = timestampMs;
+				summary.lastAgentMessage = notificationStatus.completed;
+				activeToolCalls.clear();
+			} else if (notificationStatus?.blocked) {
+				summary.taskState = "aborted";
+				summary.waitingForApproval = false;
+				summary.waitingForUser = false;
+				summary.abortedReason = notificationStatus.blocked;
+				summary.completedAtMs = timestampMs;
+				activeToolCalls.clear();
+			}
+
 			if (!summary.subagentAssignment) {
-				const assignment = parseSubagentAssignment(
-					getResponseMessageText(payload),
-				);
+				const assignment = parseSubagentAssignment(messageText);
 				if (assignment && isAssignmentForCurrentSubagent(summary, assignment)) {
 					summary.subagentAssignment = assignment;
 				}
@@ -915,6 +1025,9 @@ const buildSourceMetadata = (params: {
 		agentNickname:
 			trimToUndefined(thread.agent_nickname) ??
 			trimToUndefined(parsedSource.agentNickname),
+		agentPath:
+			trimToUndefined(summary?.sessionMeta?.agent_path) ??
+			trimToUndefined(parsedSource.agentPath),
 		reasoningEffort: trimToUndefined(thread.reasoning_effort),
 		lastEventType: trimToUndefined(summary?.lastEventType),
 		lastTurnId: trimToUndefined(summary?.lastTurnId),
@@ -1010,6 +1123,203 @@ const resolveRootId = (
 	}
 };
 
+const isDescendantThread = (
+	threadId: string,
+	ancestorThreadId: string,
+	parentByChildId: Map<string, string>,
+): boolean => {
+	const visited = new Set<string>();
+	let currentId = threadId;
+
+	while (true) {
+		const parentId = parentByChildId.get(currentId);
+		if (!parentId || visited.has(currentId)) {
+			return false;
+		}
+
+		if (parentId === ancestorThreadId) {
+			return true;
+		}
+
+		visited.add(currentId);
+		currentId = parentId;
+	}
+};
+
+const isShutdownAgentStatus = (status: string | undefined): boolean =>
+	trimToUndefined(status)?.toLowerCase() === "shutdown";
+
+const isRunningAgentStatus = (status: string | undefined): boolean =>
+	trimToUndefined(status)?.toLowerCase() === "running";
+
+const setCodexSessionAgentRosterStatus = (params: {
+	session: (Session | SubagentSession) & { sessionSource: "codex" };
+	status: SessionStatus;
+	statusDetail: string;
+	finishReason: string;
+	agentStatus?: string;
+	observedAtMs?: number;
+}): void => {
+	const {
+		session,
+		status,
+		statusDetail,
+		finishReason,
+		agentStatus,
+		observedAtMs,
+	} = params;
+	session.status = status;
+	session.statusDetail = statusDetail;
+	session.finishReason = finishReason;
+	session.sourceMetadata = {
+		...(session.sourceMetadata ?? {}),
+		agentStatus,
+		agentListObservedAtMs: observedAtMs,
+	};
+};
+
+const applyCodexAgentRosterSnapshots = (params: {
+	threads: CodexThreadRow[];
+	parentByChildId: Map<string, string>;
+	parsedSourceByThreadId: Map<string, ParsedCodexThreadSource>;
+	logSummaries: Partial<Record<string, CodexSessionLogSummary>>;
+	statusResolutionByThreadId: Partial<Record<string, CodexStatusResolution>>;
+	statusObservedAtByThreadId: Partial<Record<string, number>>;
+	sessionsById: Map<
+		string,
+		(Session | SubagentSession) & { sessionSource: "codex" }
+	>;
+	statusBySessionId: Partial<Record<string, SessionStatus>>;
+}): void => {
+	const {
+		threads,
+		parentByChildId,
+		parsedSourceByThreadId,
+		logSummaries,
+		statusResolutionByThreadId,
+		statusObservedAtByThreadId,
+		sessionsById,
+		statusBySessionId,
+	} = params;
+
+	for (const [ownerThreadId, ownerSummary] of Object.entries(logSummaries)) {
+		const agentStates = ownerSummary?.latestAgentStates;
+		if (!agentStates || agentStates.length === 0) {
+			continue;
+		}
+
+		const statusByAgentName = new Map(
+			agentStates.map((agentState) => [agentState.agentName, agentState]),
+		);
+		const observedAtMs = agentStates.find(
+			(agentState) => typeof agentState.observedAtMs === "number",
+		)?.observedAtMs;
+
+		for (const thread of threads) {
+			if (
+				thread.id === ownerThreadId ||
+				!isDescendantThread(thread.id, ownerThreadId, parentByChildId)
+			) {
+				continue;
+			}
+
+			const session = sessionsById.get(thread.id);
+			if (!session) {
+				continue;
+			}
+
+			const agentPath =
+				trimToUndefined(logSummaries[thread.id]?.sessionMeta?.agent_path) ??
+				trimToUndefined(parsedSourceByThreadId.get(thread.id)?.agentPath);
+			if (!agentPath) {
+				continue;
+			}
+
+			const listedAgentState = statusByAgentName.get(agentPath);
+			if (listedAgentState) {
+				const listedObservedAtMs = listedAgentState.observedAtMs;
+				const previousObservedAtMs = statusObservedAtByThreadId[thread.id];
+				if (
+					typeof listedObservedAtMs === "number" &&
+					typeof previousObservedAtMs === "number" &&
+					listedObservedAtMs < previousObservedAtMs
+				) {
+					continue;
+				}
+
+				if (isShutdownAgentStatus(listedAgentState.agentStatus)) {
+					setCodexSessionAgentRosterStatus({
+						session,
+						status: SessionStatus.unknown,
+						statusDetail: "Subagent shutdown",
+						finishReason: "subagent_shutdown",
+						agentStatus: listedAgentState.agentStatus,
+						observedAtMs: listedAgentState.observedAtMs,
+					});
+					statusResolutionByThreadId[thread.id] = {
+						status: SessionStatus.unknown,
+						statusDetail: "Subagent shutdown",
+						finishReason: "subagent_shutdown",
+					};
+					if (typeof listedObservedAtMs === "number") {
+						statusObservedAtByThreadId[thread.id] = listedObservedAtMs;
+					}
+					statusBySessionId[thread.id] = SessionStatus.unknown;
+					continue;
+				}
+
+				if (
+					isRunningAgentStatus(listedAgentState.agentStatus) &&
+					!isActiveStatus(session.status) &&
+					logSummaries[thread.id]?.taskState !== "completed" &&
+					logSummaries[thread.id]?.taskState !== "aborted"
+				) {
+					setCodexSessionAgentRosterStatus({
+						session,
+						status: SessionStatus.running,
+						statusDetail: "Listed as running",
+						finishReason: "subagent_roster_running",
+						agentStatus: listedAgentState.agentStatus,
+						observedAtMs: listedAgentState.observedAtMs,
+					});
+					statusResolutionByThreadId[thread.id] = {
+						status: SessionStatus.running,
+						statusDetail: "Listed as running",
+						finishReason: "subagent_roster_running",
+					};
+					if (typeof listedObservedAtMs === "number") {
+						statusObservedAtByThreadId[thread.id] = listedObservedAtMs;
+					}
+					statusBySessionId[thread.id] = SessionStatus.running;
+				}
+				continue;
+			}
+
+			if (
+				typeof observedAtMs === "number" &&
+				session.time_created <= observedAtMs &&
+				logSummaries[thread.id]?.taskState !== "completed" &&
+				observedAtMs >= (statusObservedAtByThreadId[thread.id] ?? 0)
+			) {
+				setCodexSessionAgentRosterStatus({
+					session,
+					status: SessionStatus.unknown,
+					statusDetail: "Absent from latest agent list",
+					finishReason: "subagent_absent_from_agent_roster",
+					observedAtMs,
+				});
+				statusResolutionByThreadId[thread.id] = {
+					status: SessionStatus.unknown,
+					statusDetail: "Absent from latest agent list",
+					finishReason: "subagent_absent_from_agent_roster",
+				};
+				statusObservedAtByThreadId[thread.id] = observedAtMs;
+				statusBySessionId[thread.id] = SessionStatus.unknown;
+			}
+		}
+	}
+};
+
 export const buildCodexSessionSnapshot = (params: {
 	threads: CodexThreadRow[];
 	edges: CodexThreadSpawnEdgeRow[];
@@ -1020,6 +1330,10 @@ export const buildCodexSessionSnapshot = (params: {
 	const statusBySessionId: Partial<Record<string, SessionStatus>> = {};
 	const messageCountBySessionId: Partial<Record<string, number>> = {};
 	const sessionIssues: Partial<Record<string, string>> = { ...logIssues };
+	const statusResolutionByThreadId: Partial<
+		Record<string, CodexStatusResolution>
+	> = {};
+	const statusObservedAtByThreadId: Partial<Record<string, number>> = {};
 	const edgeStatsByThreadId = buildThreadEdgeStats(edges);
 	const edgesByParentThreadId = buildEdgesByParentThreadId(edges);
 	const parsedSourceByThreadId = new Map(
@@ -1073,6 +1387,17 @@ export const buildCodexSessionSnapshot = (params: {
 				logSummaries[thread.id]?.messageCount;
 		}
 	}
+
+	applyCodexAgentRosterSnapshots({
+		threads,
+		parentByChildId,
+		parsedSourceByThreadId,
+		logSummaries,
+		statusResolutionByThreadId,
+		statusObservedAtByThreadId,
+		sessionsById,
+		statusBySessionId,
+	});
 
 	const rootSessionsById = new Map<string, Session>();
 	for (const thread of threads) {
@@ -1188,10 +1513,12 @@ export const buildCodexSessionSnapshot = (params: {
 			}
 		}
 
-		const nextStatus = resolveCodexStatus({
-			summary: logSummaries[threadId],
-			edgeStats: nextEdgeStats,
-		});
+		const nextStatus =
+			statusResolutionByThreadId[threadId] ??
+			resolveCodexStatus({
+				summary: logSummaries[threadId],
+				edgeStats: nextEdgeStats,
+			});
 		session.status = nextStatus.status;
 		session.statusDetail = nextStatus.statusDetail;
 		session.finishReason = nextStatus.finishReason;

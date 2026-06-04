@@ -23,6 +23,9 @@ export interface SessionSourceMetadata {
 	sourceCategory?: string;
 	agentRole?: string;
 	agentNickname?: string;
+	agentPath?: string;
+	agentStatus?: string;
+	agentListObservedAtMs?: number;
 	reasoningEffort?: string;
 	modelRole?: string;
 	activeToolNames?: string[];
