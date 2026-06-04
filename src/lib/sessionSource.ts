@@ -12,7 +12,7 @@ const OPENCODE_CAPABILITIES: SessionCapabilities = {
 const CODEX_CAPABILITIES: SessionCapabilities = {
 	attach: true,
 	delete: true,
-	abortChildren: false,
+	abortChildren: true,
 	hierarchy: true,
 };
 

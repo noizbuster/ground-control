@@ -22,7 +22,7 @@ describe("sessionSource helpers", () => {
 		expect(getDefaultSessionCapabilities("codex")).toEqual({
 			attach: true,
 			delete: true,
-			abortChildren: false,
+			abortChildren: true,
 			hierarchy: true,
 		});
 		expect(getDefaultSessionCapabilities("claude")).toEqual({
@@ -45,16 +45,16 @@ describe("sessionSource helpers", () => {
 		});
 	});
 
-	it("gates unsupported codex actions", () => {
+	it("enables codex attach, delete, and child abort actions", () => {
 		const session = {
 			sessionSource: "codex",
 			capabilities: undefined,
 		} as const;
 		expect(canAttachToSession(session)).toBe(true);
 		expect(canDeleteSession(session)).toBe(true);
-		expect(canAbortSessionChildren(session)).toBe(false);
+		expect(canAbortSessionChildren(session)).toBe(true);
 		expect(getSessionCapabilitySummary(session)).toBe(
-			"attach, delete, hierarchy",
+			"attach, delete, abort child sessions, hierarchy",
 		);
 	});
 

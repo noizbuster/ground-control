@@ -26,6 +26,7 @@ import {
 } from "@opentui/core";
 import { deleteClaudeSession } from "./db/claude";
 import { deleteCodexSession } from "./db/codex";
+import { abortCodexChildSession } from "./db/codex-child-abort";
 import { deleteOmpSession, deletePiSession } from "./db/pi";
 import {
 	createErrorResponse,
@@ -66,6 +67,7 @@ import {
 	type HierarchyViewMode,
 	type Session,
 	SessionStatus,
+	type SubagentSession,
 } from "./types";
 import { createDetailPanelContent } from "./ui/DetailPanel";
 import {
@@ -3048,13 +3050,17 @@ const main = async () => {
 	};
 
 	const gracefulAbortSession = async (
-		sessionId: string,
+		session: SubagentSession,
 		projectDir: string,
 	): Promise<{ ok: boolean; error?: string }> => {
+		if (session.sessionSource === "codex") {
+			return abortCodexChildSession(session);
+		}
+
 		try {
 			const opencodeExecutable = Bun.which("opencode") ?? "opencode";
 			const proc = Bun.spawn({
-				cmd: [opencodeExecutable, "run", "--session", sessionId, "stop"],
+				cmd: [opencodeExecutable, "run", "--session", session.id, "stop"],
 				cwd: projectDir,
 				stdin: "ignore",
 				stdout: "pipe",
@@ -3095,15 +3101,13 @@ const main = async () => {
 			return;
 		}
 
-		const childIds = selectedSession.subagentSessions
-			.filter(
-				(s) =>
-					s.status !== SessionStatus.completed &&
-					s.status !== SessionStatus.failed,
-			)
-			.map((s) => s.id);
+		const activeChildren = selectedSession.subagentSessions.filter(
+			(s) =>
+				s.status !== SessionStatus.completed &&
+				s.status !== SessionStatus.failed,
+		);
 
-		if (childIds.length === 0) {
+		if (activeChildren.length === 0) {
 			state.pendingKillSessionId = null;
 			state.pendingKillChildrenCount = 0;
 			state.isKillingChildren = false;
@@ -3121,18 +3125,30 @@ const main = async () => {
 			const projectDir = selectedSession.directory || process.cwd();
 
 			const results = await Promise.allSettled(
-				childIds.map((childId) => gracefulAbortSession(childId, projectDir)),
+				activeChildren.map((child) => gracefulAbortSession(child, projectDir)),
 			);
-			const failedIds = childIds.filter(
-				(_, i) => results[i]?.status === "rejected",
-			);
-			const successCount = childIds.length - failedIds.length;
+			const failedIds = activeChildren
+				.filter((_, i) => {
+					const result = results[i];
+					return (
+						!result ||
+						result.status === "rejected" ||
+						(result.status === "fulfilled" && !result.value.ok)
+					);
+				})
+				.map((child) => child.id);
+			const successCount = activeChildren.length - failedIds.length;
 
-			if (failedIds.length > 0 && successCount === 0) {
+			if (failedIds.length > 0) {
 				state.isKillingChildren = false;
 				state.killFallbackRemaining = failedIds;
 				state.killFallbackConfirmed = [];
 				state.killFallbackCurrentIndex = 0;
+				if (successCount > 0) {
+					showToast(
+						`Stopped ${successCount}/${activeChildren.length} children (${failedIds.length} need delete)`,
+					);
+				}
 				startPolling();
 				render();
 				return;
@@ -3144,13 +3160,7 @@ const main = async () => {
 			state.killChildrenError = null;
 			state.gridFollowSelectionOnRender = true;
 
-			if (failedIds.length > 0) {
-				showToast(
-					`Stopped ${successCount}/${childIds.length} children (${failedIds.length} need delete)`,
-				);
-			} else {
-				showToast(`Stopped ${childIds.length} child sessions`);
-			}
+			showToast(`Stopped ${activeChildren.length} child sessions`);
 			startPolling();
 			refreshSessions();
 		} catch (error) {
@@ -3206,9 +3216,21 @@ const main = async () => {
 		renderer.intermediateRender();
 
 		try {
-			const opencodeExecutable = Bun.which("opencode") ?? "opencode";
+			const rootSession = state.allSessions.find(
+				(session) => session.id === state.pendingKillSessionId,
+			);
 			const results = await Promise.allSettled(
 				confirmedIds.map(async (childId) => {
+					if (rootSession?.sessionSource === "codex") {
+						const result = await deleteCodexSession(childId);
+						if (!result.ok) {
+							throw result.error;
+						}
+
+						return childId;
+					}
+
+					const opencodeExecutable = Bun.which("opencode") ?? "opencode";
 					const child = Bun.spawn({
 						cmd: [opencodeExecutable, "session", "delete", childId],
 						stdout: "pipe",

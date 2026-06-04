@@ -75,7 +75,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 Available in detail or sideview mode. Press `K` (Shift+K) to gracefully stop all active (non-completed, non-failed) child sessions of the selected session.
 
-Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows, and child-abort remains OpenCode-only. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID.
+Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Child-abort is supported for OpenCode and Codex sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID.
 
 The stop flow works in two stages:
 
@@ -117,7 +117,7 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - Override Pi sessions with `GCTRL_PI_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are also honored.
 - Override omp sessions with `GCTRL_OMP_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`, and XDG omp candidates are also honored.
 - OpenCode attach/delete/child-abort actions use the `opencode` CLI.
-- Codex attach/delete actions use the local `codex` CLI.
+- Codex attach/delete/child-abort actions use the local `codex` CLI and app-server protocol.
 - Claude Code attach actions use the local `claude` CLI.
 - Pi attach actions use the local `pi` CLI; Pi delete removes the selected JSONL session and any loaded descendant JSONL sessions.
 - omp attach actions use the local `omp` CLI; omp delete removes the selected JSONL session, loaded descendant JSONL sessions, and sibling artifact directories, but not shared blob storage.
