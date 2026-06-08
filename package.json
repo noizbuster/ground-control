@@ -6,10 +6,12 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun run --watch src/index.ts",
+    "capture:codex": "bun run scripts/capture-codex.ts",
     "typecheck": "bun x tsc --noEmit",
+    "typecheck:scripts": "bun x tsc --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --skipLibCheck --types bun scripts/capture-codex.ts scripts/codex-capture/*.ts",
     "build": "bun x tsc --project tsconfig.build.json",
     "lint": "bunx @biomejs/biome check src",
-    "check": "bun run lint && bun run typecheck",
+    "check": "bun run lint && bun run typecheck && bun run typecheck:scripts",
     "prepack": "bun run build"
   },
   "bin": {

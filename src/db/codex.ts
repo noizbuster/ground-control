@@ -94,6 +94,7 @@ interface CodexSubagentAssignment {
 }
 
 interface CodexSubagentNotificationStatus {
+	readonly agentPath?: string;
 	readonly completed?: string;
 	readonly blocked?: string;
 }
@@ -341,7 +342,23 @@ const parseSubagentNotificationStatus = (
 		return undefined;
 	}
 
-	return { completed, blocked };
+	return {
+		agentPath: getPayloadString(notification, "agent_path"),
+		completed,
+		blocked,
+	};
+};
+
+const isNotificationForCurrentSubagent = (
+	summary: CodexSessionLogSummary,
+	notificationStatus: CodexSubagentNotificationStatus,
+): boolean => {
+	const agentPath = trimToUndefined(summary.sessionMeta?.agent_path);
+	if (!agentPath) {
+		return summary.sessionMeta?.thread_source === "subagent";
+	}
+
+	return trimToUndefined(notificationStatus.agentPath) === agentPath;
 };
 
 const parseListAgentsOutput = (
@@ -731,7 +748,10 @@ export const summarizeCodexSessionLogContent = (
 		if (entry.type === "response_item" && payload.type === "message") {
 			const messageText = getResponseMessageText(payload);
 			const notificationStatus = parseSubagentNotificationStatus(messageText);
-			if (notificationStatus?.completed) {
+			if (
+				notificationStatus?.completed &&
+				isNotificationForCurrentSubagent(summary, notificationStatus)
+			) {
 				summary.taskState = "completed";
 				summary.waitingForApproval = false;
 				summary.waitingForUser = false;
@@ -739,7 +759,10 @@ export const summarizeCodexSessionLogContent = (
 				summary.completedAtMs = timestampMs;
 				summary.lastAgentMessage = notificationStatus.completed;
 				activeToolCalls.clear();
-			} else if (notificationStatus?.blocked) {
+			} else if (
+				notificationStatus?.blocked &&
+				isNotificationForCurrentSubagent(summary, notificationStatus)
+			) {
 				summary.taskState = "aborted";
 				summary.waitingForApproval = false;
 				summary.waitingForUser = false;

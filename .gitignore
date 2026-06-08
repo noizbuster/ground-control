@@ -1,4 +1,5 @@
 .sisyphus/
+.gctrl-captures/
 node_modules/
 dist/
 *.tgz

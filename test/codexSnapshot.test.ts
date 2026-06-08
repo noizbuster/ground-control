@@ -156,6 +156,14 @@ describe("summarizeCodexSessionLogContent", () => {
 		const summary = summarizeCodexSessionLogContent(
 			[
 				JSON.stringify({
+					timestamp: "2026-04-22T09:00:00.000Z",
+					type: "session_meta",
+					payload: {
+						thread_source: "subagent",
+						agent_path: "/root/task/member_context",
+					},
+				}),
+				JSON.stringify({
 					timestamp: "2026-04-22T09:00:01.000Z",
 					type: "event_msg",
 					payload: {
@@ -185,6 +193,75 @@ describe("summarizeCodexSessionLogContent", () => {
 		expect(summary.lastAgentMessage).toBe(
 			"Blocked after collecting the member API context.",
 		);
+	});
+
+	it("keeps root threads running when they receive subagent completion notifications", () => {
+		const notification = {
+			author: "/root/plan_auth_list_logout_check",
+			recipient: "/root",
+			other_recipients: [],
+			content: [
+				"<subagent_notification>",
+				JSON.stringify({
+					agent_path: "/root/plan_auth_list_logout_check",
+					status: {
+						completed: "Plan-only result for auth list/logout hardening.",
+					},
+				}),
+				"</subagent_notification>",
+			].join("\n"),
+			trigger_turn: false,
+		};
+		const summary = summarizeCodexSessionLogContent(
+			[
+				JSON.stringify({
+					timestamp: "2026-04-22T09:00:00.000Z",
+					type: "session_meta",
+					payload: {
+						thread_source: "user",
+					},
+				}),
+				JSON.stringify({
+					timestamp: "2026-04-22T09:00:01.000Z",
+					type: "event_msg",
+					payload: {
+						type: "task_started",
+						turn_id: "turn-1",
+					},
+				}),
+				JSON.stringify({
+					timestamp: "2026-04-22T09:00:02.000Z",
+					type: "response_item",
+					payload: {
+						type: "message",
+						role: "assistant",
+						content: [
+							{
+								type: "output_text",
+								text: JSON.stringify(notification),
+							},
+						],
+					},
+				}),
+				JSON.stringify({
+					timestamp: "2026-04-22T09:00:03.000Z",
+					type: "response_item",
+					payload: {
+						type: "function_call",
+						name: "exec_command",
+						call_id: "call-active",
+						arguments: JSON.stringify({
+							cmd: "bun test",
+							yield_time_ms: 3_600_000,
+						}),
+					},
+				}),
+			].join("\n"),
+		);
+
+		expect(summary.taskState).toBe("running");
+		expect(summary.completedAtMs).toBeUndefined();
+		expect(summary.lastAgentMessage).toBeUndefined();
 	});
 
 	it("extracts the latest list_agents roster from tool output", () => {
