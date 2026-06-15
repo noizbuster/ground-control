@@ -135,6 +135,17 @@ const RESTORE_PRIMARY_SCREEN_SEQUENCE =
 	"\u001B[?2004l" +
 	"\u001B[?25h";
 const CLEAR_TERMINAL_SEQUENCE = "\u001B[2J\u001B[H";
+
+// Re-enter the alternate screen and wipe it, wrapped in a Synchronized-Update
+// window so Kitty applies the switch + clear atomically (no flash of the stale
+// gctrl frame). renderer.suspend() drops us to the primary screen; we then climb
+// back onto a clean alternate buffer so the attached CLI (codex/claude/opencode -
+// all main-screen BSU renderers that never emit their own ?1049h) paints there
+// instead of overwriting the primary screen. That keeps pre-gctrl scrollback
+// intact and removes the stale-frame ghost the child would otherwise paint over.
+// Blocking writeSync so the buffer switch reaches the kernel PTY before spawn.
+const ALT_SCREEN_CLEAR_SEQUENCE =
+	"\u001B[?2026h" + "\u001B[?1049h" + "\u001B[2J\u001B[H" + "\u001B[?2026l";
 const ATTACH_DEBUG_OUTPUT_TAIL_LENGTH = 4000;
 const ATTACH_DEBUG_DIRECTORY = join(homedir(), ".cache", "gctrl");
 const DEFAULT_ATTACH_DEBUG_PATH = join(
@@ -508,6 +519,12 @@ const restorePrimaryScreen = () => {
 	// Kitty on the alternate screen.
 	try {
 		writeSync(1, RESTORE_PRIMARY_SCREEN_SEQUENCE);
+	} catch {}
+};
+
+const clearAlternateScreen = () => {
+	try {
+		writeSync(1, ALT_SCREEN_CLEAR_SEQUENCE);
 	} catch {}
 };
 
@@ -3378,7 +3395,7 @@ const main = async () => {
 
 		try {
 			renderer.suspend();
-			clearTerminalScreen();
+			clearAlternateScreen();
 			attachExitCode = await runAttachedSession(attachLaunchSpec);
 		} catch (error) {
 			attachErrorMessage =

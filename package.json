@@ -1,6 +1,6 @@
 {
   "name": "gctrl",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Real-time OpenCode, Codex, and Claude Code session monitor CLI",
   "type": "module",
   "scripts": {
