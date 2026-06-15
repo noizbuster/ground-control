@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	readlinkSync,
 	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -120,7 +121,20 @@ const ROOT_PADDING_TOP = 1;
 const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
 const FOOTER_INLINE_GAP = 1;
-const CLEAR_TERMINAL_SEQUENCE = "\u001B[2J\u001B[3J\u001B[H";
+// Emitted synchronously to fd 1 right before process.exit on shutdown.
+// opentui wraps every render frame in Synchronized Updates (?2026h...?2026l) but
+// none of its teardown paths (destroy/suspend) emit a closing ?2026l. Kitty keeps
+// the leave-alt-screen byte (?1049l) buffered inside that open BSU window and,
+// with process.exit firing immediately, never applies it - leaving Kitty on the
+// alternate screen with no scrollback. The leading ?2026l flushes that buffer;
+// the rest re-states the full teardown in case opentui's own was held back.
+const RESTORE_PRIMARY_SCREEN_SEQUENCE =
+	"\u001B[?2026l" +
+	"\u001B[?1049l" +
+	"\u001B[?1006l\u001B[?1003l\u001B[?1002l\u001B[?1000l" +
+	"\u001B[?2004l" +
+	"\u001B[?25h";
+const CLEAR_TERMINAL_SEQUENCE = "\u001B[2J\u001B[H";
 const ATTACH_DEBUG_OUTPUT_TAIL_LENGTH = 4000;
 const ATTACH_DEBUG_DIRECTORY = join(homedir(), ".cache", "gctrl");
 const DEFAULT_ATTACH_DEBUG_PATH = join(
@@ -487,6 +501,16 @@ const clearTerminalScreen = () => {
 	} catch {}
 };
 
+const restorePrimaryScreen = () => {
+	// Blocking write(2) to fd 1 so the sequence is in the kernel PTY buffer before
+	// process.exit. opentui's native teardown writes directly to fd 1 too, but it
+	// never emits ?2026l — see RESTORE_PRIMARY_SCREEN_SEQUENCE for why that strands
+	// Kitty on the alternate screen.
+	try {
+		writeSync(1, RESTORE_PRIMARY_SCREEN_SEQUENCE);
+	} catch {}
+};
+
 const getAttachDebugPath = (): string | null => {
 	const rawPath = process.env.GCTRL_ATTACH_DEBUG?.trim();
 	if (!rawPath) {
@@ -559,6 +583,8 @@ const getTerminalRowCount = (): number =>
 	getSafeNumber(process.stdout.rows, 24) || 24;
 
 const canUseAttachPty = (): boolean =>
+	// PTY forwarding breaks when gctrl isn't the foreground session (e.g. via npx); inherit-stdio is the default, PTY is opt-in for capture/debug.
+	process.env.GCTRL_ATTACH_PTY === "1" &&
 	process.platform !== "win32" &&
 	process.stdin.isTTY === true &&
 	process.stdout.isTTY === true;
@@ -3461,6 +3487,7 @@ const main = async () => {
 
 		flushRenderStats();
 		renderer.destroy();
+		restorePrimaryScreen();
 		process.exit(0);
 	};
 
