@@ -58,6 +58,7 @@ export interface ClaudeSessionLogSummary {
 	lastConversationRole?: "user" | "assistant";
 	lastUserWasToolResultOnly?: boolean;
 	lastEventType?: string;
+	lastToolName?: string;
 	taskState: ClaudeTaskState;
 	startedAtMs?: number;
 	completedAtMs?: number;
@@ -241,6 +242,62 @@ const isToolResultOnlyUserContent = (content: unknown): boolean => {
 	});
 };
 
+const extractCommandArgs = (
+	content: string | undefined,
+): string | undefined => {
+	const trimmed = trimToUndefined(content);
+	if (!trimmed) {
+		return undefined;
+	}
+
+	// Extract text from <command-args> tags
+	const match = trimmed.match(/<command-args>([\s\S]*?)<\/command-args>/u);
+	if (match?.[1]) {
+		return trimToUndefined(match[1]);
+	}
+
+	return undefined;
+};
+
+const isMetaContent = (content: string | undefined): boolean => {
+	const trimmed = trimToUndefined(content);
+	if (!trimmed) {
+		return true;
+	}
+
+	// Filter out meta content patterns
+	const metaPatterns = [
+		/^<local-command-caveat>/,
+		/^<local-command-stdout>/,
+		/^<local-command-stderr>/,
+		/^<command-message>/,
+		/^<command-name>/,
+	];
+
+	return metaPatterns.some((pattern) => pattern.test(trimmed));
+};
+
+const extractLastToolName = (content: unknown): string | undefined => {
+	if (!Array.isArray(content)) {
+		return undefined;
+	}
+
+	// Find the last tool_use item and extract its name
+	for (let i = content.length - 1; i >= 0; i--) {
+		const item = content[i];
+		if (typeof item !== "object" || item === null) {
+			continue;
+		}
+
+		const typedItem = item as { type?: string; name?: string };
+		if (typedItem.type === "tool_use" && typedItem.name) {
+			return trimToUndefined(typedItem.name);
+		}
+	}
+
+	return undefined;
+};
+
 const updateSummaryTimestamp = (
 	summary: ClaudeSessionLogSummary,
 	timestampMs: number | undefined,
@@ -342,6 +399,7 @@ export const summarizeClaudeSessionLogContent = (
 
 		if (message.role === "user") {
 			const promptText = extractLastTextValue(message.content);
+			const commandArgs = extractCommandArgs(promptText);
 			const isToolResultOnly = isToolResultOnlyUserContent(message.content);
 			const userMessageId =
 				trimToUndefined(entry.promptId) ??
@@ -353,8 +411,14 @@ export const summarizeClaudeSessionLogContent = (
 				summary.messageCount += 1;
 			}
 
+			// Use command args if available, otherwise use prompt text
+			// Filter out meta content (caveats, stdout, etc.)
+			const contentForTitle =
+				commandArgs ?? (isMetaContent(promptText) ? undefined : promptText);
+			if (contentForTitle) {
+				summary.firstUserPrompt = summary.firstUserPrompt ?? contentForTitle;
+			}
 			if (promptText) {
-				summary.firstUserPrompt = summary.firstUserPrompt ?? promptText;
 				summary.lastUserPrompt = promptText;
 			}
 			summary.lastConversationRole = "user";
@@ -379,6 +443,12 @@ export const summarizeClaudeSessionLogContent = (
 		const assistantText = extractLastTextValue(message.content);
 		if (assistantText) {
 			summary.lastAssistantText = assistantText;
+		}
+
+		// Track the last tool used for status determination
+		const lastToolName = extractLastToolName(message.content);
+		if (lastToolName) {
+			summary.lastToolName = lastToolName;
 		}
 
 		summary.currentModelID =
@@ -660,6 +730,14 @@ export const resolveClaudeStatus = (params: {
 	if (hasActiveProcess) {
 		if (summary?.lastConversationRole === "assistant") {
 			if (summary.lastAssistantStopReason === "tool_use") {
+				// Special handling for AskUserQuestion - it's waiting for user input
+				if (summary.lastToolName === "AskUserQuestion") {
+					return {
+						status: SessionStatus.waiting,
+						finishReason: "awaiting_user",
+						statusDetail: "Awaiting user",
+					};
+				}
 				return {
 					status: SessionStatus.running,
 					finishReason: "tool_use",
@@ -718,6 +796,14 @@ export const resolveClaudeStatus = (params: {
 
 	if (summary?.taskState === "running") {
 		if (summary.lastConversationRole === "assistant") {
+			// Special handling for AskUserQuestion - it's waiting for user input
+			if (summary.lastToolName === "AskUserQuestion") {
+				return {
+					status: SessionStatus.waiting,
+					finishReason: "awaiting_user",
+					statusDetail: "Awaiting user",
+				};
+			}
 			return {
 				status: SessionStatus.running,
 				finishReason: summary.lastAssistantStopReason ?? "assistant_running",
