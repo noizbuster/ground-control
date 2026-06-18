@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
+	readLatestMessagesAndCountsFromDatabase,
 	readLatestMessagesFromDatabase,
 	readMessageCountsFromDatabase,
 	readWaitingSignalsFromDatabase,
@@ -181,5 +182,97 @@ describe("DB query helpers", () => {
 				questionToolRunning: false,
 			},
 		});
+	});
+});
+
+describe("readLatestMessagesAndCountsFromDatabase", () => {
+	it("returns latestMessages equal to readLatestMessagesFromDatabase on the same fixture", () => {
+		insertMessage("running", { role: "assistant", time: { created: 1 } }, 1);
+		insertMessage(
+			"running",
+			{ role: "assistant", time: { created: 2 }, finish: "stop" },
+			2,
+		);
+		insertMessage("broken", "{not-json", 3);
+		insertMessage("tied", { role: "assistant", time: { created: 4 } }, 4);
+		insertMessage(
+			"tied",
+			{ role: "assistant", time: { created: 5 }, finish: "error" },
+			4,
+		);
+
+		const sessionIds = ["running", "broken", "tied", "empty"];
+		const result = readLatestMessagesAndCountsFromDatabase(
+			database,
+			sessionIds,
+		);
+		const expectedLatest = readLatestMessagesFromDatabase(
+			database,
+			sessionIds,
+		);
+
+		expect(result.latestMessages).toEqual(expectedLatest);
+	});
+
+	it("returns messageCounts equal to readMessageCountsFromDatabase on the same fixture", () => {
+		insertMessage("alpha", { role: "assistant", time: { created: 1 } }, 1);
+		insertMessage("alpha", { role: "assistant", time: { created: 2 } }, 2);
+		insertMessage("beta", { role: "user", time: { created: 3 } }, 3);
+
+		const sessionIds = ["alpha", "beta", "empty"];
+		const result = readLatestMessagesAndCountsFromDatabase(
+			database,
+			sessionIds,
+		);
+		const expectedCounts = readMessageCountsFromDatabase(
+			database,
+			sessionIds,
+		);
+
+		expect(result.messageCounts).toEqual(expectedCounts);
+	});
+
+	it("resolves time_created ties by keeping the higher rowid (second insert wins)", () => {
+		insertMessage("tied", { role: "assistant", time: { created: 4 } }, 4);
+		insertMessage(
+			"tied",
+			{ role: "assistant", time: { created: 5 }, finish: "error" },
+			4,
+		);
+
+		const result = readLatestMessagesAndCountsFromDatabase(database, [
+			"tied",
+		]);
+
+		expect(result.latestMessages["tied"]?.message.value?.finish).toBe(
+			"error",
+		);
+	});
+
+	it("omits zero-message sessions from both latestMessages and messageCounts", () => {
+		insertMessage(
+			"present",
+			{ role: "assistant", time: { created: 1 } },
+			1,
+		);
+
+		const result = readLatestMessagesAndCountsFromDatabase(database, [
+			"present",
+			"empty",
+		]);
+
+		expect(result.latestMessages["empty"]).toBeUndefined();
+		expect(result.messageCounts["empty"]).toBeUndefined();
+	});
+
+	it("preserves malformed JSON in rawData with message.ok === false", () => {
+		insertMessage("broken", "{not-json", 3);
+
+		const result = readLatestMessagesAndCountsFromDatabase(database, [
+			"broken",
+		]);
+
+		expect(result.latestMessages["broken"]?.rawData).toBe("{not-json");
+		expect(result.latestMessages["broken"]?.message.ok).toBe(false);
 	});
 });

@@ -6,13 +6,11 @@ import {
 import type { SessionRecord } from "../types";
 import {
 	ACTIVE_SESSION_QUERY,
-	createQueryFailedDatabaseError,
 	type DatabaseResult,
 	getProjectLabel,
-	openReadOnlyDatabase,
-	readLatestMessagesFromDatabase,
-	readMessageCountsFromDatabase,
+	readLatestMessagesAndCountsFromDatabase,
 	readWaitingSignalsFromDatabase,
+	withDatabaseRetry,
 } from "./index";
 import { getWaitingSignalCandidateIds } from "./waitingSignalCandidates";
 
@@ -41,17 +39,11 @@ const readActiveSessionsFromDatabase = (
 };
 
 export const getOpenCodeSnapshot = (): DatabaseResult<SessionSnapshot> => {
-	const opened = openReadOnlyDatabase();
-	if (!opened.ok) {
-		return opened;
-	}
-
-	const database = opened.value;
-	try {
+	return withDatabaseRetry((database) => {
 		const rawSessions = readActiveSessionsFromDatabase(database);
 		const sessionIds = rawSessions.map((session) => session.id);
-		const latestMessages = readLatestMessagesFromDatabase(database, sessionIds);
-		const messageCounts = readMessageCountsFromDatabase(database, sessionIds);
+		const { latestMessages, messageCounts } =
+			readLatestMessagesAndCountsFromDatabase(database, sessionIds);
 		const waitingSignalCandidateIds = getWaitingSignalCandidateIds(
 			sessionIds,
 			latestMessages,
@@ -60,22 +52,11 @@ export const getOpenCodeSnapshot = (): DatabaseResult<SessionSnapshot> => {
 			database,
 			waitingSignalCandidateIds,
 		);
-
-		return {
-			ok: true,
-			value: buildSessionSnapshot({
-				rawSessions,
-				latestMessages,
-				messageCounts,
-				waitingSignals,
-			}),
-		};
-	} catch (error) {
-		return {
-			ok: false,
-			error: createQueryFailedDatabaseError(error),
-		};
-	} finally {
-		database.close();
-	}
+		return buildSessionSnapshot({
+			rawSessions,
+			latestMessages,
+			messageCounts,
+			waitingSignals,
+		});
+	});
 };

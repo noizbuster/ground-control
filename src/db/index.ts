@@ -269,12 +269,54 @@ export const getProjectLabel = (session: {
 	return session.project_id;
 };
 
+// Module-scope readonly handle cache. A long-lived reader is safe under WAL
+// mode (see .omo/evidence/prereq-wal-mode.txt); reopening on every 2s refresh
+// was the dominant per-refresh cost, so one handle is reused for the process.
+let cachedDatabase: { path: string; handle: Database } | null = null;
+
+// Internal: returns the cached handle for `path`, opening one on cache miss or
+// path change. THROWS on missing/corrupt DB (same as `new Database()`). Every
+// caller must wrap in try/catch + normalizeDatabaseError. Not exported —
+// `openReadOnlyDatabase` is the public, error-mapped API.
+const getCachedReadOnlyDatabase = (path: string = DB_PATH): Database => {
+	if (cachedDatabase && cachedDatabase.path === path) {
+		return cachedDatabase.handle;
+	}
+	if (cachedDatabase) {
+		try {
+			cachedDatabase.handle.close();
+		} catch {}
+		cachedDatabase = null;
+	}
+	const handle = new Database(path, { readonly: true });
+	cachedDatabase = { path, handle };
+	return handle;
+};
+
+// Shutdown/test-only. NEVER call from the refresh hot path — closing the
+// shared handle while the cache is in use would force a reopen next refresh
+// and corrupt any in-flight query on that handle.
+export const closeReadOnlyDatabase = (): void => {
+	if (cachedDatabase) {
+		try {
+			cachedDatabase.handle.close();
+		} catch {}
+		cachedDatabase = null;
+	}
+};
+
+// Test seam: deterministically simulate a stale handle so lifecycle tests do
+// not depend on file deletion or OS-level FD invalidation. No production
+// callers; side effect is limited to clearing the module-scope cache.
+export const __invalidateCachedDatabaseForTesting = (): void => {
+	closeReadOnlyDatabase();
+};
+
 export const openReadOnlyDatabase = (
-	path = DB_PATH,
+	path: string = DB_PATH,
 ): DatabaseResult<Database> => {
 	try {
-		const db = new Database(path, { readonly: true });
-		return { ok: true, value: db };
+		return { ok: true, value: getCachedReadOnlyDatabase(path) };
 	} catch (error) {
 		return { ok: false, error: normalizeDatabaseError(error, path) };
 	}
@@ -288,13 +330,66 @@ const withDatabase = <T>(
 		return opened;
 	}
 
-	const { value: db } = opened;
 	try {
-		return { ok: true, value: callback(db) };
+		return { ok: true, value: callback(opened.value) };
 	} catch (error) {
 		return { ok: false, error: createQueryFailedDatabaseError(error) };
-	} finally {
-		db.close();
+	}
+	// NOTE: intentionally no `finally { db.close() }`. The handle is cached at
+	// module scope; closing it here would destroy the cache and force a reopen
+	// on every refresh — the exact cost this change eliminates.
+};
+
+// Stale-handle signatures that a close+reopen can recover from. SQLITE_BUSY is
+// excluded: under WAL mode (prereq-wal-mode.txt) readonly readers never block.
+const RETRYABLE_DB_ERROR =
+	/unable to open database file|no such file|database disk image is malformed/i;
+
+// Like withDatabase, but on a retryable stale-handle error it closes the cached
+// handle, reopens once, and retries the callback. Every open routes through
+// openReadOnlyDatabase so missing_database / database_access_denied mapping is
+// preserved on both the first attempt and the retry (P0 regression guard).
+// `path` is optional so tests can target a missing path; production callers
+// omit it to use the default DB_PATH.
+export const withDatabaseRetry = <T>(
+	callback: (database: Database) => T,
+	path: string = DB_PATH,
+): DatabaseResult<T> => {
+	const execute = (db: Database): DatabaseResult<T> => {
+		try {
+			return { ok: true, value: callback(db) };
+		} catch (error) {
+			return { ok: false, error: createQueryFailedDatabaseError(error) };
+		}
+	};
+
+	const reopenAndExecute = (): DatabaseResult<T> => {
+		closeReadOnlyDatabase();
+		const retryOpened = openReadOnlyDatabase(path);
+		if (!retryOpened.ok) {
+			return retryOpened;
+		}
+		return execute(retryOpened.value);
+	};
+
+	const firstOpened = openReadOnlyDatabase(path);
+	if (!firstOpened.ok) {
+		if (
+			firstOpened.error.code === "query_failed" ||
+			firstOpened.error.code === "missing_database"
+		) {
+			return reopenAndExecute();
+		}
+		return firstOpened;
+	}
+
+	try {
+		return { ok: true, value: callback(firstOpened.value) };
+	} catch (error) {
+		if (!(error instanceof Error) || !RETRYABLE_DB_ERROR.test(error.message)) {
+			return { ok: false, error: createQueryFailedDatabaseError(error) };
+		}
+		return reopenAndExecute();
 	}
 };
 
@@ -420,6 +515,75 @@ export const readMessageCountsFromDatabase = (
 	}, {});
 };
 
+export interface LatestMessageAndCountRow {
+	session_id: string;
+	data: string | null;
+	rid: number;
+	cnt: number;
+}
+
+export interface LatestMessagesAndCountsResult {
+	latestMessages: LatestMessageResultsBySessionId;
+	messageCounts: MessageCountsBySessionId;
+}
+
+// MAX+join+COUNT in one query. May return multiple rows per session on
+// time_created ties; caller keeps highest rowid to preserve
+// `ORDER BY time_created DESC, rowid DESC LIMIT 1` semantics.
+const buildLatestMessagesAndCountsQuery = (sessionCount: number): string => {
+	const placeholders = Array.from({ length: sessionCount }, () => "?").join(
+		", ",
+	);
+
+	return `
+WITH latest AS (
+  SELECT session_id, MAX(time_created) AS max_time, COUNT(*) AS cnt
+  FROM message
+  WHERE session_id IN (${placeholders})
+  GROUP BY session_id
+)
+SELECT m.session_id, m.data, m.rowid AS rid, latest.cnt
+FROM message m
+INNER JOIN latest ON latest.session_id = m.session_id AND m.time_created = latest.max_time
+`;
+};
+
+// Combined reader: latestMessages + messageCounts from one MAX+join+COUNT query.
+// Tie-break on identical time_created is resolved in TS by keeping the highest
+// rowid, preserving the original `ORDER BY time_created DESC, rowid DESC LIMIT 1`.
+export const readLatestMessagesAndCountsFromDatabase = (
+	database: Database,
+	sessionIds: string[],
+): LatestMessagesAndCountsResult => {
+	const latestMessages: LatestMessageResultsBySessionId = {};
+	const messageCounts: MessageCountsBySessionId = {};
+	if (sessionIds.length === 0) {
+		return { latestMessages, messageCounts };
+	}
+
+	const rows = database
+		.query<LatestMessageAndCountRow, string[]>(
+			buildLatestMessagesAndCountsQuery(sessionIds.length),
+		)
+		.all(...sessionIds);
+
+	// rowid tracked separately; never mutate the result object (no `as any`).
+	const rowidBySession = new Map<string, number>();
+	for (const row of rows) {
+		const seenRowid = rowidBySession.get(row.session_id);
+		if (seenRowid === undefined || row.rid > seenRowid) {
+			rowidBySession.set(row.session_id, row.rid);
+			latestMessages[row.session_id] = {
+				sessionId: row.session_id,
+				rawData: row.data,
+				message: parseMessageData(row.data),
+			};
+		}
+		messageCounts[row.session_id] = row.cnt;
+	}
+	return { latestMessages, messageCounts };
+};
+
 export const getWaitingSignals = (
 	sessionIds: string[],
 ): DatabaseResult<WaitingSignalsBySessionId> => {
@@ -488,3 +652,6 @@ export const getLatestMessage = (
 			message: parseMessageData(row.data),
 		};
 	});
+
+// Release the cached readonly handle on graceful shutdown (per-process).
+process.on("beforeExit", closeReadOnlyDatabase);
