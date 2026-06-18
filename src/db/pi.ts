@@ -292,20 +292,44 @@ const parseJsonLine = (line: string): JsonObject | undefined => {
 	}
 };
 
+const piLogCache = new Map<
+	string,
+	{ mtimeMs: number; size: number; record: PiSessionLogRecord }
+>();
+
+export const invalidatePiSessionCaches = (): void => {
+	piLogCache.clear();
+};
+
 export const parsePiSessionLogFile = (
 	path: string,
 	root: string,
 	source: PiDialect,
 ): PiSessionLogRecord | undefined => {
-	let content: string;
-	let mtimeMs = 0;
+	let stats: { mtimeMs: number; size: number };
 	try {
-		content = readFileSync(path, "utf8");
-		mtimeMs = statSync(path).mtimeMs;
+		stats = statSync(path);
 	} catch {
 		return undefined;
 	}
 
+	const cached = piLogCache.get(path);
+	if (
+		cached &&
+		cached.mtimeMs === stats.mtimeMs &&
+		cached.size === stats.size
+	) {
+		return cached.record;
+	}
+
+	let content: string;
+	try {
+		content = readFileSync(path, "utf8");
+	} catch {
+		return undefined;
+	}
+
+	const mtimeMs = stats.mtimeMs;
 	const entries: JsonObject[] = [];
 	let header: PiSessionHeader | undefined;
 	for (const line of content.split(/\r?\n/u)) {
@@ -331,7 +355,16 @@ export const parsePiSessionLogFile = (
 		return undefined;
 	}
 
-	return { source, path, root, header, entries, mtimeMs };
+	const record: PiSessionLogRecord = {
+		source,
+		path,
+		root,
+		header,
+		entries,
+		mtimeMs,
+	};
+	piLogCache.set(path, { mtimeMs, size: stats.size, record });
+	return record;
 };
 
 const extractMessage = (entry: JsonObject): JsonObject | undefined => {

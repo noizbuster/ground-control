@@ -1,4 +1,10 @@
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { isActiveStatus } from "../lib/hierarchyHelpers";
@@ -76,6 +82,17 @@ export interface ClaudeSessionLogRecord {
 	parentId: string | null;
 	summary?: ClaudeSessionLogSummary;
 }
+
+const claudeLogSummaryCache = new Map<
+	string,
+	{ mtimeMs: number; size: number; summary: ClaudeSessionLogSummary }
+>();
+
+let claudeActiveSessionsCache: {
+	directory: string;
+	mtimeMs: number;
+	records: Map<string, ClaudeActiveSessionRecord>;
+} | null = null;
 
 const trimToUndefined = (
 	value: string | null | undefined,
@@ -546,6 +563,19 @@ const readActiveClaudeSessions = (
 		return sessionsById;
 	}
 
+	// Cache gate: directory mtime changes when files are added/removed/renamed.
+	// Claude Code writes session JSONs atomically (rename), which updates dir mtime.
+	// Individual file content edits without rename won't update dir mtime, but that
+	// is acceptable — each session JSON is fully re-read on cache miss.
+	const dirStats = statSync(sessionsDirectory);
+	if (
+		claudeActiveSessionsCache &&
+		claudeActiveSessionsCache.directory === sessionsDirectory &&
+		claudeActiveSessionsCache.mtimeMs === dirStats.mtimeMs
+	) {
+		return new Map(claudeActiveSessionsCache.records);
+	}
+
 	for (const entry of readdirSync(sessionsDirectory, { withFileTypes: true })) {
 		if (!entry.isFile() || !entry.name.endsWith(".json")) {
 			continue;
@@ -579,7 +609,13 @@ const readActiveClaudeSessions = (
 		} catch {}
 	}
 
-	return sessionsById;
+	claudeActiveSessionsCache = {
+		directory: sessionsDirectory,
+		mtimeMs: dirStats.mtimeMs,
+		records: sessionsById,
+	};
+
+	return new Map(sessionsById);
 };
 
 const collectClaudeLogPaths = (directory: string, paths: string[]): void => {
@@ -701,13 +737,29 @@ const getClaudeSubagentIdFromPath = (path: string): string => {
 	return filename.replace(/^agent-/u, "");
 };
 
-const readClaudeSessionLogSummary = (
+export const readClaudeSessionLogSummary = (
 	path: string,
 ): { summary?: ClaudeSessionLogSummary; issue?: string } => {
 	try {
-		return {
-			summary: summarizeClaudeSessionLogContent(readFileSync(path, "utf8")),
-		};
+		const stats = statSync(path);
+		const cached = claudeLogSummaryCache.get(path);
+		if (
+			cached &&
+			cached.mtimeMs === stats.mtimeMs &&
+			cached.size === stats.size
+		) {
+			return { summary: cached.summary };
+		}
+
+		const summary = summarizeClaudeSessionLogContent(
+			readFileSync(path, "utf8"),
+		);
+		claudeLogSummaryCache.set(path, {
+			mtimeMs: stats.mtimeMs,
+			size: stats.size,
+			summary,
+		});
+		return { summary };
 	} catch (error) {
 		return {
 			issue:
@@ -716,6 +768,11 @@ const readClaudeSessionLogSummary = (
 					: `Failed to parse Claude session log at ${path}`,
 		};
 	}
+};
+
+export const invalidateClaudeSessionCaches = (): void => {
+	claudeLogSummaryCache.clear();
+	claudeActiveSessionsCache = null;
 };
 
 export const resolveClaudeStatus = (params: {

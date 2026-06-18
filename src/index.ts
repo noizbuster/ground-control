@@ -100,6 +100,7 @@ const HIERARCHY_TIMELINE_ANCHOR_ID = "session-hierarchy-timeline-anchor";
 const HIERARCHY_SCROLLBOX_ID = "session-hierarchy-scrollbox";
 const HIERARCHY_CONTENT_ID = "session-hierarchy-content";
 const POLL_INTERVAL_MS = 2000;
+const ATTACHED_SIGNAL_INTERVAL_MS = 10_000;
 const RESIZE_DEBOUNCE_MS = 150;
 const WAITING_PULSE_FRAME_INTERVAL_MS = 80;
 const DETAIL_SCROLL_STEP = 3;
@@ -1068,6 +1069,7 @@ const main = async () => {
 		value: null,
 	};
 	let interval: ReturnType<typeof setInterval> | null = null;
+	let attachedSignalInterval: ReturnType<typeof setInterval> | null = null;
 	let isWaitingPulseLive = false;
 	let lastWaitingPulseFrameRenderAt = 0;
 	let isRefreshApplying = false;
@@ -1377,14 +1379,22 @@ const main = async () => {
 			clearInterval(interval);
 			interval = null;
 		}
+		if (attachedSignalInterval) {
+			clearInterval(attachedSignalInterval);
+			attachedSignalInterval = null;
+		}
 	};
 
 	const startPolling = () => {
 		if (!interval) {
 			interval = setInterval(() => {
-				void refreshExternalAttachedSessionSignals();
 				refreshSessions();
 			}, POLL_INTERVAL_MS);
+		}
+		if (!attachedSignalInterval) {
+			attachedSignalInterval = setInterval(() => {
+				void refreshExternalAttachedSessionSignals();
+			}, ATTACHED_SIGNAL_INTERVAL_MS);
 		}
 	};
 

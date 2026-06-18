@@ -31,6 +31,7 @@ const DEFAULT_CODEX_SESSIONS_DIR = `${CODEX_ROOT}/sessions`;
 const DEFAULT_CODEX_ARCHIVED_SESSIONS_DIR = `${CODEX_ROOT}/archived_sessions`;
 const DEFAULT_CODEX_SESSION_INDEX_PATH = `${CODEX_ROOT}/session_index.jsonl`;
 const LOG_INDEX_REFRESH_MS = 10_000;
+const CODEX_STATE_DB_REFRESH_MS = 10_000;
 const EXEC_COMMAND_STALE_GRACE_MS = 10_000;
 
 export interface CodexDeleteResult {
@@ -583,18 +584,27 @@ const parseCodexThreadSource = (
 	};
 };
 
-const resolveCodexStateDatabasePath = (): string => {
+export const resolveCodexStateDatabasePath = (
+	rootDir: string = CODEX_ROOT,
+): string => {
 	const overridePath = trimToUndefined(process.env.GCTRL_CODEX_STATE_DB_PATH);
 	if (overridePath) {
 		return overridePath;
 	}
 
-	const candidates = readdirSync(CODEX_ROOT, { withFileTypes: true })
+	if (
+		codexStateDbCache !== null &&
+		Date.now() - codexStateDbCache.resolvedAt < CODEX_STATE_DB_REFRESH_MS
+	) {
+		return codexStateDbCache.path;
+	}
+
+	const candidates = readdirSync(rootDir, { withFileTypes: true })
 		.filter(
 			(entry) =>
 				entry.isFile() && /^state(?:_[^/]+)?\.sqlite$/u.test(entry.name),
 		)
-		.map((entry) => join(CODEX_ROOT, entry.name))
+		.map((entry) => join(rootDir, entry.name))
 		.sort((left, right) => {
 			try {
 				return statSync(right).mtimeMs - statSync(left).mtimeMs;
@@ -603,7 +613,9 @@ const resolveCodexStateDatabasePath = (): string => {
 			}
 		});
 
-	return candidates[0] ?? `${CODEX_ROOT}/state_5.sqlite`;
+	const resolved = candidates[0] ?? `${rootDir}/state_5.sqlite`;
+	codexStateDbCache = { path: resolved, resolvedAt: Date.now() };
+	return resolved;
 };
 
 const resolveCodexSessionsDirectory = (): string => {
@@ -869,6 +881,7 @@ const logSummaryCache = new Map<
 	string,
 	{ mtimeMs: number; summary: CodexSessionLogSummary }
 >();
+let codexStateDbCache: { path: string; resolvedAt: number } | null = null;
 
 const extractThreadIdFromLogPath = (path: string): string | null => {
 	const match = basename(path).match(/([0-9a-f-]{36})\.jsonl$/iu);
@@ -922,6 +935,7 @@ export const invalidateCodexSessionCaches = (): void => {
 	logSummaryCache.clear();
 	logIndexRoot = null;
 	logIndexBuiltAt = 0;
+	codexStateDbCache = null;
 };
 
 const readCodexLogSummary = (
