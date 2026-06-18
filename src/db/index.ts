@@ -64,21 +64,25 @@ export const buildLatestQuestionToolPartsQuery = (
 		", ",
 	);
 
+	// MAX+join replaces correlated subquery. Eliminates the per-row inner
+	// scan over the non-covering part_session_idx. Ties on MAX(time_created)
+	// are resolved in TS by keeping the highest rowid (caller dedups).
 	return `
-SELECT part.session_id, part.time_created, part.data
-FROM part
-WHERE part.session_id IN (${placeholders})
-  AND part.data LIKE '%"type":"tool"%'
-  AND part.data LIKE '%"tool":"question"%'
-  AND part.rowid = (
-    SELECT latest.rowid
-    FROM part AS latest
-    WHERE latest.session_id = part.session_id
-      AND latest.data LIKE '%"type":"tool"%'
-      AND latest.data LIKE '%"tool":"question"%'
-    ORDER BY latest.time_created DESC, latest.rowid DESC
-    LIMIT 1
-  )
+WITH latest_question AS (
+  SELECT session_id, MAX(time_created) AS mt
+  FROM part
+  WHERE session_id IN (${placeholders})
+    AND data LIKE '%"type":"tool"%'
+    AND data LIKE '%"tool":"question"%'
+  GROUP BY session_id
+)
+SELECT p.session_id, p.time_created, p.data, p.rowid AS rid
+FROM part p
+INNER JOIN latest_question lq
+  ON lq.session_id = p.session_id
+  AND p.time_created = lq.mt
+  AND p.data LIKE '%"type":"tool"%'
+  AND p.data LIKE '%"tool":"question"%'
 `;
 };
 
@@ -175,6 +179,7 @@ interface LatestQuestionToolPartRow {
 	session_id: string;
 	time_created: number;
 	data: string;
+	rid: number;
 }
 
 export interface WaitingSignal {
@@ -622,12 +627,22 @@ export const readWaitingSignalsFromDatabase = (
 	const questionPartRows = questionPartsStatement.all(
 		...sessionIds,
 	) as LatestQuestionToolPartRow[];
+
+	// TS dedup: MAX+join may return multiple rows per session on time_created
+	// ties. Keep highest rowid to preserve ORDER BY time_created DESC, rowid DESC.
+	const questionRidBySession = new Map<string, number>();
 	for (const row of questionPartRows) {
-		waitingSignals[row.session_id] = {
-			...(waitingSignals[row.session_id] ?? { questionToolRunning: false }),
-			latestQuestionToolTime: row.time_created,
-			questionToolRunning: isQuestionToolRunning(row.data),
-		};
+		const seenRid = questionRidBySession.get(row.session_id);
+		if (seenRid === undefined || row.rid > seenRid) {
+			questionRidBySession.set(row.session_id, row.rid);
+			waitingSignals[row.session_id] = {
+				...(waitingSignals[row.session_id] ?? {
+					questionToolRunning: false,
+				}),
+				latestQuestionToolTime: row.time_created,
+				questionToolRunning: isQuestionToolRunning(row.data),
+			};
+		}
 	}
 
 	return waitingSignals;
