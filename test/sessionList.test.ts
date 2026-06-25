@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { applySessionFilter, applySessionSort } from "../src/lib/sessionList";
 import { type Session, SessionStatus } from "../src/types";
 

@@ -1,6 +1,8 @@
-import { lstat, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { lstat, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { which } from "../src/lib/which";
 
 const PROJECT_ROOT = process.cwd();
 const DEFAULT_FIXTURE_PATH = ".sisyphus/evidence/qa-refresh.sqlite";
@@ -235,17 +237,15 @@ const decode = (buffer: unknown): string => {
 };
 
 const runCommand = (cmd: string[], cwd = PROJECT_ROOT): CommandResult => {
-	const result = Bun.spawnSync({
-		cmd,
+	const result = spawnSync(cmd[0], cmd.slice(1), {
 		cwd,
-		stdout: "pipe",
-		stderr: "pipe",
+		stdio: ["ignore", "pipe", "pipe"],
 	});
 
 	return {
 		stdout: decode(result.stdout),
 		stderr: decode(result.stderr),
-		exitCode: result.exitCode,
+		exitCode: result.status ?? -1,
 	};
 };
 
@@ -430,7 +430,7 @@ const runHarnessInTmux = async (options: HarnessOptions): Promise<string> => {
 				options.sessionName,
 				"-c",
 				PROJECT_ROOT,
-				"bun run start",
+				"node bin/gctrl.js",
 			],
 			false,
 		);
@@ -471,7 +471,7 @@ const runHarnessWithScriptFallback = async (
 	options: HarnessOptions,
 	outputPath: string,
 ): Promise<string> => {
-	const scriptPath = Bun.which("script");
+	const scriptPath = which("script");
 	if (!scriptPath) {
 		throw new Error(
 			"tmux is not available and 'script' fallback command was not found.",
@@ -479,16 +479,27 @@ const runHarnessWithScriptFallback = async (
 	}
 
 	const transcriptPath = `${outputPath}.raw-${Date.now()}`;
-	const child = Bun.spawn({
-		cmd: [scriptPath, "-q", "-c", "bun run start", transcriptPath],
-		cwd: PROJECT_ROOT,
-		stdin: "pipe",
-		stdout: "ignore",
-		stderr: "pipe",
+	const child = spawn(
+		scriptPath,
+		["-q", "-c", "node bin/gctrl.js", transcriptPath],
+		{
+			cwd: PROJECT_ROOT,
+			stdio: ["pipe", "ignore", "pipe"],
+		},
+	);
+	const stderrTextPromise = new Promise<string>((resolve) => {
+		let text = "";
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (chunk: string) => {
+			text += chunk;
+		});
+		child.stderr?.on("end", () => resolve(text));
+		child.stderr?.on("error", () => resolve(text));
 	});
-	const stderrTextPromise = child.stderr
-		? new Response(child.stderr).text()
-		: Promise.resolve("");
+	const exitedPromise = new Promise<number>((resolve) => {
+		child.on("close", (code) => resolve(code ?? 0));
+		child.on("error", () => resolve(1));
+	});
 
 	try {
 		await sleep(options.startupWaitMs);
@@ -512,13 +523,13 @@ const runHarnessWithScriptFallback = async (
 		closeStdin(child.stdin);
 
 		const exitCode = await Promise.race([
-			child.exited,
+			exitedPromise,
 			sleep(2_000).then(() => Number.NaN),
 		]);
 
 		if (Number.isNaN(exitCode)) {
 			child.kill();
-			await child.exited;
+			await exitedPromise;
 		}
 	} finally {
 		closeStdin(child.stdin);
@@ -532,17 +543,17 @@ const runHarnessWithScriptFallback = async (
 		);
 	}
 
-	const transcript = await Bun.file(transcriptPath).text();
+	const transcript = await readFile(transcriptPath, "utf8");
 	await rm(transcriptPath, { force: true });
 	return transcript;
 };
 
 const main = async () => {
-	const options = parseArgs(Bun.argv.slice(2));
+	const options = parseArgs(process.argv.slice(2));
 	const fixturePath = resolve(PROJECT_ROOT, options.fixturePath);
 	const outputPath = resolve(PROJECT_ROOT, options.outputPath);
 	const dbTargetPath = resolve(PROJECT_ROOT, options.dbTargetPath);
-	const harnessMode = Bun.which("tmux") ? "tmux" : "script-fallback";
+	const harnessMode = which("tmux") ? "tmux" : "script-fallback";
 
 	const fixtureExists = await pathExists(fixturePath);
 	if (!fixtureExists && !options.allowMissingFixture) {

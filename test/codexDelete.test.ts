@@ -1,5 +1,5 @@
-import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, it } from "bun:test";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	existsSync,
 	mkdirSync,
@@ -26,8 +26,8 @@ afterEach(() => {
 	}
 });
 
-const createStateDatabase = (path: string): Database => {
-	const database = new Database(path);
+const createStateDatabase = (path: string): DatabaseSync => {
+	const database = new DatabaseSync(path);
 	database.exec(`
 		CREATE TABLE threads (
 			id TEXT PRIMARY KEY,
@@ -99,32 +99,32 @@ describe("deleteCodexSession", () => {
 		const databasePath = join(root, "state_5.sqlite");
 		const database = createStateDatabase(databasePath);
 		database
-			.query(
+			.prepare(
 				"INSERT INTO threads (id, rollout_path, archived) VALUES (?, ?, ?)",
 			)
 			.run(rootThreadId, rootRolloutPath, 0);
 		database
-			.query(
+			.prepare(
 				"INSERT INTO threads (id, rollout_path, archived) VALUES (?, ?, ?)",
 			)
 			.run(childThreadId, childRolloutPath, 1);
 		database
-			.query(
+			.prepare(
 				"INSERT INTO threads (id, rollout_path, archived) VALUES (?, ?, ?)",
 			)
 			.run(otherThreadId, otherRolloutPath, 0);
 		database
-			.query(
+			.prepare(
 				"INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
 			)
 			.run(rootThreadId, childThreadId, "closed");
 		database
-			.query(
+			.prepare(
 				"INSERT INTO thread_dynamic_tools (thread_id, position, name, description, input_schema) VALUES (?, ?, ?, ?, ?)",
 			)
 			.run(rootThreadId, 0, "tool", "desc", "{}");
 		database
-			.query(
+			.prepare(
 				"INSERT INTO stage1_outputs (thread_id, source_updated_at, raw_memory, rollout_summary, generated_at) VALUES (?, ?, ?, ?, ?)",
 			)
 			.run(childThreadId, 1, "memory", "summary", 1);
@@ -154,18 +154,18 @@ describe("deleteCodexSession", () => {
 		expect(existsSync(childRolloutPath)).toBe(false);
 		expect(existsSync(otherRolloutPath)).toBe(true);
 
-		const verificationDatabase = new Database(databasePath, { readonly: true });
+		const verificationDatabase = new DatabaseSync(databasePath, {
+			readOnly: true,
+		});
 		expect(
 			verificationDatabase
-				.query<{ id: string }, []>("SELECT id FROM threads ORDER BY id")
-				.all(),
+				.prepare("SELECT id FROM threads ORDER BY id")
+				.all() as Array<{ id: string }>,
 		).toEqual([{ id: otherThreadId }]);
 		expect(
 			verificationDatabase
-				.query<{ count: number }, []>(
-					"SELECT COUNT(*) AS count FROM thread_spawn_edges",
-				)
-				.get(),
+				.prepare("SELECT COUNT(*) AS count FROM thread_spawn_edges")
+				.get() as { count: number } | undefined,
 		).toEqual({ count: 0 });
 		verificationDatabase.close();
 

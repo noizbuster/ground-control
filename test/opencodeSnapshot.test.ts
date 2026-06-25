@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Database, type Database as DatabaseType } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,8 +42,8 @@ interface ActiveSessionRow {
 }
 
 const seedFixture = (path: string): void => {
-	const writer = new Database(path);
-	writer.run(`
+	const writer = new DatabaseSync(path);
+	writer.exec(`
 		CREATE TABLE session (
 			id TEXT PRIMARY KEY,
 			project_id TEXT,
@@ -55,14 +55,14 @@ const seedFixture = (path: string): void => {
 			time_archived INTEGER
 		)
 	`);
-	writer.run(`
+	writer.exec(`
 		CREATE TABLE project (
 			id TEXT PRIMARY KEY,
 			name TEXT,
 			worktree TEXT
 		)
 	`);
-	writer.run(`
+	writer.exec(`
 		CREATE TABLE message (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL,
@@ -70,7 +70,7 @@ const seedFixture = (path: string): void => {
 			time_created INTEGER NOT NULL
 		)
 	`);
-	writer.run(`
+	writer.exec(`
 		CREATE TABLE part (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL,
@@ -78,16 +78,14 @@ const seedFixture = (path: string): void => {
 			time_created INTEGER NOT NULL
 		)
 	`);
-	writer.run(
+	writer.prepare(
 		"INSERT INTO project (id, name, worktree) VALUES (?, ?, ?)",
-		"proj-1",
-		"ground-control",
-		"/home/noiz/projects/ground-control",
-	);
-	writer.run(
+	).run("proj-1", "ground-control", "/home/noiz/projects/ground-control");
+	writer.prepare(
 		`INSERT INTO session
 			(id, project_id, title, directory, parent_id, time_created, time_updated, time_archived)
 		 VALUES (?, ?, ?, ?, NULL, ?, ?, NULL)`,
+	).run(
 		"sess-1",
 		"proj-1",
 		"Test session",
@@ -95,14 +93,16 @@ const seedFixture = (path: string): void => {
 		1000,
 		2000,
 	);
-	writer.run(
+	writer.prepare(
 		"INSERT INTO message (session_id, data, time_created) VALUES (?, ?, ?)",
+	).run(
 		"sess-1",
 		JSON.stringify({ role: "assistant", time: { created: 1000 } }),
 		1000,
 	);
-	writer.run(
+	writer.prepare(
 		"INSERT INTO message (session_id, data, time_created) VALUES (?, ?, ?)",
+	).run(
 		"sess-1",
 		JSON.stringify({
 			role: "assistant",
@@ -116,8 +116,10 @@ const seedFixture = (path: string): void => {
 
 // Mirror of the private readActiveSessionsFromDatabase in opencode.ts, rebuilt
 // from exported primitives so the test exercises the real query + label logic.
-const readActiveSessions = (database: DatabaseType): SessionRecord[] => {
-	const rows = database.query<ActiveSessionRow, []>(ACTIVE_SESSION_QUERY).all();
+const readActiveSessions = (database: DatabaseSync): SessionRecord[] => {
+	const rows = database
+		.prepare(ACTIVE_SESSION_QUERY)
+		.all() as unknown as ActiveSessionRow[];
 	return rows.map((session) => ({
 		...session,
 		project_label: getProjectLabel(session),

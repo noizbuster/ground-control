@@ -4,16 +4,16 @@
   "description": "Real-time OpenCode, Codex, and Claude Code session monitor CLI",
   "type": "module",
   "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun run --watch src/index.ts",
-    "capture:codex": "bun run scripts/capture-codex.ts",
-    "typecheck": "bun x tsc --noEmit",
-    "typecheck:scripts": "bun x tsc --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --skipLibCheck --types bun scripts/capture-codex.ts scripts/codex-capture/*.ts",
-    "build": "bun x tsc --project tsconfig.build.json",
-    "lint": "bunx @biomejs/biome check src",
-    "check": "bun run lint && bun run typecheck && bun run typecheck:scripts",
-    "bench:opencode": "bun run bench/opencode-query-bench.ts",
-    "prepack": "bun run build"
+    "start": "node bin/gctrl.js",
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "typecheck:scripts": "tsc --noEmit --ignoreConfig --types node --target ES2022 --module ESNext --moduleResolution Bundler --strict --skipLibCheck scripts/**/*.ts",
+    "build": "node scripts/build.mjs && node scripts/copy-hooks.mjs",
+    "lint": "biome check src",
+    "check": "pnpm run lint && pnpm run typecheck",
+    "bench:opencode": "tsx bench/opencode-query-bench.ts",
+    "prepack": "pnpm run build",
+    "test": "vitest run"
   },
   "bin": {
     "gctrl": "./bin/gctrl.js"
@@ -39,13 +39,19 @@
   "license": "MIT",
   "repository": "https://github.com/noizbuster/ground-control",
   "dependencies": {
-    "@opentui/core": "*",
-    "bun": "*"
+    "@opentui/core": "0.4.2",
+    "koffi": "3.0.2"
   },
   "devDependencies": {
-    "@types/bun": "*"
+    "@biomejs/biome": "2.5.1",
+    "@types/node": "26.0.0",
+    "esbuild": "^0.28.1",
+    "tsx": "4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "4.1.9"
   },
   "engines": {
     "node": ">=22.13.0"
-  }
+  },
+  "packageManager": "pnpm@11.5.1"
 }

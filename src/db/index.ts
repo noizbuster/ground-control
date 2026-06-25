@@ -1,5 +1,5 @@
-import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { getSessionStatus } from "../lib/status";
 import type { MessageData, SessionRecord, SessionStatus } from "../types";
 
@@ -277,23 +277,56 @@ export const getProjectLabel = (session: {
 // Module-scope readonly handle cache. A long-lived reader is safe under WAL
 // mode (see .omo/evidence/prereq-wal-mode.txt); reopening on every 2s refresh
 // was the dominant per-refresh cost, so one handle is reused for the process.
-let cachedDatabase: { path: string; handle: Database } | null = null;
+let cachedDatabase: { path: string; handle: DatabaseSync } | null = null;
+
+// Per-DatabaseSync statement cache. node:sqlite's prepare() has no built-in
+// cache (unlike bun:sqlite's query(), which returned the same Statement for
+// identical SQL), so this restores the per-refresh reuse the hot path depends
+// on. Keying by DatabaseSync instance — via WeakMap — means each connection
+// (the long-lived production reader and every test's fresh :memory: DB) keeps
+// its own statements, so a StatementSync can never leak across connections or
+// outlive its DatabaseSync. Entries are reclaimed automatically once a
+// DatabaseSync is closed and no longer referenced.
+const statementCacheByDatabase = new WeakMap<
+	DatabaseSync,
+	Map<string, StatementSync>
+>();
+
+export const prepareCachedStatement = (
+	database: DatabaseSync,
+	sql: string,
+): StatementSync => {
+	let perDatabase = statementCacheByDatabase.get(database);
+	if (!perDatabase) {
+		perDatabase = new Map<string, StatementSync>();
+		statementCacheByDatabase.set(database, perDatabase);
+	}
+	const cached = perDatabase.get(sql);
+	if (cached) {
+		return cached;
+	}
+	const statement = database.prepare(sql);
+	perDatabase.set(sql, statement);
+	return statement;
+};
 
 // Internal: returns the cached handle for `path`, opening one on cache miss or
-// path change. THROWS on missing/corrupt DB (same as `new Database()`). Every
-// caller must wrap in try/catch + normalizeDatabaseError. Not exported —
+// path change. THROWS on missing/corrupt DB (same as `new DatabaseSync()`).
+// Every caller must wrap in try/catch + normalizeDatabaseError. Not exported —
 // `openReadOnlyDatabase` is the public, error-mapped API.
-const getCachedReadOnlyDatabase = (path: string = DB_PATH): Database => {
+const getCachedReadOnlyDatabase = (path: string = DB_PATH): DatabaseSync => {
 	if (cachedDatabase && cachedDatabase.path === path) {
 		return cachedDatabase.handle;
 	}
-	if (cachedDatabase) {
-		try {
-			cachedDatabase.handle.close();
-		} catch {}
-		cachedDatabase = null;
-	}
-	const handle = new Database(path, { readonly: true });
+	// Path differs from the cached handle (test-only: production DB_PATH is a
+	// constant read once at module load, so this branch never runs there).
+	// Dereference the previous handle WITHOUT closing it: node:sqlite throws
+	// ERR_INVALID_STATE when any getter runs on a closed DatabaseSync, which
+	// breaks introspection (e.g. a test assertion holding the old reference).
+	// The orphaned handle is reclaimed by GC + process exit; explicit shutdown
+	// of the live handle runs in closeReadOnlyDatabase.
+	cachedDatabase = null;
+	const handle = new DatabaseSync(path, { readOnly: true });
 	cachedDatabase = { path, handle };
 	return handle;
 };
@@ -319,7 +352,7 @@ export const __invalidateCachedDatabaseForTesting = (): void => {
 
 export const openReadOnlyDatabase = (
 	path: string = DB_PATH,
-): DatabaseResult<Database> => {
+): DatabaseResult<DatabaseSync> => {
 	try {
 		return { ok: true, value: getCachedReadOnlyDatabase(path) };
 	} catch (error) {
@@ -328,7 +361,7 @@ export const openReadOnlyDatabase = (
 };
 
 const withDatabase = <T>(
-	callback: (database: Database) => T,
+	callback: (database: DatabaseSync) => T,
 ): DatabaseResult<T> => {
 	const opened = openReadOnlyDatabase();
 	if (!opened.ok) {
@@ -357,10 +390,10 @@ const RETRYABLE_DB_ERROR =
 // `path` is optional so tests can target a missing path; production callers
 // omit it to use the default DB_PATH.
 export const withDatabaseRetry = <T>(
-	callback: (database: Database) => T,
+	callback: (database: DatabaseSync) => T,
 	path: string = DB_PATH,
 ): DatabaseResult<T> => {
-	const execute = (db: Database): DatabaseResult<T> => {
+	const execute = (db: DatabaseSync): DatabaseResult<T> => {
 		try {
 			return { ok: true, value: callback(db) };
 		} catch (error) {
@@ -434,13 +467,13 @@ export const detectSessionStatus = (
 
 export const getActiveSessions = (): DatabaseResult<SessionRecord[]> =>
 	withDatabase((database) => {
-		const statement = database.query<ActiveSessionRow, []>(
-			ACTIVE_SESSION_QUERY,
+		const statement = prepareCachedStatement(database, ACTIVE_SESSION_QUERY);
+		return (statement.all() as unknown as ActiveSessionRow[]).map(
+			(session) => ({
+				...session,
+				project_label: getProjectLabel(session),
+			}),
 		);
-		return (statement.all() as ActiveSessionRow[]).map((session) => ({
-			...session,
-			project_label: getProjectLabel(session),
-		}));
 	});
 
 export const getLatestMessages = (
@@ -460,17 +493,18 @@ export const getMessageCounts = (
 };
 
 export const readLatestMessagesFromDatabase = (
-	database: Database,
+	database: DatabaseSync,
 	sessionIds: string[],
 ): LatestMessageResultsBySessionId => {
 	if (sessionIds.length === 0) {
 		return {};
 	}
 
-	const statement = database.query<LatestMessageRow, string[]>(
+	const statement = prepareCachedStatement(
+		database,
 		buildLatestMessagesQuery(sessionIds.length),
 	);
-	const rows = statement.all(...sessionIds) as LatestMessageRow[];
+	const rows = statement.all(...sessionIds) as unknown as LatestMessageRow[];
 
 	return rows.reduce<LatestMessageResultsBySessionId>((results, row) => {
 		results[row.session_id] = {
@@ -502,17 +536,18 @@ const isQuestionToolRunning = (raw: string): boolean => {
 };
 
 export const readMessageCountsFromDatabase = (
-	database: Database,
+	database: DatabaseSync,
 	sessionIds: string[],
 ): MessageCountsBySessionId => {
 	if (sessionIds.length === 0) {
 		return {};
 	}
 
-	const statement = database.query<MessageCountRow, string[]>(
+	const statement = prepareCachedStatement(
+		database,
 		buildMessageCountsQuery(sessionIds.length),
 	);
-	const rows = statement.all(...sessionIds) as MessageCountRow[];
+	const rows = statement.all(...sessionIds) as unknown as MessageCountRow[];
 
 	return rows.reduce<MessageCountsBySessionId>((results, row) => {
 		results[row.session_id] = row.message_count;
@@ -557,7 +592,7 @@ INNER JOIN latest ON latest.session_id = m.session_id AND m.time_created = lates
 // Tie-break on identical time_created is resolved in TS by keeping the highest
 // rowid, preserving the original `ORDER BY time_created DESC, rowid DESC LIMIT 1`.
 export const readLatestMessagesAndCountsFromDatabase = (
-	database: Database,
+	database: DatabaseSync,
 	sessionIds: string[],
 ): LatestMessagesAndCountsResult => {
 	const latestMessages: LatestMessageResultsBySessionId = {};
@@ -566,11 +601,10 @@ export const readLatestMessagesAndCountsFromDatabase = (
 		return { latestMessages, messageCounts };
 	}
 
-	const rows = database
-		.query<LatestMessageAndCountRow, string[]>(
-			buildLatestMessagesAndCountsQuery(sessionIds.length),
-		)
-		.all(...sessionIds);
+	const rows = prepareCachedStatement(
+		database,
+		buildLatestMessagesAndCountsQuery(sessionIds.length),
+	).all(...sessionIds) as unknown as LatestMessageAndCountRow[];
 
 	// rowid tracked separately; never mutate the result object (no `as any`).
 	const rowidBySession = new Map<string, number>();
@@ -598,7 +632,7 @@ export const getWaitingSignals = (
 };
 
 export const readWaitingSignalsFromDatabase = (
-	database: Database,
+	database: DatabaseSync,
 	sessionIds: string[],
 ): WaitingSignalsBySessionId => {
 	if (sessionIds.length === 0) {
@@ -607,12 +641,13 @@ export const readWaitingSignalsFromDatabase = (
 
 	const waitingSignals: WaitingSignalsBySessionId = {};
 
-	const userTimesStatement = database.query<LatestUserMessageTimeRow, string[]>(
+	const userTimesStatement = prepareCachedStatement(
+		database,
 		buildLatestUserMessageTimesQuery(sessionIds.length),
 	);
 	const userTimeRows = userTimesStatement.all(
 		...sessionIds,
-	) as LatestUserMessageTimeRow[];
+	) as unknown as LatestUserMessageTimeRow[];
 	for (const row of userTimeRows) {
 		waitingSignals[row.session_id] = {
 			...(waitingSignals[row.session_id] ?? { questionToolRunning: false }),
@@ -620,13 +655,13 @@ export const readWaitingSignalsFromDatabase = (
 		};
 	}
 
-	const questionPartsStatement = database.query<
-		LatestQuestionToolPartRow,
-		string[]
-	>(buildLatestQuestionToolPartsQuery(sessionIds.length));
+	const questionPartsStatement = prepareCachedStatement(
+		database,
+		buildLatestQuestionToolPartsQuery(sessionIds.length),
+	);
 	const questionPartRows = questionPartsStatement.all(
 		...sessionIds,
-	) as LatestQuestionToolPartRow[];
+	) as unknown as LatestQuestionToolPartRow[];
 
 	// TS dedup: MAX+join may return multiple rows per session on time_created
 	// ties. Keep highest rowid to preserve ORDER BY time_created DESC, rowid DESC.
@@ -652,10 +687,8 @@ export const getLatestMessage = (
 	sessionId: string,
 ): DatabaseResult<LatestMessageResult | null> =>
 	withDatabase((database) => {
-		const statement = database.query<LatestMessageRow, [string]>(
-			LATEST_MESSAGE_QUERY,
-		);
-		const row = statement.get(sessionId);
+		const statement = prepareCachedStatement(database, LATEST_MESSAGE_QUERY);
+		const row = statement.get(sessionId) as LatestMessageRow | undefined;
 
 		if (!row) {
 			return null;

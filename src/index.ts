@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import {
 	appendFileSync,
 	chmodSync,
@@ -10,6 +11,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import {
 	Box,
 	type BoxRenderable,
@@ -64,6 +66,7 @@ import {
 	getAttachLaunchSpec,
 	getSessionSourceLabel,
 } from "./lib/sessionSource";
+import { which } from "./lib/which";
 import {
 	type HierarchyFilterMode,
 	type HierarchyInfoMode,
@@ -125,12 +128,20 @@ const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
 const FOOTER_INLINE_GAP = 1;
 // Emitted synchronously to fd 1 right before process.exit on shutdown.
-// opentui wraps every render frame in Synchronized Updates (?2026h...?2026l) but
-// none of its teardown paths (destroy/suspend) emit a closing ?2026l. Kitty keeps
-// the leave-alt-screen byte (?1049l) buffered inside that open BSU window and,
-// with process.exit firing immediately, never applies it - leaving Kitty on the
-// alternate screen with no scrollback. The leading ?2026l flushes that buffer;
-// the rest re-states the full teardown in case opentui's own was held back.
+// opentui 0.3.x wrapped every render frame in Synchronized Updates
+// (?2026h...?2026l) but never emitted a closing ?2026l on teardown, so Kitty
+// kept the leave-alt-screen byte (?1049l) buffered inside that open BSU window
+// and - with process.exit firing immediately - never applied it, stranding
+// Kitty on the alternate screen with no scrollback. opentui 0.4.2 dropped BSU
+// entirely (no ?2026h on render, none on teardown), so the original buffering
+// hazard is gone. The leading ?2026l is kept as defense-in-depth: it closes any
+// BSU window gctrl itself opens via ALT_SCREEN_CLEAR_SEQUENCE during an
+// interrupted attach, and is a harmless no-op when none is open. The remaining
+// sequence provides a synchronous (writeSync) flush guarantee of the full
+// teardown before process.exit - opentui's own destroy() emits the same idempotent
+// disable bytes (?1049l + mouse + paste + cursor) but those writes may be cut off
+// by an immediate exit; re-stating them here is an intentional belt-and-suspenders
+// double-fire (bin/gctrl.js repeats it again on child exit to cover signal-kills).
 const RESTORE_PRIMARY_SCREEN_SEQUENCE =
 	"\u001B[?2026l" +
 	"\u001B[?1049l" +
@@ -149,7 +160,6 @@ const CLEAR_TERMINAL_SEQUENCE = "\u001B[2J\u001B[H";
 // Blocking writeSync so the buffer switch reaches the kernel PTY before spawn.
 const ALT_SCREEN_CLEAR_SEQUENCE =
 	"\u001B[?2026h" + "\u001B[?1049h" + "\u001B[2J\u001B[H" + "\u001B[?2026l";
-const ATTACH_DEBUG_OUTPUT_TAIL_LENGTH = 4000;
 const ATTACH_DEBUG_DIRECTORY = join(homedir(), ".cache", "gctrl");
 const DEFAULT_ATTACH_DEBUG_PATH = join(
 	ATTACH_DEBUG_DIRECTORY,
@@ -544,11 +554,6 @@ const getAttachDebugPath = (): string | null => {
 
 const isAttachDebugEnabled = (): boolean => getAttachDebugPath() !== null;
 
-const isAttachDebugOutputEnabled = (): boolean => {
-	const value = process.env.GCTRL_ATTACH_DEBUG_OUTPUT?.trim().toLowerCase();
-	return value === "1" || value === "true";
-};
-
 const ensurePrivateAttachDebugTarget = (debugPath: string): void => {
 	if (debugPath === DEFAULT_ATTACH_DEBUG_PATH) {
 		mkdirSync(ATTACH_DEBUG_DIRECTORY, { recursive: true, mode: 0o700 });
@@ -577,61 +582,6 @@ const writeAttachDebug = (
 		}
 	} catch (error) {
 		void error;
-	}
-};
-
-const appendOutputTail = (currentTail: string, chunk: Uint8Array): string => {
-	if (!isAttachDebugOutputEnabled()) {
-		return currentTail;
-	}
-
-	const nextTail = `${currentTail}${new TextDecoder().decode(chunk)}`;
-	return nextTail.length > ATTACH_DEBUG_OUTPUT_TAIL_LENGTH
-		? nextTail.slice(-ATTACH_DEBUG_OUTPUT_TAIL_LENGTH)
-		: nextTail;
-};
-
-const getAttachDebugOutputDetails = (
-	outputTail: string,
-): Record<string, unknown> =>
-	isAttachDebugOutputEnabled() ? { outputTail } : {};
-
-const getTerminalColumnCount = (): number =>
-	getSafeNumber(process.stdout.columns, 80) || 80;
-
-const getTerminalRowCount = (): number =>
-	getSafeNumber(process.stdout.rows, 24) || 24;
-
-const canUseAttachPty = (): boolean =>
-	// PTY forwarding breaks when gctrl isn't the foreground session (e.g. via npx); inherit-stdio is the default, PTY is opt-in for capture/debug.
-	process.env.GCTRL_ATTACH_PTY === "1" &&
-	process.platform !== "win32" &&
-	process.stdin.isTTY === true &&
-	process.stdout.isTTY === true;
-
-const writePtyInput = (terminal: Bun.Terminal, chunk: unknown): void => {
-	if (typeof chunk === "string") {
-		terminal.write(chunk);
-		return;
-	}
-
-	if (chunk instanceof Uint8Array) {
-		terminal.write(chunk);
-	}
-};
-
-const setStdinRawMode = (enabled: boolean): boolean => {
-	const setRawMode = process.stdin.setRawMode;
-	if (typeof setRawMode !== "function") {
-		return false;
-	}
-
-	try {
-		setRawMode.call(process.stdin, enabled);
-		return true;
-	} catch (error) {
-		void error;
-		return false;
 	}
 };
 
@@ -1062,11 +1012,13 @@ const main = async () => {
 
 	const refreshCoordinator = createRefreshCoordinator();
 	const workerExtension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+	// node v24 rejects new Worker(fileUrl.href string) with ERR_WORKER_PATH;
+	// it requires the URL object (or a ./ relative path), not the .href string.
 	const refreshWorker = new Worker(
-		new URL(`./db/refresh-worker${workerExtension}`, import.meta.url).href,
-		{ smol: true },
+		new URL(`./db/refresh-worker`, import.meta.url),
+		{ execArgv: ["--experimental-sqlite", "--no-warnings"] },
 	);
-	(refreshWorker as Worker & { unref(): void }).unref();
+	refreshWorker.unref();
 	const isResizeDebouncing: { value: ReturnType<typeof setTimeout> | null } = {
 		value: null,
 	};
@@ -1177,7 +1129,6 @@ const main = async () => {
 	const runAttachedSession = async (
 		attachLaunchSpec: NonNullable<ReturnType<typeof getAttachLaunchSpec>>,
 	): Promise<number> => {
-		const useAttachPty = canUseAttachPty();
 		const attachEnvironment = getAttachLaunchEnvironment(attachLaunchSpec);
 		writeAttachDebug("run:start", {
 			cmd: attachLaunchSpec.cmd,
@@ -1186,81 +1137,25 @@ const main = async () => {
 			stdinTTY: process.stdin.isTTY,
 			stdoutTTY: process.stdout.isTTY,
 			platform: process.platform,
-			useAttachPty,
 		});
 
-		if (!useAttachPty) {
-			const child = Bun.spawn({
-				cmd: attachLaunchSpec.cmd,
+		const child = spawn(
+			attachLaunchSpec.cmd[0],
+			attachLaunchSpec.cmd.slice(1),
+			{
 				cwd: attachLaunchSpec.cwd,
 				env: attachEnvironment,
-				stdin: "inherit",
-				stdout: "inherit",
-				stderr: "inherit",
-			});
-			writeAttachDebug("run:spawn", { pid: child.pid, mode: "inherit" });
-
-			const exitCode = await child.exited;
-			writeAttachDebug("run:exit", { exitCode, mode: "inherit" });
-			return exitCode;
-		}
-
-		let outputTail = "";
-		const terminal = new Bun.Terminal({
-			cols: getTerminalColumnCount(),
-			rows: getTerminalRowCount(),
-			data: (_terminal, data) => {
-				outputTail = appendOutputTail(outputTail, data);
-				process.stdout.write(data);
+				stdio: "inherit",
 			},
-			exit: (_terminal, exitCode, signalCode) => {
-				writeAttachDebug("run:terminal-exit", {
-					exitCode,
-					signalCode,
-					...getAttachDebugOutputDetails(outputTail),
-				});
-			},
+		);
+		writeAttachDebug("run:spawn", { pid: child.pid, mode: "inherit" });
+
+		const exitCode = await new Promise<number>((resolve, reject) => {
+			child.on("close", (code) => resolve(code ?? 1));
+			child.on("error", reject);
 		});
-		const forwardStdin = (chunk: unknown) => writePtyInput(terminal, chunk);
-		const resizeTerminal = () => {
-			terminal.resize(getTerminalColumnCount(), getTerminalRowCount());
-		};
-
-		process.stdin.on("data", forwardStdin);
-		process.stdin.resume();
-		process.on("SIGWINCH", resizeTerminal);
-		const restoredRawMode = setStdinRawMode(true);
-		writeAttachDebug("run:pty-ready", { restoredRawMode });
-
-		try {
-			const child = Bun.spawn({
-				cmd: attachLaunchSpec.cmd,
-				cwd: attachLaunchSpec.cwd,
-				env: attachEnvironment,
-				terminal,
-			});
-			writeAttachDebug("run:spawn", { pid: child.pid, mode: "pty" });
-
-			const exitCode = await child.exited;
-			writeAttachDebug("run:exit", {
-				exitCode,
-				mode: "pty",
-				...getAttachDebugOutputDetails(outputTail),
-			});
-			return exitCode;
-		} finally {
-			writeAttachDebug("run:cleanup", { restoredRawMode });
-			if (restoredRawMode) {
-				setStdinRawMode(false);
-			}
-			process.stdin.off("data", forwardStdin);
-			process.off("SIGWINCH", resizeTerminal);
-			try {
-				terminal.close();
-			} catch (error) {
-				void error;
-			}
-		}
+		writeAttachDebug("run:exit", { exitCode, mode: "inherit" });
+		return exitCode;
 	};
 
 	const refreshExternalAttachedSessionSignals = async () => {
@@ -2518,27 +2413,25 @@ const main = async () => {
 		}
 	};
 
-	refreshWorker.onmessage = (event) => {
-		if (!isRefreshResponse(event.data)) {
+	refreshWorker.on("message", (response) => {
+		if (!isRefreshResponse(response)) {
 			return;
 		}
 
-		handleRefreshResponse(event.data);
-	};
+		handleRefreshResponse(response);
+	});
 
-	refreshWorker.onmessageerror = () => {
+	refreshWorker.on("messageerror", () => {
 		failActiveRefreshRequest(
 			"Failed to deserialize refresh worker response payload.",
 		);
-	};
+	});
 
-	refreshWorker.onerror = (event) => {
-		event.preventDefault();
-		const workerErrorMessage = event.error?.message ?? event.message;
+	refreshWorker.on("error", (err: Error) => {
 		failActiveRefreshRequest(
-			workerErrorMessage || "Refresh worker encountered an unexpected error.",
+			err.message || "Refresh worker encountered an unexpected error.",
 		);
-	};
+	});
 
 	const refreshSessions = () => {
 		if (applyPendingSelectionWork()) {
@@ -2997,23 +2890,26 @@ const main = async () => {
 					return;
 				}
 			} else {
-				const opencodeExecutable = Bun.which("opencode") ?? "opencode";
-				const child = Bun.spawn({
-					cmd: [opencodeExecutable, "session", "delete", sessionId],
-					stdout: "pipe",
-					stderr: "pipe",
+				const opencodeExecutable = which("opencode") ?? "opencode";
+				const child = spawn(
+					opencodeExecutable,
+					["session", "delete", sessionId],
+					{ stdio: ["ignore", "pipe", "pipe"] },
+				);
+				let stdoutText = "";
+				let stderrText = "";
+				child.stdout?.setEncoding("utf8");
+				child.stderr?.setEncoding("utf8");
+				child.stdout?.on("data", (chunk: string) => {
+					stdoutText += chunk;
 				});
-				const stdoutPromise = child.stdout
-					? new Response(child.stdout).text()
-					: Promise.resolve("");
-				const stderrPromise = child.stderr
-					? new Response(child.stderr).text()
-					: Promise.resolve("");
-				const [stdoutText, stderrText, exitCode] = await Promise.all([
-					stdoutPromise,
-					stderrPromise,
-					child.exited,
-				]);
+				child.stderr?.on("data", (chunk: string) => {
+					stderrText += chunk;
+				});
+				const exitCode = await new Promise<number>((resolve, reject) => {
+					child.on("close", (code) => resolve(code ?? 1));
+					child.on("error", reject);
+				});
 
 				if (exitCode !== 0) {
 					state.isDeletingSession = false;
@@ -3109,16 +3005,17 @@ const main = async () => {
 		}
 
 		try {
-			const opencodeExecutable = Bun.which("opencode") ?? "opencode";
-			const proc = Bun.spawn({
-				cmd: [opencodeExecutable, "run", "--session", session.id, "stop"],
-				cwd: projectDir,
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			const opencodeExecutable = which("opencode") ?? "opencode";
+			const proc = spawn(
+				opencodeExecutable,
+				["run", "--session", session.id, "stop"],
+				{ cwd: projectDir, stdio: ["ignore", "pipe", "pipe"] },
+			);
 			const exitCode = await Promise.race([
-				proc.exited,
+				new Promise<number>((resolve, reject) => {
+					proc.on("close", (code) => resolve(code ?? 1));
+					proc.on("error", reject);
+				}),
 				new Promise<number>((_, reject) =>
 					setTimeout(() => {
 						proc.kill();
@@ -3281,13 +3178,16 @@ const main = async () => {
 						return childId;
 					}
 
-					const opencodeExecutable = Bun.which("opencode") ?? "opencode";
-					const child = Bun.spawn({
-						cmd: [opencodeExecutable, "session", "delete", childId],
-						stdout: "pipe",
-						stderr: "pipe",
+					const opencodeExecutable = which("opencode") ?? "opencode";
+					const child = spawn(
+						opencodeExecutable,
+						["session", "delete", childId],
+						{ stdio: ["ignore", "pipe", "pipe"] },
+					);
+					const exitCode = await new Promise<number>((resolve, reject) => {
+						child.on("close", (code) => resolve(code ?? 1));
+						child.on("error", reject);
 					});
-					const exitCode = await child.exited;
 					if (exitCode !== 0) {
 						throw new Error(`Failed to delete ${childId}`);
 					}

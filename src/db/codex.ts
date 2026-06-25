@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite";
 import { spawn } from "node:child_process";
 import {
 	existsSync,
@@ -11,12 +10,14 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { isActiveStatus } from "../lib/hierarchyHelpers";
 import type { SessionSnapshot } from "../lib/sessionSnapshot";
 import {
 	getDefaultSessionCapabilities,
 	getSessionSourceLabel,
 } from "../lib/sessionSource";
+import { which } from "../lib/which";
 import {
 	type Session,
 	type SessionRecord,
@@ -1603,11 +1604,11 @@ export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 		};
 	}
 
-	let database: Database | null = null;
+	let database: DatabaseSync | null = null;
 	try {
-		database = new Database(databasePath, { readonly: true });
+		database = new DatabaseSync(databasePath, { readOnly: true });
 		const threadRows = database
-			.query<CodexThreadRow, []>(`
+			.prepare(`
 				SELECT
 					id,
 					source,
@@ -1625,13 +1626,13 @@ export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 				WHERE archived = 0
 				ORDER BY updated_at_ms DESC
 			`)
-			.all() as CodexThreadRow[];
+			.all() as unknown as CodexThreadRow[];
 		const edgeRows = database
-			.query<CodexThreadSpawnEdgeRow, []>(`
+			.prepare(`
 				SELECT parent_thread_id, child_thread_id, status
 				FROM thread_spawn_edges
 			`)
-			.all() as CodexThreadSpawnEdgeRow[];
+			.all() as unknown as CodexThreadSpawnEdgeRow[];
 		const logSummaries: Partial<Record<string, CodexSessionLogSummary>> = {};
 		const logIssues: Partial<Record<string, string>> = {};
 
@@ -1674,11 +1675,11 @@ const buildSqlPlaceholders = (values: string[]): string => {
 };
 
 const getCodexThreadTreeIds = (
-	database: Database,
+	database: DatabaseSync,
 	threadId: string,
 ): string[] => {
 	const rows = database
-		.query<{ id: string }, [string]>(
+		.prepare(
 			`
 				WITH RECURSIVE thread_tree(id) AS (
 					SELECT ?
@@ -1701,7 +1702,7 @@ const getCodexThreadTreeIds = (
 };
 
 const getCodexThreadRolloutRows = (
-	database: Database,
+	database: DatabaseSync,
 	threadIds: string[],
 ): CodexDeleteThreadRow[] => {
 	if (threadIds.length === 0) {
@@ -1710,14 +1711,14 @@ const getCodexThreadRolloutRows = (
 
 	const placeholders = buildSqlPlaceholders(threadIds);
 	return database
-		.query<CodexDeleteThreadRow, string[]>(
+		.prepare(
 			`
 				SELECT id, rollout_path
 				FROM threads
 				WHERE id IN (${placeholders})
 			`,
 		)
-		.all(...threadIds) as CodexDeleteThreadRow[];
+		.all(...threadIds) as unknown as CodexDeleteThreadRow[];
 };
 
 const collectCodexRolloutPathsFromDirectory = (
@@ -1838,7 +1839,7 @@ const rewriteCodexSessionIndex = (
 };
 
 const deleteCodexThreadMetadata = (
-	database: Database,
+	database: DatabaseSync,
 	threadIds: string[],
 ): void => {
 	if (threadIds.length === 0) {
@@ -1848,7 +1849,7 @@ const deleteCodexThreadMetadata = (
 	const existingTables = new Set(
 		(
 			database
-				.query<{ name: string }, []>(
+				.prepare(
 					`
 						SELECT name
 						FROM sqlite_master
@@ -1859,41 +1860,48 @@ const deleteCodexThreadMetadata = (
 		).map((row) => row.name),
 	);
 	const placeholders = buildSqlPlaceholders(threadIds);
-	const transaction = database.transaction((ids: string[]) => {
+	// node:sqlite has no DatabaseSync.transaction() wrapper; replicate the
+	// all-or-nothing semantics with an explicit BEGIN/COMMIT/ROLLBACK.
+	database.exec("BEGIN");
+	try {
 		if (existingTables.has("thread_dynamic_tools")) {
 			database
-				.query(
+				.prepare(
 					`DELETE FROM thread_dynamic_tools WHERE thread_id IN (${placeholders})`,
 				)
-				.run(...ids);
+				.run(...threadIds);
 		}
 
 		if (existingTables.has("stage1_outputs")) {
 			database
-				.query(
+				.prepare(
 					`DELETE FROM stage1_outputs WHERE thread_id IN (${placeholders})`,
 				)
-				.run(...ids);
+				.run(...threadIds);
 		}
 
 		if (existingTables.has("thread_spawn_edges")) {
 			database
-				.query(
+				.prepare(
 					`
 						DELETE FROM thread_spawn_edges
 						WHERE child_thread_id IN (${placeholders})
 						   OR parent_thread_id IN (${placeholders})
 					`,
 				)
-				.run(...ids, ...ids);
+				.run(...threadIds, ...threadIds);
 		}
 
 		database
-			.query(`DELETE FROM threads WHERE id IN (${placeholders})`)
-			.run(...ids);
-	});
-
-	transaction(threadIds);
+			.prepare(`DELETE FROM threads WHERE id IN (${placeholders})`)
+			.run(...threadIds);
+		database.exec("COMMIT");
+	} catch (error) {
+		try {
+			database.exec("ROLLBACK");
+		} catch {}
+		throw error;
+	}
 };
 
 const archiveCodexThreadViaAppServer = async (
@@ -2071,14 +2079,14 @@ export const deleteCodexSession = async (
 		};
 	}
 
-	let database: Database | null = null;
+	let database: DatabaseSync | null = null;
 	try {
-		database = new Database(databasePath);
+		database = new DatabaseSync(databasePath);
 		const threadIds = getCodexThreadTreeIds(database, threadId);
 
 		if (!options.skipArchiveRequest) {
 			const codexExecutable =
-				options.codexExecutable ?? Bun.which("codex") ?? "codex";
+				options.codexExecutable ?? which("codex") ?? "codex";
 			await archiveCodexThreadViaAppServer(threadId, codexExecutable);
 		}
 

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,7 @@ let tempDir: string;
 // resolves to the same on-disk database across handles.
 const createTempDatabaseFile = (name: string): string => {
 	const fullPath = join(tempDir, name);
-	const writer = new Database(fullPath);
+	const writer = new DatabaseSync(fullPath);
 	writer.close();
 	return fullPath;
 };

@@ -8,9 +8,8 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const bunPackageDir = dirname(require.resolve("bun/package.json"));
-const bunPath = resolve(bunPackageDir, "bin", "bun.exe");
 const entryPath = resolve(__dirname, "..", "dist", "index.js");
+const registerPath = resolve(__dirname, "..", "dist", "lib", "ffi-register.mjs");
 
 // Belt-and-suspenders: the parent (last holder of the PTY) re-emits the
 // leave-alt-screen sequence on child exit. Covers the case where the child is
@@ -25,10 +24,14 @@ const restorePrimaryScreen = () => {
 	} catch {}
 };
 
-const child = spawn(bunPath, [entryPath], {
-	stdio: "inherit",
-	env: process.env,
-});
+const child = spawn(
+	process.execPath,
+	["--import", registerPath, "--experimental-sqlite", "--no-warnings", entryPath],
+	{
+		stdio: "inherit",
+		env: process.env,
+	},
+);
 
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
 const forcedKillDelayMs = 2000;

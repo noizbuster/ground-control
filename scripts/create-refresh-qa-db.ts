@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -39,7 +39,7 @@ const parseArgs = (argv: string[]): ScriptOptions => {
 
 const encode = (value: Record<string, unknown>): string => JSON.stringify(value);
 
-const createSchema = (db: Database): void => {
+const createSchema = (db: DatabaseSync): void => {
 	db.exec(`
 CREATE TABLE project (
   id TEXT PRIMARY KEY,
@@ -78,17 +78,17 @@ ON part (session_id, time_created DESC);
 `);
 };
 
-const seedFixtureData = (db: Database): void => {
-	const insertProject = db.query(
+const seedFixtureData = (db: DatabaseSync): void => {
+	const insertProject = db.prepare(
 		"INSERT INTO project (id, name, worktree) VALUES (?, ?, ?)",
 	);
-	const insertSession = db.query(
+	const insertSession = db.prepare(
 		"INSERT INTO session (id, project_id, title, directory, parent_id, time_created, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 	);
-	const insertMessage = db.query(
+	const insertMessage = db.prepare(
 		"INSERT INTO message (session_id, time_created, data) VALUES (?, ?, ?)",
 	);
-	const insertPart = db.query(
+	const insertPart = db.prepare(
 		"INSERT INTO part (session_id, time_created, data) VALUES (?, ?, ?)",
 	);
 
@@ -373,13 +373,13 @@ const seedFixtureData = (db: Database): void => {
 };
 
 const main = async () => {
-	const options = parseArgs(Bun.argv.slice(2));
+	const options = parseArgs(process.argv.slice(2));
 	const outputPath = resolve(process.cwd(), options.outputPath);
 
 	await mkdir(dirname(outputPath), { recursive: true });
 	await rm(outputPath, { force: true });
 
-	const db = new Database(outputPath);
+	const db = new DatabaseSync(outputPath);
 
 	try {
 		createSchema(db);

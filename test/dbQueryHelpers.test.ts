@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
 import {
 	readLatestMessagesAndCountsFromDatabase,
 	readLatestMessagesFromDatabase,
@@ -8,7 +8,7 @@ import {
 } from "../src/db";
 import type { MessageData } from "../src/types";
 
-let database: Database;
+let database: DatabaseSync;
 
 const createMessage = (message: MessageData | string): string =>
 	typeof message === "string" ? message : JSON.stringify(message);
@@ -18,12 +18,9 @@ const insertMessage = (
 	message: MessageData | string,
 	timeCreated: number,
 ): void => {
-	database.run(
+	database.prepare(
 		"INSERT INTO message (session_id, data, time_created) VALUES (?, ?, ?)",
-		sessionId,
-		createMessage(message),
-		timeCreated,
-	);
+	).run(sessionId, createMessage(message), timeCreated);
 };
 
 const insertPart = (
@@ -31,20 +28,17 @@ const insertPart = (
 	part: Record<string, unknown>,
 	timeCreated: number,
 ): void => {
-	database.run(
+	database.prepare(
 		"INSERT INTO part (session_id, data, time_created) VALUES (?, ?, ?)",
-		sessionId,
-		JSON.stringify(part),
-		timeCreated,
-	);
+	).run(sessionId, JSON.stringify(part), timeCreated);
 };
 
 beforeEach(() => {
-	database = new Database(":memory:");
-	database.run(
+	database = new DatabaseSync(":memory:");
+	database.exec(
 		"CREATE TABLE message (session_id TEXT NOT NULL, data TEXT, time_created INTEGER NOT NULL)",
 	);
-	database.run(
+	database.exec(
 		"CREATE TABLE part (session_id TEXT NOT NULL, data TEXT NOT NULL, time_created INTEGER NOT NULL)",
 	);
 });

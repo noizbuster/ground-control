@@ -1,3 +1,5 @@
+import { parentPort } from "node:worker_threads";
+
 import { mergeSessionSnapshots } from "../lib/sessionSnapshot";
 import { getClaudeSnapshot } from "./claude";
 import { getCodexSnapshot } from "./codex";
@@ -12,12 +14,12 @@ import {
 	type RefreshResponse,
 } from "./refresh-worker-protocol";
 
-interface WorkerScope {
-	onmessage: ((event: { data: unknown }) => void) | null;
-	postMessage(response: RefreshResponse): void;
+if (!parentPort) {
+	throw new Error("refresh-worker must be run as a Worker thread");
 }
 
-const workerScope = globalThis as unknown as WorkerScope;
+const port = parentPort;
+
 const pendingRequests: RefreshRequest[] = [];
 let isProcessing = false;
 
@@ -75,7 +77,7 @@ const processNextRequest = (): void => {
 
 	try {
 		const response = buildResponse(request);
-		workerScope.postMessage(response);
+		port.postMessage(response);
 	} finally {
 		isProcessing = false;
 		if (pendingRequests.length > 0) {
@@ -84,11 +86,11 @@ const processNextRequest = (): void => {
 	}
 };
 
-workerScope.onmessage = (event) => {
-	if (!isRefreshRequest(event.data)) {
+port.on("message", (data: unknown) => {
+	if (!isRefreshRequest(data)) {
 		return;
 	}
 
-	pendingRequests.push(event.data);
+	pendingRequests.push(data);
 	processNextRequest();
-};
+});

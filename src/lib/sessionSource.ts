@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { delimiter, dirname, isAbsolute } from "node:path";
 import type { Session, SessionCapabilities, SessionSource } from "../types";
+import { which } from "./which";
 
 const OPENCODE_CAPABILITIES: SessionCapabilities = {
 	attach: true,
@@ -172,7 +173,7 @@ export const getAttachLaunchSpec = (
 
 	const fallbackDirectory = options?.fallbackDirectory ?? process.cwd();
 	const resolveExecutable =
-		options?.resolveExecutable ?? ((name: string) => Bun.which(name) ?? name);
+		options?.resolveExecutable ?? ((name: string) => which(name) ?? name);
 	const resolveCommand = (name: string): string =>
 		resolveExecutable(name) ?? name;
 	const cwd = sanitizeLaunchDirectory(session.directory, fallbackDirectory);

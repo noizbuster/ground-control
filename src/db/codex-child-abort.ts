@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { which } from "../lib/which";
 import type { SubagentSession } from "../types";
 
 type JsonRecord = Readonly<Record<string, unknown>>;
@@ -208,8 +209,7 @@ export const abortCodexChildSession = async (
 	session: Pick<SubagentSession, "id" | "directory" | "sourceMetadata">,
 	options: AbortCodexChildSessionOptions = {},
 ): Promise<CodexChildAbortResult> => {
-	const codexExecutable =
-		options.codexExecutable ?? Bun.which("codex") ?? "codex";
+	const codexExecutable = options.codexExecutable ?? which("codex") ?? "codex";
 	const timeoutMs = options.timeoutMs ?? DEFAULT_CODEX_ABORT_TIMEOUT_MS;
 	const client = new CodexAppServerClient(codexExecutable, timeoutMs);
 	const turnIdFromLog = session.sourceMetadata?.lastTurnId;

@@ -1,11 +1,11 @@
 // Observational micro-bench: OLD (2 separate queries) vs NEW (single MAX+join)
 // for latest-message + count across all active OpenCode sessions.
 //
-// Run: `bun run bench:opencode`
+// Run: `pnpm run bench:opencode`
 // Honors GCTRL_DB_PATH via the shared DB_PATH resolver in src/db.
 // NOT a CI gate; numbers are environment-specific and will vary by DB size.
 
-import { Database } from "bun:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { DB_PATH } from "../src/db";
 
 interface SessionIdRow {
@@ -47,15 +47,13 @@ INNER JOIN latest
 `;
 
 const run = (): void => {
-	let db: Database | null = null;
+	let db: DatabaseSync | null = null;
 	let ids: SessionIdRow[];
 	try {
-		db = new Database(DB_PATH, { readonly: true });
+		db = new DatabaseSync(DB_PATH, { readOnly: true });
 		ids = db
-			.query<SessionIdRow, []>(
-				"SELECT id FROM session WHERE time_archived IS NULL",
-			)
-			.all();
+			.prepare("SELECT id FROM session WHERE time_archived IS NULL")
+			.all() as unknown as SessionIdRow[];
 	} catch (error) {
 		console.log(
 			`error opening/querying DB at ${DB_PATH}: ${error instanceof Error ? error.message : error}`,
@@ -81,15 +79,15 @@ const run = (): void => {
 
 	// OLD: 2 separate queries (correlated subquery + GROUP BY count).
 	const t1 = performance.now();
-	db.query(oldLatestSql).all(...idArr);
-	db.query(oldCountSql).all(...idArr);
+	db.prepare(oldLatestSql).all(...idArr);
+	db.prepare(oldCountSql).all(...idArr);
 	const oldMs = performance.now() - t1;
 
 	// NEW: MAX+join+COUNT in one query. Tie-break on identical time_created
 	// is resolved in production code by keeping the highest rowid; the bench
 	// only measures query latency, not the caller-side dedup.
 	const t2 = performance.now();
-	db.query(newCombinedSql).all(...idArr);
+	db.prepare(newCombinedSql).all(...idArr);
 	const newMs = performance.now() - t2;
 
 	console.log(`active_sessions=${idArr.length}`);

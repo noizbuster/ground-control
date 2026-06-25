@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import type { LatestMessageResultsBySessionId } from "../src/db/index";
 import { getWaitingSignalCandidateIds } from "../src/db/waitingSignalCandidates";
 import type { MessageData } from "../src/types";

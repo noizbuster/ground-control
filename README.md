@@ -10,21 +10,13 @@
 
 Make sure these are available before running `gctrl`:
 
-- Node.js 22.13.0 or later
+- Node.js 24 or later
 - OpenCode, Codex, Claude Code, Pi, and/or omp installed on the same machine
 - `~/.local/share/opencode/opencode.db` exists for OpenCode monitoring
 - `~/.codex/state_*.sqlite` and `~/.codex/sessions/` exist for Codex monitoring
 - `~/.claude/projects/` and/or `~/.claude/sessions/` exist for Claude Code monitoring
 - `~/.pi/agent/sessions/` exists for Pi monitoring
 - `~/.omp/agent/sessions/` exists for omp monitoring
-
-### Run with `bunx`
-
-```bash
-bunx gctrl
-```
-
-`bunx` works by relaunching the CLI with Node under the hood.
 
 ### Run with `npx`
 
@@ -104,8 +96,8 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 
 ## Requirements
 
-- Node.js 22.13.0+ is required for built-in `node:sqlite`.
-- `bun` is optional and only used as an alternate launcher (`bunx gctrl`).
+- Node.js 24+ is required for built-in `node:sqlite`.
+- The native TUI renderer uses a koffi-based FFI adapter (no manual flags needed).
 - The monitor reads OpenCode session data from `~/.local/share/opencode/opencode.db`.
 - The monitor reads Codex thread state from the newest `~/.codex/state_*.sqlite` file and enriches it with `~/.codex/sessions/**/*.jsonl`.
 - The monitor reads Claude Code session state from `~/.claude/sessions/*.json` and enriches it with `~/.claude/projects/**/*.jsonl`.
@@ -128,19 +120,20 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 ## Local Development
 
 ```bash
-bun install
-bun run dev
+pnpm install
+pnpm dev
 ```
 
 Useful scripts:
 
 ```bash
-bun run start
-bun run dev
-bun run build
-bun run typecheck
-bun run lint
-bun run check
+pnpm start
+pnpm dev
+pnpm build
+pnpm typecheck
+pnpm lint
+pnpm check
+pnpm test
 ```
 
 ## Project Structure

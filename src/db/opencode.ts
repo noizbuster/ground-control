@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import {
 	buildSessionSnapshot,
 	type SessionSnapshot,
@@ -8,6 +8,7 @@ import {
 	ACTIVE_SESSION_QUERY,
 	type DatabaseResult,
 	getProjectLabel,
+	prepareCachedStatement,
 	readLatestMessagesAndCountsFromDatabase,
 	readWaitingSignalsFromDatabase,
 	withDatabaseRetry,
@@ -27,10 +28,10 @@ interface ActiveSessionRow {
 }
 
 const readActiveSessionsFromDatabase = (
-	database: Database,
+	database: DatabaseSync,
 ): SessionRecord[] => {
-	const statement = database.query<ActiveSessionRow, []>(ACTIVE_SESSION_QUERY);
-	const rows = statement.all() as ActiveSessionRow[];
+	const statement = prepareCachedStatement(database, ACTIVE_SESSION_QUERY);
+	const rows = statement.all() as unknown as ActiveSessionRow[];
 
 	return rows.map((session) => ({
 		...session,

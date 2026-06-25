@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import {
 	getDisplayStatus,
 	getStatusLabel,
@@ -72,8 +72,8 @@ describe("hierarchy label helpers", () => {
 			24,
 		);
 
-		expect(title).toStartWith("TASK: Determine");
-		expect(title).toEndWith("...");
-		expect(title).not.toStartWith("...");
+		expect(title.startsWith("TASK: Determine")).toBe(true);
+		expect(title.endsWith("...")).toBe(true);
+		expect(title.startsWith("...")).toBe(false);
 	});
 });

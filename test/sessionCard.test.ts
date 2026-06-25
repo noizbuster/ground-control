@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import type { Session, SubagentSession } from "../src/types";
 import { SessionStatus } from "../src/types";
 import { SessionCard, shortenDirectoryPath } from "../src/ui/SessionCard";

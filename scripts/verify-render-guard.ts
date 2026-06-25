@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { lstat, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -49,16 +50,17 @@ const main = async () => {
 		}
 		await symlink(FIXTURE_PATH, DB_TARGET_PATH);
 
-		const child = Bun.spawn({
-			cmd: ["bun", "run", "start"],
+		const child = spawn("node", ["bin/gctrl.js"], {
 			cwd: PROJECT_ROOT,
-			stdin: "pipe",
-			stdout: "ignore",
-			stderr: "pipe",
+			stdio: ["pipe", "ignore", "ignore"],
 			env: {
 				...process.env,
 				GCTRL_RENDER_STATS: STATS_PATH,
 			},
+		});
+		const exitedPromise = new Promise<number>((resolve) => {
+			child.on("close", (code) => resolve(code ?? 0));
+			child.on("error", () => resolve(1));
 		});
 
 		await sleep(RUN_MS);
@@ -67,12 +69,12 @@ const main = async () => {
 		closeStdin(child.stdin);
 
 		const exitCode = await Promise.race([
-			child.exited,
+			exitedPromise,
 			sleep(3000).then(() => Number.NaN),
 		]);
 		if (Number.isNaN(exitCode)) {
 			child.kill();
-			await child.exited;
+			await exitedPromise;
 		}
 
 		if (!(await pathExists(STATS_PATH))) {
