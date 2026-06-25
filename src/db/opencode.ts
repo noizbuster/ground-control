@@ -113,50 +113,90 @@ const readNewlyArchivedSessionIds = (
 // Reads OpenCode session data. With `since` undefined this is a full read of
 // every active session; with `since` set it returns only sessions whose
 // time_updated advanced past `since` plus the ids of sessions archived since
-// then. When the probe shows nothing moved, `changed` is false and the delta
-// fields are empty — callers reuse their cached snapshot verbatim.
-export const getOpenCodeSnapshot = (options?: {
+// then.
+//
+// `nonTerminalSessionIds` are session IDs the caller knows are non-terminal
+// (running / waiting / unknown). These are polled every call regardless of the
+// session-table probe because part-table changes — question-tool state
+// transitions, tool completions — do NOT bump session.time_updated (no DB
+// triggers; verified on 7GB prod DB). Without this, an "awaiting user"
+// transition whose part row lands after the message row is invisible until
+// restart.
+export interface OpenCodeSnapshotOptions {
 	since?: number;
-}): DatabaseResult<OpenCodeReadResult> => {
-	const since = options?.since;
-	return withDatabaseRetry((database) => {
-		const maxUpdatedAt = getOpenCodeMaxUpdatedAt(database);
+	nonTerminalSessionIds?: string[];
+}
 
-		if (since !== undefined && maxUpdatedAt === since) {
-			return {
-				rawSessions: [],
-				latestMessages: {},
-				messageCounts: {},
-				waitingSignals: {},
-				maxUpdatedAt,
-				removedSessionIds: [],
-				changed: false,
-			};
-		}
+// Extracted so tests can pass a DatabaseSync directly, bypassing the
+// module-scope DB_PATH const that is locked at first import.
+export const computeOpenCodeSnapshot = (
+	database: DatabaseSync,
+	options: OpenCodeSnapshotOptions = {},
+): OpenCodeReadResult => {
+	const since = options.since;
+	const nonTerminalSessionIds = options.nonTerminalSessionIds ?? [];
 
-		const rawSessions = readActiveSessions(database, since);
-		const sessionIds = rawSessions.map((session) => session.id);
-		const { latestMessages, messageCounts } =
-			readLatestMessagesAndCountsFromDatabase(database, sessionIds);
-		const waitingSignalCandidateIds = getWaitingSignalCandidateIds(
-			sessionIds,
-			latestMessages,
-		);
-		const waitingSignals = readWaitingSignalsFromDatabase(
-			database,
-			waitingSignalCandidateIds,
-		);
-		const removedSessionIds =
-			since === undefined ? [] : readNewlyArchivedSessionIds(database, since);
+	const maxUpdatedAt = getOpenCodeMaxUpdatedAt(database);
+	const sessionTableChanged = since === undefined || maxUpdatedAt !== since;
 
+	if (
+		since !== undefined &&
+		!sessionTableChanged &&
+		nonTerminalSessionIds.length === 0
+	) {
 		return {
-			rawSessions,
-			latestMessages,
-			messageCounts,
-			waitingSignals,
+			rawSessions: [],
+			latestMessages: {},
+			messageCounts: {},
+			waitingSignals: {},
 			maxUpdatedAt,
-			removedSessionIds,
-			changed: true,
+			removedSessionIds: [],
+			changed: false,
 		};
-	});
+	}
+
+	const rawSessions = sessionTableChanged
+		? readActiveSessions(database, since)
+		: [];
+	const removedSessionIds =
+		sessionTableChanged && since !== undefined
+			? readNewlyArchivedSessionIds(database, since)
+			: [];
+
+	const changedSessionIds = rawSessions.map((session) => session.id);
+	const refreshIds = Array.from(
+		new Set([...changedSessionIds, ...nonTerminalSessionIds]),
+	);
+
+	const { latestMessages, messageCounts } =
+		refreshIds.length > 0
+			? readLatestMessagesAndCountsFromDatabase(database, refreshIds)
+			: { latestMessages: {}, messageCounts: {} };
+
+	const waitingSignalCandidateIds = getWaitingSignalCandidateIds(
+		refreshIds,
+		latestMessages,
+	);
+	const waitingSignals =
+		waitingSignalCandidateIds.length > 0
+			? readWaitingSignalsFromDatabase(database, waitingSignalCandidateIds)
+			: {};
+
+	return {
+		rawSessions,
+		latestMessages,
+		messageCounts,
+		waitingSignals,
+		maxUpdatedAt,
+		removedSessionIds,
+		changed: sessionTableChanged || refreshIds.length > 0,
+	};
+};
+
+export const getOpenCodeSnapshot = (
+	options?: OpenCodeSnapshotOptions,
+): DatabaseResult<OpenCodeReadResult> => {
+	return withDatabaseRetry((database) =>
+		computeOpenCodeSnapshot(database, options),
+	);
 };

@@ -23,6 +23,7 @@ import {
 	type RefreshRequest,
 	type RefreshResponse,
 } from "./refresh-worker-protocol";
+import { getWaitingSignalCandidateIds } from "./waitingSignalCandidates";
 
 if (!parentPort) {
 	throw new Error("refresh-worker must be run as a Worker thread");
@@ -114,8 +115,16 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 	const snapshots = [];
 	const sourceIssues: string[] = [];
 
+	const nonTerminalSessionIds = openCodeCache
+		? getWaitingSignalCandidateIds(
+				[...openCodeCache.rawSessionsById.keys()],
+				openCodeCache.latestMessages,
+			)
+		: [];
+
 	const openCodeResult = getOpenCodeSnapshot({
 		since: openCodeCache ? openCodeCache.lastRefreshTime : undefined,
+		nonTerminalSessionIds,
 	});
 
 	if (openCodeResult.ok) {
