@@ -1,6 +1,8 @@
 import { Box, dim, ScrollBox, Text, t } from "@opentui/core";
 import type { Session } from "../types";
 import { SessionStatus } from "../types";
+import { SESSION_CARD_MAX_HEIGHT } from "./SessionCard";
+import { getGridVisibleRowCount } from "../lib/gridScroll";
 import { SessionCard } from "./SessionCard";
 
 type GridSize = number | `${number}%` | "100%";
@@ -23,6 +25,8 @@ export interface SessionGridContentProps {
 	statusBySessionId?: Partial<Record<string, SessionStatus>>;
 	onSelectSession?: (sessionId: string) => void;
 	width?: GridSize;
+	scrollTop?: number;
+	viewportHeight?: number;
 }
 
 const GRID_COLORS = {
@@ -110,6 +114,9 @@ const EmptyState = () => {
 	);
 };
 
+const VIRTUAL_BUFFER_ROWS = 2;
+const SCROLL_ROW_STRIDE = SESSION_CARD_MAX_HEIGHT + GRID_ROW_GAP;
+
 export const createSessionGridContent = ({
 	sessions,
 	selectedIndex = -1,
@@ -117,12 +124,43 @@ export const createSessionGridContent = ({
 	statusBySessionId,
 	onSelectSession,
 	width = "100%",
+	scrollTop = 0,
+	viewportHeight = 0,
 }: SessionGridContentProps) => {
 	const cardWidth = getCardWidth(width);
 
-	return sessions.length === 0
-		? EmptyState()
-		: Box(
+	if (sessions.length === 0) {
+		return EmptyState();
+	}
+
+	const columnCount = Math.max(1, getGridColumnCount(width));
+	const totalRows = Math.ceil(sessions.length / columnCount);
+
+	// Virtualization: only render sessions in the visible scroll window.
+	// When viewportHeight is 0 (first render / unknown), render all.
+	if (viewportHeight > 0) {
+		const firstRow = Math.max(
+			0,
+			Math.floor(scrollTop / SCROLL_ROW_STRIDE) - VIRTUAL_BUFFER_ROWS,
+		);
+		const visibleRowCount =
+			getGridVisibleRowCount(viewportHeight) + VIRTUAL_BUFFER_ROWS * 2;
+		const lastRow = Math.min(totalRows, firstRow + visibleRowCount);
+
+		const firstIndex = firstRow * columnCount;
+		const lastIndex = Math.min(sessions.length, lastRow * columnCount);
+		const visibleSessions = sessions.slice(firstIndex, lastIndex);
+
+		const topSpacerHeight = firstRow * SCROLL_ROW_STRIDE;
+		const bottomSpacerHeight = (totalRows - lastRow) * SCROLL_ROW_STRIDE;
+
+		return Box(
+			{
+				width: "100%",
+				flexDirection: "column",
+			},
+			...(topSpacerHeight > 0 ? [Box({ height: topSpacerHeight })] : []),
+			Box(
 				{
 					width: "100%",
 					flexDirection: "row",
@@ -130,20 +168,50 @@ export const createSessionGridContent = ({
 					rowGap: GRID_ROW_GAP,
 					columnGap: GRID_COLUMN_GAP,
 				},
-				...sessions.map((session, index) =>
-					SessionCard({
+				...visibleSessions.map((session, relativeIndex) => {
+					const absoluteIndex = firstIndex + relativeIndex;
+					return SessionCard({
 						session,
 						status: getSessionStatus(session, statusBySessionId),
-						isSelected: index === selectedIndex,
+						isSelected: absoluteIndex === selectedIndex,
 						isActivePane: isFocusedPane,
 						isWaiting:
 							getSessionStatus(session, statusBySessionId) ===
 							SessionStatus.waiting,
 						width: cardWidth,
 						onSelect: onSelectSession,
-					}),
-				),
-			);
+					});
+				}),
+			),
+			...(bottomSpacerHeight > 0
+				? [Box({ height: bottomSpacerHeight })]
+				: []),
+		);
+	}
+
+	// No viewport info: render all sessions (used on first render).
+	return Box(
+		{
+			width: "100%",
+			flexDirection: "row",
+			flexWrap: "wrap",
+			rowGap: GRID_ROW_GAP,
+			columnGap: GRID_COLUMN_GAP,
+		},
+		...sessions.map((session, index) =>
+			SessionCard({
+				session,
+				status: getSessionStatus(session, statusBySessionId),
+				isSelected: index === selectedIndex,
+				isActivePane: isFocusedPane,
+				isWaiting:
+					getSessionStatus(session, statusBySessionId) ===
+					SessionStatus.waiting,
+				width: cardWidth,
+				onSelect: onSelectSession,
+			}),
+		),
+	);
 };
 
 export const SessionGrid = ({

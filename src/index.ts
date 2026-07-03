@@ -95,6 +95,7 @@ const CONTROL_TEXT_ID = "session-monitor-controls";
 const CONTENT_CONTAINER_ID = "session-monitor-content";
 const DELETE_CONFIRMATION_OVERLAY_ID = "session-monitor-delete-confirmation";
 const TOAST_OVERLAY_ID = "toast-overlay";
+const STATS_OVERLAY_ID = "session-monitor-stats-overlay";
 const GRID_SCROLLBOX_ID = "session-grid-scrollbox";
 const GRID_CONTENT_ID = "session-grid-content";
 const DETAIL_SCROLLBOX_ID = "session-detail-scrollbox";
@@ -408,18 +409,7 @@ const createBannerText = (state: AppState): string => {
 			: `sessions: 0 | filter: ${getSessionFilterLabel(state.sessionFilterMode)}`;
 	}
 
-	const sourceCounts = countSessionsBySource(state.allSessions);
-	const sourceSummary = (["opencode", "codex", "claude"] as const)
-		.map((sourceKey) => {
-			const count = sourceCounts[sourceKey] ?? 0;
-			return count > 0 ? `${getSessionSourceLabel(sourceKey)} ${count}` : null;
-		})
-		.filter((value): value is string => value !== null)
-		.join(" / ");
 	const fragments = [`sessions: ${state.allSessions.length}`];
-	if (sourceSummary) {
-		fragments.push(sourceSummary);
-	}
 
 	const sourceIssueCount = state.sourceIssues.length;
 	if (sourceIssueCount > 0) {
@@ -476,6 +466,7 @@ interface AppState {
 	hiddenCompletedCount: number;
 	isAttachingSession: boolean;
 	isDeletingSession: boolean;
+	isStatsModalVisible: boolean;
 	dbError: string | null;
 	isHierarchyMode: boolean;
 	hierarchyViewMode: HierarchyViewMode;
@@ -672,6 +663,103 @@ const createDeleteConfirmationDialog = (params: {
 			fg: APP_PALETTE.muted,
 			width: "100%",
 			wrapMode: "word",
+		}),
+	);
+};
+
+const STATS_PALETTE = {
+	border: "#334155",
+	surface: "#0F172A",
+	title: "#E2E8F0",
+	label: "#94A3B8",
+	value: "#F1F5F9",
+	hint: "#64748B",
+};
+
+const createStatsModalContent = (state: AppState, modalWidth: number) => {
+	const sourceCounts = countSessionsBySource(state.allSessions);
+	const statusCounts: Partial<Record<string, number>> = {};
+	for (const session of state.allSessions) {
+		const s = session.status ?? "unknown";
+		statusCounts[s] = (statusCounts[s] ?? 0) + 1;
+	}
+	const sourceRows = (
+		["opencode", "codex", "claude", "pi", "omp", "mission-control"] as const
+	)
+		.map((sourceKey) => {
+			const count = sourceCounts[sourceKey] ?? 0;
+			return count > 0
+				? Text({
+						content: t`  ${getSessionSourceLabel(sourceKey)}${dim(": ")}${String(count)}`,
+						fg: STATS_PALETTE.value,
+						width: "100%",
+					})
+				: null;
+		})
+		.filter((v): v is ReturnType<typeof Text> => v !== null);
+
+	const statusRows = (
+		[
+			["running", statusCounts.running ?? 0],
+			["waiting", statusCounts.waiting ?? 0],
+			["completed", statusCounts.completed ?? 0],
+			["failed", statusCounts.failed ?? 0],
+			["unknown", statusCounts.unknown ?? 0],
+		] as const
+	)
+		.filter(([, count]) => count > 0)
+		.map(([label, count]) =>
+			Text({
+				content: t`  ${dim(`${label}: `)}${String(count)}`,
+				fg: STATS_PALETTE.value,
+				width: "100%",
+			}),
+		);
+
+	return Box(
+		{
+			width: modalWidth,
+			border: true,
+			borderColor: STATS_PALETTE.border,
+			backgroundColor: STATS_PALETTE.surface,
+			padding: 1,
+			flexDirection: "column",
+			gap: 1,
+		},
+		Text({
+			content: t`${bold(fg(STATS_PALETTE.title)("Session Stats"))}`,
+			width: "100%",
+		}),
+		Text({
+			content: t`${dim("total: ")}${String(state.allSessions.length)}`,
+			fg: STATS_PALETTE.value,
+			width: "100%",
+		}),
+	...(sourceRows.length > 0
+		? [
+				Text({
+					content: t`${dim("by source")}`,
+					fg: STATS_PALETTE.label,
+					width: "100%",
+					}),
+					...sourceRows,
+				]
+			: []),
+		...(statusRows.length > 0
+			? [
+					Text({
+						content: t`${dim("by status")}`,
+						fg: STATS_PALETTE.label,
+						width: "100%",
+					}),
+					...statusRows,
+				]
+			: []),
+		Text({ content: "", height: 0 }),
+		Text({
+			content: t`${dim("Press Esc or Ctrl+S to close")}`,
+			fg: STATS_PALETTE.hint,
+			width: "100%",
 		}),
 	);
 };
@@ -998,6 +1086,7 @@ const main = async () => {
 		hiddenCompletedCount: 0,
 		isAttachingSession: false,
 		isDeletingSession: false,
+		isStatsModalVisible: false,
 		dbError: null,
 		isHierarchyMode: false,
 		hierarchyViewMode: "tree",
@@ -1265,6 +1354,7 @@ const main = async () => {
 
 		gridScrollBox.scrollBy({ x: 0, y: delta });
 		state.gridScrollTop = gridScrollBox.scrollTop;
+		render();
 	};
 
 	const stopPolling = () => {
@@ -1594,6 +1684,31 @@ const main = async () => {
 				borderColor: "#334155",
 			}),
 		);
+
+		renderer.root.add(
+			Box({
+				id: STATS_OVERLAY_ID,
+				position: "absolute",
+				top: 0,
+				left: 0,
+				width: "100%",
+				height: "100%",
+				zIndex: 70,
+				backgroundColor: "#020617",
+				opacity: 0.96,
+				alignItems: "center",
+				justifyContent: "center",
+				visible: false,
+				onMouseDown: (event) => {
+					event.preventDefault();
+					event.stopPropagation();
+				},
+				onMouseScroll: (event) => {
+					event.preventDefault();
+					event.stopPropagation();
+				},
+			}),
+		);
 	};
 
 	const render = () => {
@@ -1633,6 +1748,7 @@ const main = async () => {
 		const deleteConfirmationOverlay = renderer.root.findDescendantById(
 			DELETE_CONFIRMATION_OVERLAY_ID,
 		);
+		const statsOverlay = renderer.root.findDescendantById(STATS_OVERLAY_ID);
 		const activeDetailSessionId = state.renderedDetailSessionId;
 
 		if (
@@ -1650,7 +1766,8 @@ const main = async () => {
 			!isBoxRenderable(gridContent) ||
 			!isBoxRenderable(detailContent) ||
 			!isBoxRenderable(hierarchyContent) ||
-			!isBoxRenderable(deleteConfirmationOverlay)
+			!isBoxRenderable(deleteConfirmationOverlay) ||
+			!isBoxRenderable(statsOverlay)
 		) {
 			return;
 		}
@@ -1753,8 +1870,8 @@ const main = async () => {
 			: state.isHierarchyMode
 				? `Tab: view(${hierarchyViewLabel}) | x: info(${state.hierarchyInfoMode}) | f: filter(${hierarchyFilterLabel}) | ${hierarchyScrollHint} | q/Esc: close`
 				: state.focusedPane === "detail"
-					? `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`
-					: `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | q/Esc: quit`;
+					? `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`
+					: `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`;
 		const styledShortcutGuide = deletePromptActive
 			? state.pendingDeleteSessionId
 				? state.isDeletingSession
@@ -1942,6 +2059,11 @@ const main = async () => {
 					statusBySessionId: state.statusBySessionId,
 					onSelectSession: selectSessionById,
 					width: gridLayoutWidth,
+					scrollTop: state.gridScrollTop,
+					viewportHeight: getSafeNumber(
+						existingGridScrollBox.height,
+						0,
+					),
 				}),
 			]);
 		} else if (gridContent.getChildren().length > 0) {
@@ -2079,6 +2201,16 @@ const main = async () => {
 					: [],
 			);
 		}
+
+		statsOverlay.visible = state.isStatsModalVisible;
+		statsOverlay.width = width;
+		statsOverlay.height = height;
+		replaceChildren(
+			statsOverlay,
+			state.isStatsModalVisible
+				? [createStatsModalContent(state, Math.min(Math.max(width - 8, 36), 72))]
+				: [],
+		);
 
 		if (showGrid) {
 			existingGridScrollBox.scrollTo({ x: 0, y: state.gridScrollTop });
@@ -3434,6 +3566,20 @@ const main = async () => {
 	).on("keypress", (key) => {
 		if (key.ctrl && key.name === "c") {
 			shutdown();
+			return;
+		}
+
+		if (key.ctrl && key.name === "s") {
+			state.isStatsModalVisible = !state.isStatsModalVisible;
+			render();
+			return;
+		}
+
+		if (state.isStatsModalVisible) {
+			if (key.name === "escape" || key.name === "q") {
+				state.isStatsModalVisible = false;
+				render();
+			}
 			return;
 		}
 
