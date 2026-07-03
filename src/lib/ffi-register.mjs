@@ -29,3 +29,29 @@ Module._load = function patchedLoad(request, ...rest) {
 	}
 	return originalLoad.apply(this, [request, ...rest]);
 };
+
+// Layer 3: suppress koffi 3.x callback errors from opentui's TUI console.
+// koffi 3.x on Node 24+ can't recycle callbacks (unregister is broken).
+// After 8192, koffi.register throws. opentui catches this via
+// process.on("uncaughtException") and displays it in the console panel.
+// These errors are koffi bugs, not app bugs — filter them out.
+const KOFFI_ERRORS = [
+	"Too many callbacks",
+	"Failed to create SyntaxStyle",
+	"Failed to create optimized buffer",
+	"Failed to create frame buffer",
+	"Failed to create Yoga",
+];
+const isKoffiErr = (...args) =>
+	args.some((a) => {
+		const s = a?.message ?? String(a ?? "");
+		return KOFFI_ERRORS.some((p) => s.includes(p));
+	});
+
+const _on = process.on.bind(process);
+process.on = (ev, fn, ...r) => {
+	if (ev === "uncaughtException" || ev === "unhandledRejection") {
+		return _on(ev, (e) => { if (!isKoffiErr(e)) fn(e); }, ...r);
+	}
+	return _on(ev, fn, ...r);
+};
