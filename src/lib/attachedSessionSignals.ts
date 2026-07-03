@@ -92,6 +92,23 @@ const NON_SESSION_PI_FAMILY_SUBCOMMANDS = new Set([
 	"acp",
 ]);
 
+const MCTRL_COMMAND_NAME = "mctrl";
+const MISSION_CONTROL_COMMAND_NAMES = new Set([
+	MCTRL_COMMAND_NAME,
+	"mission-control-sidecar",
+]);
+const NON_SESSION_MCTRL_SUBCOMMANDS = new Set([
+	"session",
+	"auth",
+	"models",
+	"mcp",
+	"agents",
+	"graph",
+	"help",
+	"completion",
+	"version",
+]);
+
 const getBasename = (value: string): string => {
 	return value.split(/[\\/]/u).at(-1)?.toLowerCase() ?? "";
 };
@@ -841,12 +858,155 @@ const isPiFamilySessionBearingInvocation = (
 	return true;
 };
 
+const isMctrlToken = (token: string): boolean => {
+	const normalizedToken = normalizeCommandToken(token);
+	if (normalizedToken.length === 0) {
+		return false;
+	}
+
+	return MISSION_CONTROL_COMMAND_NAMES.has(getBasename(normalizedToken));
+};
+
+const containsMctrlToken = (tokens: readonly string[]): boolean => {
+	return tokens.some((token) => isMctrlToken(token));
+};
+
+const getMctrlExecutableTokenIndex = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): number => {
+	const tokenIndex = argumentTokens.findIndex((token) => isMctrlToken(token));
+	if (tokenIndex >= 0) {
+		return tokenIndex;
+	}
+
+	return MISSION_CONTROL_COMMAND_NAMES.has(commandBasename) ? 0 : -1;
+};
+
+const isDirectMctrlCommand = (
+	commandBasename: string,
+	firstArgumentBasename: string,
+): boolean => {
+	return (
+		MISSION_CONTROL_COMMAND_NAMES.has(commandBasename) ||
+		MISSION_CONTROL_COMMAND_NAMES.has(firstArgumentBasename)
+	);
+};
+
+const isRuntimeWrappedMctrlCommand = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	return (
+		isRuntimeWrapperCommand(commandBasename) &&
+		argumentTokens.length >= 2 &&
+		isMctrlToken(argumentTokens[1])
+	);
+};
+
+const isNonSessionMctrlInvocation = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	const executableTokenIndex = getMctrlExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return false;
+	}
+
+	let hasOnlyHelpOrVersionFlag = false;
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken || normalizedToken === "--") {
+			continue;
+		}
+
+		if (HELP_OR_VERSION_FLAGS.has(normalizedToken)) {
+			hasOnlyHelpOrVersionFlag = true;
+			continue;
+		}
+
+		if (normalizedToken.startsWith("-")) {
+			continue;
+		}
+
+		const subcommandCandidate = getBasename(normalizedToken);
+		return NON_SESSION_MCTRL_SUBCOMMANDS.has(subcommandCandidate);
+	}
+
+	return hasOnlyHelpOrVersionFlag;
+};
+
+const isMctrlSessionBearingInvocation = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	const executableTokenIndex = getMctrlExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return false;
+	}
+
+	let hasPendingFlagValue = false;
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken || normalizedToken === "--") {
+			continue;
+		}
+
+		if (hasPendingFlagValue) {
+			hasPendingFlagValue = false;
+			continue;
+		}
+
+		if (
+			normalizedToken === "--session" ||
+			normalizedToken === "--config" ||
+			normalizedToken === "-c" ||
+			normalizedToken === "--model" ||
+			normalizedToken === "-m" ||
+			normalizedToken === "--provider"
+		) {
+			hasPendingFlagValue = true;
+			continue;
+		}
+
+		if (HELP_OR_VERSION_FLAGS.has(normalizedToken)) {
+			return false;
+		}
+
+		if (normalizedToken.startsWith("-")) {
+			continue;
+		}
+
+		return !NON_SESSION_MCTRL_SUBCOMMANDS.has(getBasename(normalizedToken));
+	}
+
+	return true;
+};
+
 export const getExternalAttachedDirectoryKey = (
 	source: SessionSource,
 	directory: string,
 ): string => {
 	if (source === "pi" || source === "omp") {
 		return `${source}:${directory}`;
+	}
+
+	if (source === "mission-control") {
+		return `mission-control:${directory}`;
 	}
 
 	return directory;
@@ -997,6 +1157,43 @@ export const parseAttachedSessionIdsFromProcessList = (
 			const source = getPiFamilyCommandName(commandBasename, argumentTokens);
 			const directoryKey = getExternalAttachedDirectoryKey(
 				source ?? "pi",
+				processCwd,
+			);
+			incrementDirectoryProcessCount(
+				externalAttachedSignals.directoryProcessCounts,
+				directoryKey,
+			);
+			continue;
+		}
+
+		const isMctrlInvocation =
+			isDirectMctrlCommand(commandBasename, firstArgumentBasename) ||
+			isRuntimeWrappedMctrlCommand(commandBasename, argumentTokens) ||
+			containsMctrlToken(argumentTokens);
+		if (isMctrlInvocation) {
+			const attachedSessionIdMatch = commandLine.match(
+				ATTACHED_SESSION_ID_PATTERN,
+			);
+			if (attachedSessionIdMatch) {
+				externalAttachedSignals.sessionIds.add(attachedSessionIdMatch[2]);
+				continue;
+			}
+
+			if (isNonSessionMctrlInvocation(commandBasename, argumentTokens)) {
+				continue;
+			}
+
+			if (!isMctrlSessionBearingInvocation(commandBasename, argumentTokens)) {
+				continue;
+			}
+
+			const processCwd = readProcessCwd(pid);
+			if (!processCwd) {
+				continue;
+			}
+
+			const directoryKey = getExternalAttachedDirectoryKey(
+				"mission-control",
 				processCwd,
 			);
 			incrementDirectoryProcessCount(

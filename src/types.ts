@@ -7,7 +7,13 @@ export enum SessionStatus {
 	unknown = "unknown",
 }
 
-export type SessionSource = "opencode" | "codex" | "claude" | "pi" | "omp";
+export type SessionSource =
+	| "opencode"
+	| "codex"
+	| "claude"
+	| "pi"
+	| "omp"
+	| "mission-control";
 
 export interface SessionCapabilities {
 	attach: boolean;

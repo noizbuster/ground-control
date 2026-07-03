@@ -1,7 +1,7 @@
 {
   "name": "gctrl",
   "version": "0.3.1",
-  "description": "Real-time OpenCode, Codex, and Claude Code session monitor CLI",
+  "description": "Real-time OpenCode, Codex, Claude Code, and Mission Control session monitor CLI",
   "type": "module",
   "scripts": {
     "start": "node bin/gctrl.js",
@@ -31,6 +31,8 @@
     "monitor",
     "codex",
     "claude-code",
+    "mission-control",
+    "mctrl",
     "anthropic",
     "openai",
     "multi-source"

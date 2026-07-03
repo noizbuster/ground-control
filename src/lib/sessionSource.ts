@@ -31,12 +31,20 @@ const PI_FAMILY_CAPABILITIES: SessionCapabilities = {
 	hierarchy: true,
 };
 
+const MISSION_CONTROL_CAPABILITIES: SessionCapabilities = {
+	attach: true,
+	delete: false,
+	abortChildren: false,
+	hierarchy: true,
+};
+
 const SESSION_SOURCE_LABELS: Record<SessionSource, string> = {
 	opencode: "OpenCode",
 	codex: "Codex",
 	claude: "Claude Code",
 	pi: "Pi",
 	omp: "omp",
+	"mission-control": "Mission Control",
 };
 
 const SESSION_SOURCE_COLORS: Record<SessionSource, `#${string}`> = {
@@ -45,6 +53,7 @@ const SESSION_SOURCE_COLORS: Record<SessionSource, `#${string}`> = {
 	claude: "#D97706",
 	pi: "#A78BFA",
 	omp: "#F472B6",
+	"mission-control": "#22D3EE",
 };
 
 export const getDefaultSessionCapabilities = (
@@ -60,6 +69,8 @@ export const getDefaultSessionCapabilities = (
 		case "pi":
 		case "omp":
 			return { ...PI_FAMILY_CAPABILITIES };
+		case "mission-control":
+			return { ...MISSION_CONTROL_CAPABILITIES };
 	}
 };
 
@@ -210,10 +221,21 @@ export const getAttachLaunchSpec = (
 		};
 	}
 
-	return {
-		cmd: [resolveCommand("omp"), "--resume", getOmpAttachTarget(session)],
-		cwd,
-	};
+	if (session.sessionSource === "omp") {
+		return {
+			cmd: [resolveCommand("omp"), "--resume", getOmpAttachTarget(session)],
+			cwd,
+		};
+	}
+
+	if (session.sessionSource === "mission-control") {
+		return {
+			cmd: [resolveCommand("mctrl"), "--session", session.id],
+			cwd,
+		};
+	}
+
+	return null;
 };
 
 export const canDeleteSession = (

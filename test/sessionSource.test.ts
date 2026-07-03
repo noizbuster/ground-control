@@ -307,3 +307,93 @@ describe("sessionSource helpers", () => {
 		});
 	});
 });
+
+describe("mission-control source", () => {
+	it("returns mission-control specific default capabilities", () => {
+		expect(getDefaultSessionCapabilities("mission-control")).toEqual({
+			attach: true,
+			delete: false,
+			abortChildren: false,
+			hierarchy: true,
+		});
+	});
+
+	it("returns the Mission Control label", () => {
+		expect(getSessionSourceLabel("mission-control")).toBe("Mission Control");
+	});
+
+	it("builds the mission-control attach command with mctrl and the session id", () => {
+		const resolveExecutable = () => "/usr/bin/mctrl";
+		const existingDirectory = process.cwd();
+
+		const spec = getAttachLaunchSpec(
+			{
+				id: "mc-session",
+				parent_id: null,
+				directory: existingDirectory,
+				sessionSource: "mission-control",
+				capabilities: undefined,
+				sourceMetadata: undefined,
+			},
+			{
+				resolveExecutable,
+				fallbackDirectory: "/fallback",
+			},
+		);
+
+		expect(spec).toEqual({
+			cmd: ["/usr/bin/mctrl", "--session", "mc-session"],
+			cwd: existingDirectory,
+		});
+		// Regression guard: MC sessions must NOT silently fall through to the omp command.
+		expect(spec?.cmd.join(" ")).not.toContain("omp");
+	});
+
+	it("still returns the omp command for omp sessions after the guard refactor", () => {
+		const resolveExecutable = () => "/usr/bin/omp";
+		const existingDirectory = process.cwd();
+
+		const spec = getAttachLaunchSpec(
+			{
+				id: "o1",
+				parent_id: null,
+				directory: existingDirectory,
+				sessionSource: "omp",
+				capabilities: undefined,
+				sourceMetadata: undefined,
+			},
+			{
+				resolveExecutable,
+				fallbackDirectory: "/fallback",
+			},
+		);
+
+		expect(spec).toEqual({
+			cmd: ["/usr/bin/omp", "--resume", "o1"],
+			cwd: existingDirectory,
+		});
+		expect(spec?.cmd.join(" ")).toContain("omp");
+		expect(spec?.cmd.join(" ")).toContain("--resume");
+	});
+
+	it("disables delete for mission-control sessions", () => {
+		const session = {
+			sessionSource: "mission-control",
+			capabilities: undefined,
+		} as const;
+		expect(canDeleteSession(session)).toBe(false);
+	});
+
+	it("counts mission-control sessions by source", () => {
+		expect(
+			countSessionsBySource([
+				{ sessionSource: "opencode" },
+				{ sessionSource: "mission-control" },
+				{ sessionSource: "mission-control" },
+			]),
+		).toEqual({
+			opencode: 1,
+			"mission-control": 2,
+		});
+	});
+});

@@ -197,3 +197,74 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		expect(result.directoryProcessCounts.size).toBe(0);
 	});
 });
+
+describe("mission-control process detection", () => {
+	it("extracts mctrl and mission-control-sidecar --session ids", () => {
+		const processList = [
+			"601 mctrl mctrl --session session_abc123",
+			"605 mission-control-sidecar mission-control-sidecar --session sidecar_session",
+		].join("\n");
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect([...result.sessionIds].sort()).toEqual([
+			"session_abc123",
+			"sidecar_session",
+		]);
+	});
+
+	it("excludes mctrl subcommands like session list from session ids and directory counts", () => {
+		const processList = "602 mctrl mctrl session list";
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect(result.sessionIds.size).toBe(0);
+		expect(result.directoryProcessCounts.size).toBe(0);
+	});
+
+	it("does not detect bare mc as mission-control (Midnight Commander collision)", () => {
+		const processList = "603 mc mc --session x";
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect(result.sessionIds.has("x")).toBe(false);
+		expect(result.directoryProcessCounts.size).toBe(0);
+	});
+
+	it("falls back to mission-control directory key for bare mctrl invocations", () => {
+		const processList = "604 mctrl mctrl";
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("mission-control", "/repo/mc"),
+			),
+		).toBe(1);
+		expect(result.directoryProcessCounts.size).toBe(1);
+	});
+
+	it("isolates mission-control directory keys from opencode, pi, and omp", () => {
+		expect(getExternalAttachedDirectoryKey("mission-control", "/dir")).toBe(
+			"mission-control:/dir",
+		);
+		expect(getExternalAttachedDirectoryKey("opencode", "/dir")).toBe("/dir");
+		expect(getExternalAttachedDirectoryKey("pi", "/dir")).toBe("pi:/dir");
+		expect(getExternalAttachedDirectoryKey("omp", "/dir")).toBe("omp:/dir");
+		expect(
+			getExternalAttachedDirectoryKey("mission-control", "/dir"),
+		).not.toBe(getExternalAttachedDirectoryKey("opencode", "/dir"));
+	});
+});

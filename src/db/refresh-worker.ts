@@ -14,6 +14,7 @@ import {
 	type MessageCountsBySessionId,
 	type WaitingSignalsBySessionId,
 } from "./index";
+import { getMissionControlSnapshot } from "./missionControl";
 import { getOpenCodeSnapshot, type OpenCodeReadResult } from "./opencode";
 import { getOmpSnapshot, getPiSnapshot } from "./pi";
 import {
@@ -144,6 +145,7 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 		{ source: "Claude Code", result: getClaudeSnapshot() },
 		{ source: "Pi", result: getPiSnapshot() },
 		{ source: "omp", result: getOmpSnapshot() },
+		{ source: "Mission Control", result: getMissionControlSnapshot() },
 	] as const;
 
 	for (const { source, result } of otherResults) {
