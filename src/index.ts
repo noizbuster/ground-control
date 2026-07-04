@@ -27,6 +27,7 @@ import {
 	type ScrollBoxRenderable,
 	Text,
 	type TextRenderable,
+	TextBufferView,
 	t,
 } from "@opentui/core";
 import { deleteClaudeSession } from "./db/claude";
@@ -1038,6 +1039,30 @@ const isSideviewShortcut = (key: KeyEvent): boolean => {
 	});
 };
 
+const patchTextBufferViewSelection = () => {
+	const proto = TextBufferView.prototype as unknown as {
+		guard(): void;
+		getSelection(): { start: number; end: number } | null;
+		lib: { textBufferViewGetSelectionInfo(viewPtr: unknown): unknown };
+		viewPtr: unknown;
+	};
+	proto.getSelection = function (): { start: number; end: number } | null {
+		proto.guard.call(this);
+		const packedInfo = this.lib.textBufferViewGetSelectionInfo(this.viewPtr);
+		const asBigInt =
+			typeof packedInfo === "bigint"
+				? packedInfo
+				: BigInt(packedInfo as number);
+		if (asBigInt === 0xffff_ffff_ffff_ffffn) {
+			return null;
+		}
+		return {
+			start: Number(asBigInt >> 32n),
+			end: Number(asBigInt & 0xffff_ffffn),
+		};
+	};
+};
+
 const main = async () => {
 	const renderer = await createCliRenderer({
 		exitOnCtrlC: false,
@@ -1047,6 +1072,8 @@ const main = async () => {
 			alternateKeys: true,
 		},
 	});
+
+	patchTextBufferViewSelection();
 
 	const state: AppState = {
 		allSessions: [],
@@ -1119,7 +1146,6 @@ const main = async () => {
 	let isRefreshingExternalAttachedSessions = false;
 	let pendingSelectionRefreshResponse: RefreshResponse | null = null;
 	let pendingSelectionRender = false;
-	let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const renderStatsPath = process.env.GCTRL_RENDER_STATS || "";
 	const renderStats = renderStatsPath
@@ -2411,7 +2437,7 @@ const main = async () => {
 
 	const hasActiveTextSelection = (): boolean => {
 		const selection = renderer.getSelection() as SelectionSnapshot | null;
-		return Boolean(selection?.isDragging && !selection.isStart);
+		return Boolean(selection?.isDragging);
 	};
 
 	const applyRefreshResponseState = (response: RefreshResponse) => {
@@ -2475,27 +2501,11 @@ const main = async () => {
 			return clearCompletedTextSelection();
 		}
 
-		if (selectionCopyTimer) {
-			clearTimeout(selectionCopyTimer);
-			selectionCopyTimer = null;
-		}
-
 		renderer.copyToClipboardOSC52(selectedText);
 		renderer.clearSelection();
 		applyPendingSelectionWork();
 		showToast("Copied selected text to clipboard");
 		return true;
-	};
-
-	const scheduleCompletedSelectionCopy = () => {
-		if (selectionCopyTimer) {
-			clearTimeout(selectionCopyTimer);
-		}
-
-		selectionCopyTimer = setTimeout(() => {
-			selectionCopyTimer = null;
-			copyCompletedTextSelection();
-		}, 0);
 	};
 
 	const handleRefreshResponse = (response: RefreshResponse) => {
@@ -3529,11 +3539,6 @@ const main = async () => {
 			isResizeDebouncing.value = null;
 		}
 
-		if (selectionCopyTimer) {
-			clearTimeout(selectionCopyTimer);
-			selectionCopyTimer = null;
-		}
-
 		if (isWaitingPulseLive) {
 			renderer.dropLive();
 			isWaitingPulseLive = false;
@@ -3555,7 +3560,7 @@ const main = async () => {
 			return;
 		}
 
-		scheduleCompletedSelectionCopy();
+		copyCompletedTextSelection();
 	});
 	createStaticLayout();
 
