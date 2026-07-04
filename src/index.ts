@@ -43,6 +43,7 @@ import {
 } from "./db/refresh-worker-protocol";
 import {
 	getExternalAttachedDirectoryKey,
+	isSessionProcessComm,
 	parseAttachedSessionIdsFromProcessList,
 } from "./lib/attachedSessionSignals";
 import { clampGridScrollTop, getGridVisibleRowCount } from "./lib/gridScroll";
@@ -1213,6 +1214,11 @@ const main = async () => {
 				}
 
 				try {
+					const comm = readFileSync(`/proc/${entry}/comm`, "utf8").trim();
+					if (!comm || !isSessionProcessComm(comm)) {
+						continue;
+					}
+
 					const cmdline = readFileSync(`/proc/${entry}/cmdline`, "utf8")
 						.replace(/\0/gu, " ")
 						.trim();
@@ -1220,7 +1226,6 @@ const main = async () => {
 						continue;
 					}
 
-					const comm = readFileSync(`/proc/${entry}/comm`, "utf8").trim();
 					lines.push(`${entry} ${comm} ${cmdline}`);
 				} catch {}
 			}

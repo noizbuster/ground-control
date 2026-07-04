@@ -7,6 +7,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
+import {
+	evictOldestCacheEntries,
+	refreshCacheEntryLru,
+} from "../lib/boundedCache";
 import type { SessionSnapshot } from "../lib/sessionSnapshot";
 import {
 	getDefaultSessionCapabilities,
@@ -100,6 +104,8 @@ const parseJsonLine = (line: string): JsonObject | undefined => {
 	}
 };
 
+// Bounds memory: without eviction this cache grew once per log file ever read.
+const MC_LOG_CACHE_MAX_ENTRIES = 256;
 const mcLogCache = new Map<
 	string,
 	{ mtimeMs: number; size: number; record: MissionControlSessionLogRecord }
@@ -126,6 +132,8 @@ export const parseMissionControlLogFile = (
 		cached.mtimeMs === stats.mtimeMs &&
 		cached.size === stats.size
 	) {
+		// Re-insert moves live entries newest; stale ones drift oldest.
+		refreshCacheEntryLru(mcLogCache, path, cached);
 		return cached.record;
 	}
 
@@ -181,6 +189,7 @@ export const parseMissionControlLogFile = (
 		envelopes,
 		mtimeMs,
 	};
+	evictOldestCacheEntries(mcLogCache, MC_LOG_CACHE_MAX_ENTRIES);
 	mcLogCache.set(path, { mtimeMs, size: stats.size, record });
 	return record;
 };

@@ -11,6 +11,10 @@ import {
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+	evictOldestCacheEntries,
+	refreshCacheEntryLru,
+} from "../lib/boundedCache";
 import { isActiveStatus } from "../lib/hierarchyHelpers";
 import type { SessionSnapshot } from "../lib/sessionSnapshot";
 import {
@@ -878,10 +882,20 @@ export const summarizeCodexSessionLogContent = (
 const logPathCache = new Map<string, string>();
 let logIndexRoot: string | null = null;
 let logIndexBuiltAt = 0;
+// Bounds memory: without eviction this cache grew once per log file ever read.
+const CODEX_LOG_SUMMARY_CACHE_MAX_ENTRIES = 512;
 const logSummaryCache = new Map<
 	string,
 	{ mtimeMs: number; summary: CodexSessionLogSummary }
 >();
+// Per-thread log cache; invalidated by updated_at_ms so unchanged threads skip
+// re-reading their rollout log every refresh (was the dominant worker CPU cost).
+interface CachedThreadLog {
+	updatedAtMs: number | null;
+	summary?: CodexSessionLogSummary;
+	issue?: string;
+}
+const threadLogSummaryCache = new Map<string, CachedThreadLog>();
 let codexStateDbCache: { path: string; resolvedAt: number } | null = null;
 
 const extractThreadIdFromLogPath = (path: string): string | null => {
@@ -934,6 +948,7 @@ const ensureCodexLogIndex = (sessionsDirectory: string): void => {
 export const invalidateCodexSessionCaches = (): void => {
 	logPathCache.clear();
 	logSummaryCache.clear();
+	threadLogSummaryCache.clear();
 	logIndexRoot = null;
 	logIndexBuiltAt = 0;
 	codexStateDbCache = null;
@@ -953,10 +968,15 @@ const readCodexLogSummary = (
 		const stats = statSync(path);
 		const cached = logSummaryCache.get(path);
 		if (cached && cached.mtimeMs === stats.mtimeMs) {
+			refreshCacheEntryLru(logSummaryCache, path, cached);
 			return { summary: cached.summary };
 		}
 
 		const summary = summarizeCodexSessionLogContent(readFileSync(path, "utf8"));
+		evictOldestCacheEntries(
+			logSummaryCache,
+			CODEX_LOG_SUMMARY_CACHE_MAX_ENTRIES,
+		);
 		logSummaryCache.set(path, { mtimeMs: stats.mtimeMs, summary });
 		return { summary };
 	} catch (error) {
@@ -1635,14 +1655,37 @@ export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 			.all() as unknown as CodexThreadSpawnEdgeRow[];
 		const logSummaries: Partial<Record<string, CodexSessionLogSummary>> = {};
 		const logIssues: Partial<Record<string, string>> = {};
+		const liveThreadIds = new Set<string>();
 
 		for (const thread of threadRows) {
+			liveThreadIds.add(thread.id);
+			const cached = threadLogSummaryCache.get(thread.id);
+			if (cached && cached.updatedAtMs === thread.updated_at_ms) {
+				if (cached.summary) {
+					logSummaries[thread.id] = cached.summary;
+				}
+				if (cached.issue) {
+					logIssues[thread.id] = `Codex log error: ${cached.issue}`;
+				}
+				continue;
+			}
+
 			const logResult = readCodexLogSummary(thread.id, sessionsDirectory);
+			const entry: CachedThreadLog = { updatedAtMs: thread.updated_at_ms };
 			if (logResult.summary) {
 				logSummaries[thread.id] = logResult.summary;
+				entry.summary = logResult.summary;
 			}
 			if (logResult.issue) {
 				logIssues[thread.id] = `Codex log error: ${logResult.issue}`;
+				entry.issue = logResult.issue;
+			}
+			threadLogSummaryCache.set(thread.id, entry);
+		}
+
+		for (const id of threadLogSummaryCache.keys()) {
+			if (!liveThreadIds.has(id)) {
+				threadLogSummaryCache.delete(id);
 			}
 		}
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	getExternalAttachedDirectoryKey,
+	isSessionProcessComm,
 	parseAttachedSessionIdsFromProcessList,
 } from "../src/lib/attachedSessionSignals";
 
@@ -266,5 +267,37 @@ describe("mission-control process detection", () => {
 		expect(
 			getExternalAttachedDirectoryKey("mission-control", "/dir"),
 		).not.toBe(getExternalAttachedDirectoryKey("opencode", "/dir"));
+	});
+});
+
+describe("isSessionProcessComm", () => {
+	it("accepts direct session launchers", () => {
+		expect(isSessionProcessComm("opencode")).toBe(true);
+		expect(isSessionProcessComm("codex")).toBe(true);
+		expect(isSessionProcessComm("claude")).toBe(true);
+		expect(isSessionProcessComm("pi")).toBe(true);
+		expect(isSessionProcessComm("omp")).toBe(true);
+		expect(isSessionProcessComm("mctrl")).toBe(true);
+	});
+
+	it("accepts runtime wrappers that may launch a session", () => {
+		expect(isSessionProcessComm("node")).toBe(true);
+		expect(isSessionProcessComm("bun")).toBe(true);
+		expect(isSessionProcessComm("deno")).toBe(true);
+	});
+
+	it("accepts the kernel-truncated form of long launcher names", () => {
+		// "mission-control-sidecar" is 24 chars; /proc/<pid>/comm truncates to 15.
+		expect(isSessionProcessComm("mission-control")).toBe(true);
+	});
+
+	it("rejects unrelated processes so the /proc scan skips their cmdline", () => {
+		expect(isSessionProcessComm("gnome-shell")).toBe(false);
+		expect(isSessionProcessComm("code")).toBe(false);
+		expect(isSessionProcessComm("chrome")).toBe(false);
+		expect(isSessionProcessComm("kthreadd")).toBe(false);
+		expect(isSessionProcessComm("bash")).toBe(false);
+		expect(isSessionProcessComm("zsh")).toBe(false);
+		expect(isSessionProcessComm("python3")).toBe(false);
 	});
 });

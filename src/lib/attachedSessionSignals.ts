@@ -128,6 +128,24 @@ const isRuntimeWrapperCommand = (commandBasename: string): boolean => {
 	);
 };
 
+// /proc/<pid>/comm values that could possibly be a session launcher (direct
+// binary or a runtime wrapper running one). Everything else can be skipped
+// before reading the (often large) cmdline file. comm is kernel-truncated to
+// 15 chars, so each name is sliced to match the truncated form.
+const SESSION_PROCESS_COMMS = new Set<string>([
+	OPENCODE_COMMAND_NAME,
+	CODEX_COMMAND_NAME,
+	CLAUDE_COMMAND_NAME,
+	...PI_FAMILY_COMMAND_NAMES,
+	...[...MISSION_CONTROL_COMMAND_NAMES].map((name) => name.slice(0, 15)),
+	"node",
+	"bun",
+	"deno",
+]);
+
+export const isSessionProcessComm = (comm: string): boolean =>
+	SESSION_PROCESS_COMMS.has(comm);
+
 const isOpencodeToken = (token: string): boolean => {
 	const normalizedToken = normalizeCommandToken(token);
 	if (normalizedToken.length === 0) {

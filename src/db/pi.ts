@@ -18,6 +18,10 @@ import {
 	join,
 	resolve,
 } from "node:path";
+import {
+	evictOldestCacheEntries,
+	refreshCacheEntryLru,
+} from "../lib/boundedCache";
 import { getDisplayStatus, isActiveStatus } from "../lib/hierarchyHelpers";
 import type { SessionSnapshot } from "../lib/sessionSnapshot";
 import {
@@ -292,6 +296,8 @@ const parseJsonLine = (line: string): JsonObject | undefined => {
 	}
 };
 
+// Bounds memory: without eviction this cache grew once per log file ever read.
+const PI_LOG_CACHE_MAX_ENTRIES = 256;
 const piLogCache = new Map<
 	string,
 	{ mtimeMs: number; size: number; record: PiSessionLogRecord }
@@ -319,6 +325,8 @@ export const parsePiSessionLogFile = (
 		cached.mtimeMs === stats.mtimeMs &&
 		cached.size === stats.size
 	) {
+		// Re-insert moves live entries newest; stale ones drift oldest.
+		refreshCacheEntryLru(piLogCache, path, cached);
 		return cached.record;
 	}
 
@@ -363,6 +371,7 @@ export const parsePiSessionLogFile = (
 		entries,
 		mtimeMs,
 	};
+	evictOldestCacheEntries(piLogCache, PI_LOG_CACHE_MAX_ENTRIES);
 	piLogCache.set(path, { mtimeMs, size: stats.size, record });
 	return record;
 };

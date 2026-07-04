@@ -7,6 +7,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
+import {
+	evictOldestCacheEntries,
+	refreshCacheEntryLru,
+} from "../lib/boundedCache";
 import { isActiveStatus } from "../lib/hierarchyHelpers";
 import type { SessionSnapshot } from "../lib/sessionSnapshot";
 import {
@@ -83,6 +87,8 @@ export interface ClaudeSessionLogRecord {
 	summary?: ClaudeSessionLogSummary;
 }
 
+// Bounds memory: without eviction this cache grew once per log file ever read.
+const CLAUDE_LOG_SUMMARY_CACHE_MAX_ENTRIES = 512;
 const claudeLogSummaryCache = new Map<
 	string,
 	{ mtimeMs: number; size: number; summary: ClaudeSessionLogSummary }
@@ -748,11 +754,17 @@ export const readClaudeSessionLogSummary = (
 			cached.mtimeMs === stats.mtimeMs &&
 			cached.size === stats.size
 		) {
+			// Re-insert moves live entries newest; stale ones drift oldest.
+			refreshCacheEntryLru(claudeLogSummaryCache, path, cached);
 			return { summary: cached.summary };
 		}
 
 		const summary = summarizeClaudeSessionLogContent(
 			readFileSync(path, "utf8"),
+		);
+		evictOldestCacheEntries(
+			claudeLogSummaryCache,
+			CLAUDE_LOG_SUMMARY_CACHE_MAX_ENTRIES,
 		);
 		claudeLogSummaryCache.set(path, {
 			mtimeMs: stats.mtimeMs,
