@@ -101,9 +101,12 @@ const TOAST_OVERLAY_ID = "toast-overlay";
 const STATS_OVERLAY_ID = "session-monitor-stats-overlay";
 const GRID_SCROLLBOX_ID = "session-grid-scrollbox";
 const GRID_CONTENT_ID = "session-grid-content";
+const DETAIL_CONTAINER_ID = "session-detail-container";
+const DETAIL_FRAME_OVERLAY_ID = "session-detail-frame-overlay";
 const DETAIL_SCROLLBOX_ID = "session-detail-scrollbox";
 const DETAIL_CONTENT_ID = "session-detail-content";
 const HIERARCHY_CONTAINER_ID = "session-hierarchy-container";
+const HIERARCHY_FRAME_OVERLAY_ID = "session-hierarchy-frame-overlay";
 const HIERARCHY_HEADER_ID = "session-hierarchy-header";
 const HIERARCHY_TIMELINE_ANCHOR_ID = "session-hierarchy-timeline-anchor";
 const HIERARCHY_SCROLLBOX_ID = "session-hierarchy-scrollbox";
@@ -1435,15 +1438,12 @@ const main = async () => {
 							flexDirection: "column",
 						}),
 					),
-					ScrollBox(
+					Box(
 						{
-							id: DETAIL_SCROLLBOX_ID,
+							id: DETAIL_CONTAINER_ID,
 							width: 0,
 							height: "100%",
-							border: true,
-							borderColor: "#334155",
 							backgroundColor: "#0F172A",
-							padding: 1,
 							visible: false,
 							onMouseDown: (event) => {
 								event.preventDefault();
@@ -1464,10 +1464,69 @@ const main = async () => {
 								handlePaneMouseScroll("detail", event.scroll?.direction);
 							},
 						},
+						ScrollBox(
+							{
+								id: DETAIL_SCROLLBOX_ID,
+								width: "100%",
+								height: "100%",
+								margin: 2,
+								backgroundColor: "#0F172A",
+								wrapperOptions: { padding: 1 },
+								onMouseDown: (event) => {
+									event.preventDefault();
+									event.stopPropagation();
+									setFocusedPane("detail");
+									if (
+										event.button === MouseButton.RIGHT &&
+										state.isDetailMode &&
+										!state.isSideviewMode
+									) {
+										event.preventDefault();
+										closeDetailView();
+									}
+								},
+								onMouseScroll: (event) => {
+									event.preventDefault();
+									event.stopPropagation();
+									handlePaneMouseScroll("detail", event.scroll?.direction);
+								},
+							},
+							Box({
+								id: DETAIL_CONTENT_ID,
+								width: "100%",
+								flexDirection: "column",
+							}),
+						),
 						Box({
-							id: DETAIL_CONTENT_ID,
+							id: DETAIL_FRAME_OVERLAY_ID,
+							position: "absolute",
+							top: 0,
+							left: 0,
 							width: "100%",
-							flexDirection: "column",
+							height: "100%",
+							border: true,
+							borderColor: "#334155",
+							backgroundColor: "transparent",
+							shouldFill: false,
+							zIndex: 10,
+						}),
+						Box({
+							position: "absolute",
+							top: -1,
+							left: 0,
+							width: "100%",
+							height: 1,
+							backgroundColor: APP_PALETTE.bg,
+							zIndex: 20,
+						}),
+						Box({
+							position: "absolute",
+							bottom: -1,
+							left: 0,
+							width: "100%",
+							height: 1,
+							backgroundColor: APP_PALETTE.bg,
+							zIndex: 20,
 						}),
 					),
 					Box(
@@ -1475,8 +1534,6 @@ const main = async () => {
 							id: HIERARCHY_CONTAINER_ID,
 							width: 0,
 							height: "100%",
-							border: true,
-							borderColor: "#334155",
 							backgroundColor: "#0F172A",
 							flexDirection: "column",
 							visible: false,
@@ -1584,7 +1641,7 @@ const main = async () => {
 								width: "100%",
 								height: "100%",
 								backgroundColor: "#0F172A",
-								padding: 1,
+								wrapperOptions: { padding: 1 },
 								visible: false,
 								onMouseDown: (event) => {
 									event.preventDefault();
@@ -1621,6 +1678,37 @@ const main = async () => {
 								flexDirection: "column",
 							}),
 						),
+						Box({
+							id: HIERARCHY_FRAME_OVERLAY_ID,
+							position: "absolute",
+							top: 0,
+							left: 0,
+							width: "100%",
+							height: "100%",
+							border: true,
+							borderColor: "#334155",
+							backgroundColor: "transparent",
+							shouldFill: false,
+							zIndex: 10,
+						}),
+						Box({
+							position: "absolute",
+							top: -1,
+							left: 0,
+							width: "100%",
+							height: 1,
+							backgroundColor: APP_PALETTE.bg,
+							zIndex: 20,
+						}),
+						Box({
+							position: "absolute",
+							bottom: -1,
+							left: 0,
+							width: "100%",
+							height: 1,
+							backgroundColor: APP_PALETTE.bg,
+							zIndex: 20,
+						}),
 					),
 				),
 				Box(
@@ -1629,6 +1717,7 @@ const main = async () => {
 						width: "100%",
 						flexDirection: "column",
 						gap: 0,
+						backgroundColor: APP_PALETTE.bg,
 						alignItems: "stretch",
 						justifyContent: "flex-start",
 					},
@@ -1728,10 +1817,18 @@ const main = async () => {
 		const existingRoot = renderer.root.findDescendantById(APP_ROOT_ID);
 		const existingGridScrollBox =
 			renderer.root.findDescendantById(GRID_SCROLLBOX_ID);
+		const existingDetailContainer =
+			renderer.root.findDescendantById(DETAIL_CONTAINER_ID);
+		const existingDetailFrameOverlay = renderer.root.findDescendantById(
+			DETAIL_FRAME_OVERLAY_ID,
+		);
 		const existingDetailScrollBox =
 			renderer.root.findDescendantById(DETAIL_SCROLLBOX_ID);
 		const existingHierarchyContainer = renderer.root.findDescendantById(
 			HIERARCHY_CONTAINER_ID,
+		);
+		const existingHierarchyFrameOverlay = renderer.root.findDescendantById(
+			HIERARCHY_FRAME_OVERLAY_ID,
 		);
 		const existingHierarchyHeader =
 			renderer.root.findDescendantById(HIERARCHY_HEADER_ID);
@@ -1760,8 +1857,11 @@ const main = async () => {
 		if (
 			!isBoxRenderable(existingRoot) ||
 			!isScrollBoxRenderable(existingGridScrollBox) ||
+			!isBoxRenderable(existingDetailContainer) ||
+			!isBoxRenderable(existingDetailFrameOverlay) ||
 			!isScrollBoxRenderable(existingDetailScrollBox) ||
 			!isBoxRenderable(existingHierarchyContainer) ||
+			!isBoxRenderable(existingHierarchyFrameOverlay) ||
 			!isBoxRenderable(existingHierarchyHeader) ||
 			!isBoxRenderable(existingHierarchyTimelineAnchor) ||
 			!isScrollBoxRenderable(existingHierarchyScrollBox) ||
@@ -1994,6 +2094,7 @@ const main = async () => {
 
 		footerContainer.width = footerAvailableWidth;
 		footerContainer.height = footerHeight;
+		footerContainer.backgroundColor = APP_PALETTE.bg;
 		footerContainer.flexDirection = footerWraps ? "column" : "row";
 		footerContainer.justifyContent = footerWraps ? "flex-start" : "flex-start";
 		footerContainer.alignItems = footerWraps ? "stretch" : "center";
@@ -2014,22 +2115,36 @@ const main = async () => {
 		existingGridScrollBox.borderColor =
 			showGrid && state.focusedPane === "grid" ? APP_PALETTE.accent : "#334155";
 
-		existingDetailScrollBox.visible = showDetail;
-		existingDetailScrollBox.width = showDetail
+		const detailPaneWidth = showDetail
 			? detailOnlyMode
 				? innerWidth
 				: detailWidth
 			: 0;
-		existingDetailScrollBox.height = contentHeight;
-		existingDetailScrollBox.borderColor =
+
+		existingDetailContainer.visible = showDetail;
+		existingDetailContainer.width = detailPaneWidth;
+		existingDetailContainer.height = contentHeight;
+
+		existingDetailFrameOverlay.visible = showDetail;
+		existingDetailFrameOverlay.width = "100%";
+		existingDetailFrameOverlay.height = "100%";
+		existingDetailFrameOverlay.borderColor =
 			showDetail && state.focusedPane === "detail"
 				? APP_PALETTE.accent
 				: "#334155";
 
+		existingDetailScrollBox.visible = showDetail;
+		existingDetailScrollBox.width = Math.max(detailPaneWidth - 4, 1);
+		existingDetailScrollBox.height = Math.max(contentHeight - 6, 1);
+
 		existingHierarchyContainer.visible = showHierarchy;
 		existingHierarchyContainer.width = showHierarchy ? innerWidth : 0;
 		existingHierarchyContainer.height = contentHeight;
-		existingHierarchyContainer.borderColor = showHierarchy
+
+		existingHierarchyFrameOverlay.visible = showHierarchy;
+		existingHierarchyFrameOverlay.width = "100%";
+		existingHierarchyFrameOverlay.height = "100%";
+		existingHierarchyFrameOverlay.borderColor = showHierarchy
 			? APP_PALETTE.accent
 			: "#334155";
 
@@ -2084,7 +2199,7 @@ const main = async () => {
 					messageCountBySessionId: state.messageCountBySessionId,
 					status: selectedState.status,
 					summary: selectedState.summary,
-					width: detailOnlyMode ? innerWidth : detailWidth,
+					width: Math.max(detailPaneWidth - 4, 1),
 				}),
 			]);
 		} else if (detailContent.getChildren().length > 0) {
