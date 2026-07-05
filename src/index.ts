@@ -51,6 +51,7 @@ import {
 	createRefreshCoordinator,
 	type RefreshRequestId,
 } from "./lib/refreshCoordinator";
+import { createRefreshRenderSignature } from "./lib/refreshRenderSignature";
 import {
 	applySessionFilter,
 	applySessionSort,
@@ -110,7 +111,6 @@ const HIERARCHY_CONTENT_ID = "session-hierarchy-content";
 const POLL_INTERVAL_MS = 2000;
 const ATTACHED_SIGNAL_INTERVAL_MS = 10_000;
 const RESIZE_DEBOUNCE_MS = 150;
-const WAITING_PULSE_FRAME_INTERVAL_MS = 80;
 const DETAIL_SCROLL_STEP = 3;
 const SIDEVIEW_SHORTCUT_LABEL = "e/p";
 const FILTER_SHORTCUT_LABEL = "f";
@@ -737,12 +737,12 @@ const createStatsModalContent = (state: AppState, modalWidth: number) => {
 			fg: STATS_PALETTE.value,
 			width: "100%",
 		}),
-	...(sourceRows.length > 0
-		? [
-				Text({
-					content: t`${dim("by source")}`,
-					fg: STATS_PALETTE.label,
-					width: "100%",
+		...(sourceRows.length > 0
+			? [
+					Text({
+						content: t`${dim("by source")}`,
+						fg: STATS_PALETTE.label,
+						width: "100%",
 					}),
 					...sourceRows,
 				]
@@ -1128,7 +1128,6 @@ const main = async () => {
 	};
 
 	const refreshCoordinator = createRefreshCoordinator();
-	const workerExtension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
 	// node v24 rejects new Worker(fileUrl.href string) with ERR_WORKER_PATH;
 	// it requires the URL object (or a ./ relative path), not the .href string.
 	const refreshWorker = new Worker(
@@ -1141,12 +1140,10 @@ const main = async () => {
 	};
 	let interval: ReturnType<typeof setInterval> | null = null;
 	let attachedSignalInterval: ReturnType<typeof setInterval> | null = null;
-	let isWaitingPulseLive = false;
-	let lastWaitingPulseFrameRenderAt = 0;
-	let isRefreshApplying = false;
 	let isRefreshingExternalAttachedSessions = false;
 	let pendingSelectionRefreshResponse: RefreshResponse | null = null;
 	let pendingSelectionRender = false;
+	let lastRefreshRenderSignature: string | null = null;
 
 	const renderStatsPath = process.env.GCTRL_RENDER_STATS || "";
 	const renderStats = renderStatsPath
@@ -1328,28 +1325,6 @@ const main = async () => {
 				summaryFragments.length > 0 ? summaryFragments.join(" · ") : undefined,
 			status: state.statusBySessionId[sessionId],
 		};
-	};
-
-	const syncWaitingPulseRendering = (isGridVisible: boolean) => {
-		const shouldPulse =
-			isGridVisible &&
-			!state.isAttachingSession &&
-			state.sessions.some(
-				(session) => session.status === SessionStatus.waiting,
-			);
-
-		if (shouldPulse && !isWaitingPulseLive) {
-			renderer.requestLive();
-			isWaitingPulseLive = true;
-			lastWaitingPulseFrameRenderAt = 0;
-			return;
-		}
-
-		if (!shouldPulse && isWaitingPulseLive) {
-			renderer.dropLive();
-			isWaitingPulseLive = false;
-			lastWaitingPulseFrameRenderAt = 0;
-		}
 	};
 
 	const setFocusedPane = (pane: FocusPane) => {
@@ -2091,10 +2066,7 @@ const main = async () => {
 					onSelectSession: selectSessionById,
 					width: gridLayoutWidth,
 					scrollTop: state.gridScrollTop,
-					viewportHeight: getSafeNumber(
-						existingGridScrollBox.height,
-						0,
-					),
+					viewportHeight: getSafeNumber(existingGridScrollBox.height, 0),
 				}),
 			]);
 		} else if (gridContent.getChildren().length > 0) {
@@ -2239,7 +2211,12 @@ const main = async () => {
 		replaceChildren(
 			statsOverlay,
 			state.isStatsModalVisible
-				? [createStatsModalContent(state, Math.min(Math.max(width - 8, 36), 72))]
+				? [
+						createStatsModalContent(
+							state,
+							Math.min(Math.max(width - 8, 36), 72),
+						),
+					]
 				: [],
 		);
 
@@ -2269,11 +2246,11 @@ const main = async () => {
 		state.renderedDetailSessionId = showDetail
 			? (selectedSession?.id ?? null)
 			: null;
-		syncWaitingPulseRendering(showGrid);
 		state.gridFollowSelectionOnRender = false;
 	};
 
 	const applyRefreshErrorState = (errorMessage: string) => {
+		lastRefreshRenderSignature = null;
 		state.allSessions = [];
 		state.sessions = [];
 		state.statusBySessionId = {};
@@ -2425,6 +2402,20 @@ const main = async () => {
 			state.isDetailMode = false;
 		}
 
+		const nextRefreshRenderSignature = createRefreshRenderSignature({
+			snapshot,
+			sessionFilterMode: state.sessionFilterMode,
+			sessionSortMode: state.sessionSortMode,
+			selectedSessionId: state.selectedSessionId,
+			externalAttachedSessionIds: state.externalAttachedSessionIds,
+			externalAttachedSessionDirectoryCounts:
+				state.externalAttachedSessionDirectoryCounts,
+		});
+		if (nextRefreshRenderSignature === lastRefreshRenderSignature) {
+			state.gridFollowSelectionOnRender = false;
+			return;
+		}
+		lastRefreshRenderSignature = nextRefreshRenderSignature;
 		render();
 	};
 
@@ -2446,18 +2437,14 @@ const main = async () => {
 	};
 
 	const applyRefreshResponseState = (response: RefreshResponse) => {
-		isRefreshApplying = true;
 		if (renderStats) renderStats.applyTriggeredRenders++;
-		try {
-			if (!response.ok) {
-				applyRefreshErrorState(response.error.message);
-				return;
-			}
 
-			applyRefreshSnapshotState(response.snapshot);
-		} finally {
-			isRefreshApplying = false;
+		if (!response.ok) {
+			applyRefreshErrorState(response.error.message);
+			return;
 		}
+
+		applyRefreshSnapshotState(response.snapshot);
 	};
 
 	const applyPendingSelectionRefresh = (): boolean => {
@@ -3544,12 +3531,6 @@ const main = async () => {
 			isResizeDebouncing.value = null;
 		}
 
-		if (isWaitingPulseLive) {
-			renderer.dropLive();
-			isWaitingPulseLive = false;
-			lastWaitingPulseFrameRenderAt = 0;
-		}
-
 		stopPolling();
 
 		flushRenderStats();
@@ -3905,26 +3886,6 @@ const main = async () => {
 			default:
 				break;
 		}
-	});
-
-	renderer.setFrameCallback(async () => {
-		if (!isWaitingPulseLive) {
-			return;
-		}
-
-		if (isRefreshApplying) {
-			if (renderStats) renderStats.liveFrameSkippedDuringApply++;
-			return;
-		}
-
-		const now = Date.now();
-		if (now - lastWaitingPulseFrameRenderAt < WAITING_PULSE_FRAME_INTERVAL_MS) {
-			return;
-		}
-		lastWaitingPulseFrameRenderAt = now;
-
-		if (renderStats) renderStats.liveFrameRenders++;
-		render();
 	});
 
 	renderer.start();

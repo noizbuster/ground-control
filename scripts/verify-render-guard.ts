@@ -1,17 +1,33 @@
 import { spawn } from "node:child_process";
-import { lstat, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+	lstat,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
 const PROJECT_ROOT = process.cwd();
-const FIXTURE_PATH = resolve(PROJECT_ROOT, ".sisyphus/evidence/qa-refresh.sqlite");
-const STATS_PATH = resolve(PROJECT_ROOT, ".sisyphus/evidence/task-6-render-counts.tmp.json");
-const OUTPUT_PATH = resolve(PROJECT_ROOT, ".sisyphus/evidence/task-6-render-counts.json");
+const FIXTURE_PATH = resolve(
+	PROJECT_ROOT,
+	".sisyphus/evidence/qa-refresh.sqlite",
+);
+const STATS_PATH = resolve(
+	PROJECT_ROOT,
+	".sisyphus/evidence/task-6-render-counts.tmp.json",
+);
+const OUTPUT_PATH = resolve(
+	PROJECT_ROOT,
+	".sisyphus/evidence/task-6-render-counts.json",
+);
 const DB_TARGET_PATH = `${homedir()}/.local/share/opencode/opencode.db`;
 const RUN_MS = 6000;
 
-const sleep = (ms: number) =>
-	new Promise<void>((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const pathExists = async (p: string) => {
 	try {
@@ -126,11 +142,11 @@ const main = async () => {
 		description:
 			"Render counts captured from actual worker-backed app execution via GCTRL_RENDER_STATS instrumentation. " +
 			"The app ran for 6 seconds against the QA fixture (session-gamma has waiting status). " +
-			"JS single-threading guarantees apply and live-frame renders never truly interleave; " +
-			"the guard is a belt-and-suspenders defense. Evidence proves both render paths fire correctly.",
+			"Waiting sessions are highlighted statically; steady state must not start a live-frame render loop.",
 		source: stats.source,
 		runDurationMs: RUN_MS,
-		fixture: "qa-refresh.sqlite (sessions alpha, beta, gamma — gamma has waiting status)",
+		fixture:
+			"qa-refresh.sqlite (sessions alpha, beta, gamma - gamma has waiting status)",
 		applyTriggeredRenders: stats.applyTriggeredRenders,
 		liveFrameRenders: stats.liveFrameRenders,
 		liveFrameSkippedDuringApply: stats.liveFrameSkippedDuringApply,
@@ -138,17 +154,16 @@ const main = async () => {
 		guardActive: stats.guardActive,
 		invariants: {
 			applyRendersFired: stats.applyTriggeredRenders > 0,
-			liveFramesFired: stats.liveFrameRenders > 0,
-			noCollisionInSingleThreadedJs: stats.liveFrameSkippedDuringApply === 0,
-			bothPathsActive:
-				stats.applyTriggeredRenders > 0 && stats.liveFrameRenders > 0,
+			liveFramesSuppressed: stats.liveFrameRenders === 0,
+			noSkippedLiveFrames: stats.liveFrameSkippedDuringApply === 0,
 			callbacksAccounted:
 				stats.liveFrameRenders + stats.liveFrameSkippedDuringApply ===
 				stats.totalLiveCallbacks,
 		},
-		conclusion: stats.applyTriggeredRenders > 0 && stats.liveFrameRenders > 0
-			? "PASS: Both apply-triggered and live-frame renders fire during actual app execution. Guard holds (zero skips in single-threaded JS)."
-			: "FAIL: Insufficient render evidence captured.",
+		conclusion:
+			stats.applyTriggeredRenders > 0 && stats.liveFrameRenders === 0
+				? "PASS: Apply-triggered renders fire, and steady-state live-frame renders stay suppressed."
+				: "FAIL: Render evidence did not match the steady-state memory guard.",
 		capturedAt: stats.capturedAt,
 	};
 
@@ -161,4 +176,3 @@ const main = async () => {
 };
 
 void main();
-

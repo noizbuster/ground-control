@@ -34,8 +34,6 @@ const CARD_COLORS = {
 	recentCompletedEdge: "#4ADE80",
 } as const;
 
-const WAITING_PULSE_INTERVAL_MS = 2200;
-
 const STATUS_COLORS: Record<SessionStatus, string> = {
 	[SessionStatus.pending]: "#94A3B8",
 	[SessionStatus.running]: "#60A5FA",
@@ -252,12 +250,7 @@ export function SessionCard(props: SessionCardProps) {
 	});
 	const showWaitingTreatment =
 		isWaiting && displayStatus === SessionStatus.waiting;
-	const waitingPulsePhase = showWaitingTreatment
-		? (Date.now() % WAITING_PULSE_INTERVAL_MS) / WAITING_PULSE_INTERVAL_MS
-		: 0;
-	const waitingPulseStrength = showWaitingTreatment
-		? (1 - Math.cos(waitingPulsePhase * Math.PI * 2)) / 2
-		: 0;
+	const waitingEmphasisStrength = showWaitingTreatment ? 1 : 0;
 	const isRecentlyCompletedSession = isRecentlyCompleted(
 		displayStatus,
 		session.time_updated,
@@ -266,7 +259,7 @@ export function SessionCard(props: SessionCardProps) {
 		? interpolateHexColor(
 				agentColor,
 				CARD_COLORS.waitingEdge,
-				waitingPulseStrength,
+				waitingEmphasisStrength,
 			)
 		: isRecentlyCompletedSession
 			? CARD_COLORS.recentCompletedEdge
@@ -316,7 +309,7 @@ export function SessionCard(props: SessionCardProps) {
 	const statusLine = t`${dim("status  ")}${bold(fg(statusColor)(statusLabel))}`;
 
 	const waitingEdgeLine = showWaitingTreatment
-		? t`${bold(fg(interpolateHexColor(CARD_COLORS.meta, CARD_COLORS.waitingEdge, waitingPulseStrength))(waitingEdge))}`
+		? t`${bold(fg(interpolateHexColor(CARD_COLORS.meta, CARD_COLORS.waitingEdge, waitingEmphasisStrength))(waitingEdge))}`
 		: undefined;
 	const recentCompletionEdgeLine = isRecentlyCompletedSession
 		? t`${bold(fg(CARD_COLORS.recentCompletedEdge)(buildRecentCompletionEdge(contentWidth)))}`
