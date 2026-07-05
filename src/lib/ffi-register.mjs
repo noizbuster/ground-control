@@ -51,7 +51,13 @@ const isKoffiErr = (...args) =>
 const _on = process.on.bind(process);
 process.on = (ev, fn, ...r) => {
 	if (ev === "uncaughtException" || ev === "unhandledRejection") {
-		return _on(ev, (e) => { if (!isKoffiErr(e)) fn(e); }, ...r);
+		return _on(
+			ev,
+			(e) => {
+				if (!isKoffiErr(e)) fn(e);
+			},
+			...r,
+		);
 	}
 	return _on(ev, fn, ...r);
 };

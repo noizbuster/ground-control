@@ -182,9 +182,7 @@ export const createSessionGridContent = ({
 					});
 				}),
 			),
-			...(bottomSpacerHeight > 0
-				? [Box({ height: bottomSpacerHeight })]
-				: []),
+			...(bottomSpacerHeight > 0 ? [Box({ height: bottomSpacerHeight })] : []),
 		);
 	}
 
