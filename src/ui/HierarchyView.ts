@@ -137,9 +137,7 @@ const Section = (title: string, ...children: HierarchyViewChild[]) => {
 			flexDirection: "column",
 			border: true,
 			borderColor: VIEW_COLORS.sectionBorder,
-			paddingTop: 1,
-			paddingLeft: 1,
-			paddingRight: 1,
+			padding: 1,
 			marginBottom: 1,
 		},
 		Text({

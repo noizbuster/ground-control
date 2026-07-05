@@ -1120,7 +1120,7 @@ export const DetailPanel = ({
 			border: true,
 			borderColor: PANEL_COLORS.border,
 			backgroundColor: PANEL_COLORS.surface,
-			padding: 1,
+			wrapperOptions: { padding: 2 },
 		},
 		createDetailPanelContent({
 			session,
