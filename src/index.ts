@@ -46,7 +46,13 @@ import {
 	isSessionProcessComm,
 	parseAttachedSessionIdsFromProcessList,
 } from "./lib/attachedSessionSignals";
-import { clampGridScrollTop, getGridVisibleRowCount } from "./lib/gridScroll";
+import {
+	clampGridScrollTop,
+	clampSelection,
+	getGridVisibleRowCount,
+	getRenderedGridColumnCount,
+	moveSelectionInGrid,
+} from "./lib/gridScroll";
 import {
 	createRefreshCoordinator,
 	type RefreshRequestId,
@@ -225,22 +231,6 @@ const sanitizeText = (
 	return trimmed && trimmed.length > 0 ? trimmed : fallback;
 };
 
-const clampSelection = (sessions: Session[], selectedIndex: number): number => {
-	if (sessions.length === 0) {
-		return -1;
-	}
-
-	if (selectedIndex < 0) {
-		return 0;
-	}
-
-	if (selectedIndex >= sessions.length) {
-		return sessions.length - 1;
-	}
-
-	return selectedIndex;
-};
-
 const getGridWidth = (
 	terminalWidth: number,
 	isSideviewMode: boolean,
@@ -251,85 +241,6 @@ const getGridWidth = (
 
 	const detailWidth = Math.max(Math.floor(terminalWidth * 0.34), 22);
 	return Math.max(terminalWidth - detailWidth - 1, 1);
-};
-
-const getRenderedGridColumnCount = (
-	gridContentRenderable: Renderable | undefined,
-	fallbackColumnCount: number,
-): number => {
-	if (!isBoxRenderable(gridContentRenderable)) {
-		return Math.max(1, fallbackColumnCount);
-	}
-
-	const [gridRowsRenderable] = gridContentRenderable.getChildren();
-	if (!isRenderable(gridRowsRenderable)) {
-		return Math.max(1, fallbackColumnCount);
-	}
-
-	const visibleCards = gridRowsRenderable
-		.getChildren()
-		.filter((renderable) => renderable.visible);
-
-	if (visibleCards.length === 0) {
-		return Math.max(1, fallbackColumnCount);
-	}
-
-	const firstRowY = visibleCards[0].y;
-	let inferredColumnCount = 0;
-
-	for (const card of visibleCards) {
-		if (card.y !== firstRowY) {
-			break;
-		}
-
-		inferredColumnCount += 1;
-	}
-
-	if (inferredColumnCount <= 0) {
-		return Math.max(1, fallbackColumnCount);
-	}
-
-	return inferredColumnCount;
-};
-
-const moveSelectionInGrid = (params: {
-	sessions: Session[];
-	selectedIndex: number;
-	columnCount: number;
-	direction: "left" | "right" | "up" | "down";
-}): number => {
-	const { sessions, selectedIndex, columnCount, direction } = params;
-
-	if (sessions.length === 0) {
-		return -1;
-	}
-
-	const currentIndex = clampSelection(sessions, selectedIndex);
-	const safeColumnCount = Math.max(1, Math.floor(columnCount));
-
-	switch (direction) {
-		case "left":
-			return Math.max(0, currentIndex - 1);
-		case "right":
-			return Math.min(sessions.length - 1, currentIndex + 1);
-		case "up":
-			return currentIndex < safeColumnCount
-				? currentIndex
-				: currentIndex - safeColumnCount;
-		case "down": {
-			const nextIndex = currentIndex + safeColumnCount;
-			if (nextIndex < sessions.length) {
-				return nextIndex;
-			}
-
-			const currentColumn = currentIndex % safeColumnCount;
-			const lastRowStart = Math.max(
-				Math.floor((sessions.length - 1) / safeColumnCount) * safeColumnCount,
-				0,
-			);
-			return Math.min(lastRowStart + currentColumn, sessions.length - 1);
-		}
-	}
 };
 
 const getNextSessionFilterMode = (

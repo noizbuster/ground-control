@@ -1,9 +1,8 @@
 import { Box, dim, ScrollBox, Text, t } from "@opentui/core";
+import { getGridVisibleRowCount } from "../lib/gridScroll";
 import type { Session } from "../types";
 import { SessionStatus } from "../types";
-import { SESSION_CARD_MAX_HEIGHT } from "./SessionCard";
-import { getGridVisibleRowCount } from "../lib/gridScroll";
-import { SessionCard } from "./SessionCard";
+import { SESSION_CARD_MAX_HEIGHT, SessionCard } from "./SessionCard";
 
 type GridSize = number | `${number}%` | "100%";
 
