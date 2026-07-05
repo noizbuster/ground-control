@@ -33,7 +33,7 @@ const PI_FAMILY_CAPABILITIES: SessionCapabilities = {
 
 const MISSION_CONTROL_CAPABILITIES: SessionCapabilities = {
 	attach: true,
-	delete: false,
+	delete: true,
 	abortChildren: false,
 	hierarchy: true,
 };

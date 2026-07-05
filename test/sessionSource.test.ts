@@ -312,7 +312,7 @@ describe("mission-control source", () => {
 	it("returns mission-control specific default capabilities", () => {
 		expect(getDefaultSessionCapabilities("mission-control")).toEqual({
 			attach: true,
-			delete: false,
+			delete: true,
 			abortChildren: false,
 			hierarchy: true,
 		});
@@ -376,12 +376,12 @@ describe("mission-control source", () => {
 		expect(spec?.cmd.join(" ")).toContain("--resume");
 	});
 
-	it("disables delete for mission-control sessions", () => {
+	it("enables delete for mission-control sessions", () => {
 		const session = {
 			sessionSource: "mission-control",
 			capabilities: undefined,
 		} as const;
-		expect(canDeleteSession(session)).toBe(false);
+		expect(canDeleteSession(session)).toBe(true);
 	});
 
 	it("counts mission-control sessions by source", () => {
