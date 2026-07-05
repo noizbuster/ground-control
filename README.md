@@ -69,7 +69,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 Available in detail or sideview mode. Press `K` (Shift+K) to gracefully stop all active (non-completed, non-failed) child sessions of the selected session.
 
-Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Child-abort is supported for OpenCode and Codex sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mctrl --session <session-id>`. Delete is not available for Mission Control sessions (no safe upstream mechanism).
+Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Child-abort is supported for OpenCode and Codex sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mctrl --session <session-id>`. Mission Control delete uses `mctrl session delete <session-id>`; if any session in the tree has an active lock the CLI refuses and surfaces the error, so stop the live session first and retry.
 
 The stop flow works in two stages:
 
@@ -117,7 +117,7 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - Claude Code attach actions use the local `claude` CLI.
 - Pi attach actions use the local `pi` CLI; Pi delete removes the selected JSONL session and any loaded descendant JSONL sessions.
 - omp attach actions use the local `omp` CLI; omp delete removes the selected JSONL session, loaded descendant JSONL sessions, and sibling artifact directories, but not shared blob storage.
-- Mission Control attach actions use the local `mctrl` CLI; delete is not available for Mission Control sessions.
+- Mission Control attach actions use the local `mctrl` CLI; Mission Control delete uses `mctrl session delete <session-id>`, which removes the session and its descendants plus their index entries and refuses live-locked sessions unless stopped first.
 - Codex delete uses the local `codex app-server` archive flow plus cleanup of archived rollout files and local index/state entries.
 - Claude Code delete intentionally refuses live sessions, then removes matching `projects/`, `file-history/`, `session-env/`, `tasks/`, and stale `sessions/*.json` artifacts from local `.claude/` storage. This follows the official `.claude` storage guidance: Claude Code does not expose a delete subcommand, but its local session data can be removed directly.
 - Non-interactive mode (missing TTY stdin/stdout) prints a tab-separated snapshot and exits.

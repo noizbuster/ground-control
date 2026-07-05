@@ -26,13 +26,14 @@ import {
 	ScrollBox,
 	type ScrollBoxRenderable,
 	Text,
-	type TextRenderable,
 	TextBufferView,
+	type TextRenderable,
 	t,
 } from "@opentui/core";
 import { deleteClaudeSession } from "./db/claude";
 import { deleteCodexSession } from "./db/codex";
 import { abortCodexChildSession } from "./db/codex-child-abort";
+import { deleteMissionControlSession } from "./db/missionControl";
 import { deleteOmpSession, deletePiSession } from "./db/pi";
 import {
 	createErrorResponse,
@@ -3045,6 +3046,17 @@ const main = async () => {
 					state.deleteConfirmationError = sanitizeText(
 						deleteResult.error.message,
 						"omp session delete failed.",
+					);
+					render();
+					return;
+				}
+			} else if (selectedSession?.sessionSource === "mission-control") {
+				const deleteResult = await deleteMissionControlSession(sessionId);
+				if (!deleteResult.ok) {
+					state.isDeletingSession = false;
+					state.deleteConfirmationError = sanitizeText(
+						deleteResult.error.message,
+						"Mission Control session delete failed.",
 					);
 					render();
 					return;
