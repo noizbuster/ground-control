@@ -322,8 +322,41 @@ describe("mission-control source", () => {
 		expect(getSessionSourceLabel("mission-control")).toBe("Mission Control");
 	});
 
-	it("builds the mission-control attach command with mctrl and the session id", () => {
-		const resolveExecutable = () => "/usr/bin/mctrl";
+	it("builds the mission-control attach command preferring mc when resolvable", () => {
+		const resolveExecutable = (name: string) =>
+			name === "mc"
+				? "/usr/bin/mc"
+				: name === "mctrl"
+					? "/usr/bin/mctrl"
+					: undefined;
+		const existingDirectory = process.cwd();
+
+		const spec = getAttachLaunchSpec(
+			{
+				id: "mc-session",
+				parent_id: null,
+				directory: existingDirectory,
+				sessionSource: "mission-control",
+				capabilities: undefined,
+				sourceMetadata: undefined,
+			},
+			{
+				resolveExecutable,
+				fallbackDirectory: "/fallback",
+			},
+		);
+
+		expect(spec).toEqual({
+			cmd: ["/usr/bin/mc", "--session", "mc-session"],
+			cwd: existingDirectory,
+		});
+		// Regression guard: MC sessions must NOT silently fall through to the omp command.
+		expect(spec?.cmd.join(" ")).not.toContain("omp");
+	});
+
+	it("falls back to mctrl for mission-control attach when mc is not resolvable", () => {
+		const resolveExecutable = (name: string) =>
+			name === "mctrl" ? "/usr/bin/mctrl" : undefined;
 		const existingDirectory = process.cwd();
 
 		const spec = getAttachLaunchSpec(
@@ -345,8 +378,31 @@ describe("mission-control source", () => {
 			cmd: ["/usr/bin/mctrl", "--session", "mc-session"],
 			cwd: existingDirectory,
 		});
-		// Regression guard: MC sessions must NOT silently fall through to the omp command.
-		expect(spec?.cmd.join(" ")).not.toContain("omp");
+	});
+
+	it("uses the mctrl literal for mission-control attach when neither binary is resolvable", () => {
+		const resolveExecutable = () => undefined;
+		const existingDirectory = process.cwd();
+
+		const spec = getAttachLaunchSpec(
+			{
+				id: "mc-session",
+				parent_id: null,
+				directory: existingDirectory,
+				sessionSource: "mission-control",
+				capabilities: undefined,
+				sourceMetadata: undefined,
+			},
+			{
+				resolveExecutable,
+				fallbackDirectory: "/fallback",
+			},
+		);
+
+		expect(spec).toEqual({
+			cmd: ["mctrl", "--session", "mc-session"],
+			cwd: existingDirectory,
+		});
 	});
 
 	it("still returns the omp command for omp sessions after the guard refactor", () => {

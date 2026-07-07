@@ -229,7 +229,7 @@ describe("mission-control process detection", () => {
 		expect(result.directoryProcessCounts.size).toBe(0);
 	});
 
-	it("does not detect bare mc as mission-control (Midnight Commander collision)", () => {
+	it("detects mc --session <id> as a Mission Control session (explicit session signal)", () => {
 		const processList = "603 mc mc --session x";
 
 		const result = parseAttachedSessionIdsFromProcessList(
@@ -237,8 +237,62 @@ describe("mission-control process detection", () => {
 			() => "/repo/mc",
 		);
 
-		expect(result.sessionIds.has("x")).toBe(false);
+		expect(result.sessionIds.has("x")).toBe(true);
+	});
+
+	it("does not detect bare mc (Midnight Commander collision) as Mission Control", () => {
+		const processList = "604 mc mc";
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect(result.sessionIds.size).toBe(0);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("mission-control", "/repo/mc"),
+			),
+		).toBeUndefined();
 		expect(result.directoryProcessCounts.size).toBe(0);
+	});
+
+	it("still detects mctrl --session <id> (collision guard regression)", () => {
+		const processList = "605 mctrl mctrl --session y";
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect(result.sessionIds.has("y")).toBe(true);
+	});
+
+	it("still detects mission-control-sidecar --session <id> (collision guard regression)", () => {
+		const processList =
+			"606 mission-control-sidecar mission-control-sidecar --session z";
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect(result.sessionIds.has("z")).toBe(true);
+	});
+
+	it("detects path and runtime-wrapped mc --session forms as Mission Control", () => {
+		const processList = [
+			"607 mc /usr/local/bin/mc --session w",
+			"608 node node /opt/mc/cli.js --session v",
+		].join("\n");
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect(result.sessionIds.has("w")).toBe(true);
+		expect(result.sessionIds.has("v")).toBe(true);
 	});
 
 	it("falls back to mission-control directory key for bare mctrl invocations", () => {
@@ -278,6 +332,7 @@ describe("isSessionProcessComm", () => {
 		expect(isSessionProcessComm("pi")).toBe(true);
 		expect(isSessionProcessComm("omp")).toBe(true);
 		expect(isSessionProcessComm("mctrl")).toBe(true);
+		expect(isSessionProcessComm("mc")).toBe(true);
 	});
 
 	it("accepts runtime wrappers that may launch a session", () => {

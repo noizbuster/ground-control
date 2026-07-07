@@ -17,7 +17,7 @@ Make sure these are available before running `gctrl`:
 - `~/.claude/projects/` and/or `~/.claude/sessions/` exist for Claude Code monitoring
 - `~/.pi/agent/sessions/` exists for Pi monitoring
 - `~/.omp/agent/sessions/` exists for omp monitoring
-- `~/.local/share/mission-control/sessions/` exists for Mission Control monitoring
+- `~/.local/share/mission-control/memory.db` exists for Mission Control monitoring
 
 ### Run with `npx`
 
@@ -69,7 +69,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 Available in detail or sideview mode. Press `K` (Shift+K) to gracefully stop all active (non-completed, non-failed) child sessions of the selected session.
 
-Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Child-abort is supported for OpenCode and Codex sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mctrl --session <session-id>`. Mission Control delete uses `mctrl session delete <session-id>`; if any session in the tree has an active lock the CLI refuses and surfaces the error, so stop the live session first and retry.
+Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Child-abort is supported for OpenCode and Codex sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mc --session <session-id>` (`mctrl` is honored as a legacy alias/fallback). Mission Control delete uses `mc session delete <session-id>` (`mctrl` is honored as a legacy alias/fallback); if any session in the tree has an active lock the CLI refuses and surfaces the error, so stop the live session first and retry.
 
 The stop flow works in two stages:
 
@@ -105,19 +105,19 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - The monitor reads Claude Code session state from `~/.claude/sessions/*.json` and enriches it with `~/.claude/projects/**/*.jsonl`.
 - The monitor reads Pi JSONL sessions from `~/.pi/agent/sessions/**/*.jsonl`.
 - The monitor reads omp JSONL sessions from `~/.omp/agent/sessions/**/*.jsonl`.
-- The monitor reads Mission Control JSONL sessions from `~/.local/share/mission-control/sessions/**/*.jsonl`.
+- The monitor reads Mission Control session state from the SQLite store at `~/.local/share/mission-control/memory.db`. If that database is missing or unreadable, Mission Control sessions are not shown.
 - Override the OpenCode database path with `GCTRL_DB_PATH=/custom/path/opencode.db`.
 - Override Codex paths with `GCTRL_CODEX_STATE_DB_PATH=/custom/path/state.sqlite`, `GCTRL_CODEX_SESSIONS_DIR=/custom/path/sessions`, `GCTRL_CODEX_ARCHIVED_SESSIONS_DIR=/custom/path/archived_sessions`, and `GCTRL_CODEX_SESSION_INDEX_PATH=/custom/path/session_index.jsonl`.
 - Override Claude Code paths with `GCTRL_CLAUDE_PROJECTS_DIR=/custom/path/projects` and `GCTRL_CLAUDE_SESSIONS_DIR=/custom/path/sessions`.
 - Override Pi sessions with `GCTRL_PI_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are also honored.
 - Override omp sessions with `GCTRL_OMP_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`, and XDG omp candidates are also honored.
-- Override Mission Control sessions with `GCTRL_MC_SESSIONS_DIR=/custom/path/sessions`; `MCTRL_DATA_DIR` is also honored.
+- Override the Mission Control SQLite database with `GCTRL_MC_DB_PATH=/custom/path/memory.db` (primary); `MCTRL_DATA_DIR=/custom/path` is also honored and resolves to `<MCTRL_DATA_DIR>/memory.db`, and `XDG_DATA_HOME` is honored for the default `~/.local/share/mission-control/memory.db` location.
 - OpenCode attach/delete/child-abort actions use the `opencode` CLI.
 - Codex attach/delete/child-abort actions use the local `codex` CLI and app-server protocol.
 - Claude Code attach actions use the local `claude` CLI.
 - Pi attach actions use the local `pi` CLI; Pi delete removes the selected JSONL session and any loaded descendant JSONL sessions.
 - omp attach actions use the local `omp` CLI; omp delete removes the selected JSONL session, loaded descendant JSONL sessions, and sibling artifact directories, but not shared blob storage.
-- Mission Control attach actions use the local `mctrl` CLI; Mission Control delete uses `mctrl session delete <session-id>`, which removes the session and its descendants plus their index entries and refuses live-locked sessions unless stopped first.
+- Mission Control attach actions use the local `mc` CLI (`mctrl` is honored as a legacy alias/fallback); Mission Control delete uses `mc session delete <session-id>` (`mctrl` is honored as a legacy alias/fallback), which removes the session and its descendants plus their index entries and refuses live-locked sessions unless stopped first.
 - Codex delete uses the local `codex app-server` archive flow plus cleanup of archived rollout files and local index/state entries.
 - Claude Code delete intentionally refuses live sessions, then removes matching `projects/`, `file-history/`, `session-env/`, `tasks/`, and stale `sessions/*.json` artifacts from local `.claude/` storage. This follows the official `.claude` storage guidance: Claude Code does not expose a delete subcommand, but its local session data can be removed directly.
 - Non-interactive mode (missing TTY stdin/stdout) prints a tab-separated snapshot and exits.

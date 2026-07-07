@@ -93,6 +93,7 @@ const NON_SESSION_PI_FAMILY_SUBCOMMANDS = new Set([
 ]);
 
 const MCTRL_COMMAND_NAME = "mctrl";
+const MC_COMMAND_NAME = "mc";
 const MISSION_CONTROL_COMMAND_NAMES = new Set([
 	MCTRL_COMMAND_NAME,
 	"mission-control-sidecar",
@@ -137,6 +138,7 @@ const SESSION_PROCESS_COMMS = new Set<string>([
 	CODEX_COMMAND_NAME,
 	CLAUDE_COMMAND_NAME,
 	...PI_FAMILY_COMMAND_NAMES,
+	MC_COMMAND_NAME,
 	...[...MISSION_CONTROL_COMMAND_NAMES].map((name) => name.slice(0, 15)),
 	"node",
 	"bun",
@@ -1015,6 +1017,36 @@ const isMctrlSessionBearingInvocation = (
 	return true;
 };
 
+// `mc` collides with Midnight Commander, so it is kept out of
+// MISSION_CONTROL_COMMAND_NAMES and only counts as Mission Control when the
+// command line carries an explicit --session signal (enforced in the parse
+// branch). Do NOT fold these helpers into the mctrl set — that would drop the
+// collision guard and let bare `mc` inflate Mission Control directory counts.
+const isMcPathToken = (token: string): boolean => {
+	const normalizedToken = normalizeCommandToken(token);
+	if (normalizedToken.length === 0) {
+		return false;
+	}
+	// Basename "mc"/"mc.js" or a path with an "mc" segment (/opt/mc/cli.js).
+	const segments = normalizedToken.toLowerCase().split(/[\\/]/u);
+	return segments.includes(MC_COMMAND_NAME) || segments.includes("mc.js");
+};
+
+const isDirectMcCommand = (
+	commandBasename: string,
+	firstArgumentBasename: string,
+): boolean =>
+	commandBasename === MC_COMMAND_NAME ||
+	firstArgumentBasename === MC_COMMAND_NAME;
+
+const isRuntimeWrappedMcCommand = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean =>
+	isRuntimeWrapperCommand(commandBasename) &&
+	argumentTokens.length >= 2 &&
+	isMcPathToken(argumentTokens[1]);
+
 export const getExternalAttachedDirectoryKey = (
 	source: SessionSource,
 	directory: string,
@@ -1218,6 +1250,22 @@ export const parseAttachedSessionIdsFromProcessList = (
 				externalAttachedSignals.directoryProcessCounts,
 				directoryKey,
 			);
+			continue;
+		}
+
+		// `mc` (Mission Control short alias) collides with Midnight Commander.
+		// Only an explicit --session signal qualifies it; bare `mc` never
+		// yields a session id and never adds a directory-count fallback.
+		const isMcInvocation =
+			isDirectMcCommand(commandBasename, firstArgumentBasename) ||
+			isRuntimeWrappedMcCommand(commandBasename, argumentTokens);
+		if (isMcInvocation) {
+			const attachedSessionIdMatch = commandLine.match(
+				ATTACHED_SESSION_ID_PATTERN,
+			);
+			if (attachedSessionIdMatch) {
+				externalAttachedSignals.sessionIds.add(attachedSessionIdMatch[2]);
+			}
 			continue;
 		}
 

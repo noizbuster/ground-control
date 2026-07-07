@@ -184,7 +184,7 @@ export const getAttachLaunchSpec = (
 
 	const fallbackDirectory = options?.fallbackDirectory ?? process.cwd();
 	const resolveExecutable =
-		options?.resolveExecutable ?? ((name: string) => which(name) ?? name);
+		options?.resolveExecutable ?? ((name: string) => which(name) ?? undefined);
 	const resolveCommand = (name: string): string =>
 		resolveExecutable(name) ?? name;
 	const cwd = sanitizeLaunchDirectory(session.directory, fallbackDirectory);
@@ -229,8 +229,10 @@ export const getAttachLaunchSpec = (
 	}
 
 	if (session.sessionSource === "mission-control") {
+		const resolvedExecutable =
+			resolveExecutable("mc") ?? resolveExecutable("mctrl") ?? "mctrl";
 		return {
-			cmd: [resolveCommand("mctrl"), "--session", session.id],
+			cmd: [resolvedExecutable, "--session", session.id],
 			cwd,
 		};
 	}
