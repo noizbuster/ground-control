@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import {
+	type BorderSides,
 	Box,
 	type BoxRenderable,
 	bold,
@@ -26,7 +27,6 @@ import {
 	ScrollBox,
 	type ScrollBoxRenderable,
 	Text,
-	TextBufferView,
 	type TextRenderable,
 	t,
 } from "@opentui/core";
@@ -47,6 +47,7 @@ import {
 	isSessionProcessComm,
 	parseAttachedSessionIdsFromProcessList,
 } from "./lib/attachedSessionSignals";
+import { handleDetailMouseDown as handleDetailMouseDownEvent } from "./lib/detailMouse";
 import {
 	clampGridScrollTop,
 	clampSelection,
@@ -54,6 +55,7 @@ import {
 	getRenderedGridColumnCount,
 	moveSelectionInGrid,
 } from "./lib/gridScroll";
+import { patchTextBufferViewSelection } from "./lib/opentuiSelectionPatch";
 import {
 	createRefreshCoordinator,
 	type RefreshRequestId,
@@ -76,6 +78,10 @@ import {
 	getAttachLaunchSpec,
 	getSessionSourceLabel,
 } from "./lib/sessionSource";
+import {
+	getTextSelectionText,
+	isTextSelectionInProgress,
+} from "./lib/textSelection";
 import { which } from "./lib/which";
 import {
 	type HierarchyFilterMode,
@@ -85,7 +91,10 @@ import {
 	SessionStatus,
 	type SubagentSession,
 } from "./types";
-import { createDetailPanelContent } from "./ui/DetailPanel";
+import {
+	createDetailPanelContent,
+	getDetailPanelContentWidth,
+} from "./ui/DetailPanel";
 import {
 	createHierarchyViewContent,
 	getHierarchyTimelineContextWidth,
@@ -112,6 +121,10 @@ const DETAIL_CONTAINER_ID = "session-detail-container";
 const DETAIL_FRAME_OVERLAY_ID = "session-detail-frame-overlay";
 const DETAIL_SCROLLBOX_ID = "session-detail-scrollbox";
 const DETAIL_CONTENT_ID = "session-detail-content";
+const DETAIL_SCROLLBOX_WRAPPER_PADDING = 1;
+const DETAIL_SCROLLBOX_SCROLLBAR_WIDTH = 2;
+const DETAIL_SCROLL_SECTION_BORDER_COLOR = "#1E293B";
+const DETAIL_SCROLL_SECTION_BORDER: BorderSides[] = ["top", "bottom"];
 const HIERARCHY_CONTAINER_ID = "session-hierarchy-container";
 const HIERARCHY_FRAME_OVERLAY_ID = "session-hierarchy-frame-overlay";
 const HIERARCHY_HEADER_ID = "session-hierarchy-header";
@@ -194,18 +207,6 @@ const HIERARCHY_FILTER_CYCLE: HierarchyFilterMode[] = [
 ];
 const HIERARCHY_VIEW_CYCLE: HierarchyViewMode[] = ["tree", "flow"];
 const HIERARCHY_INFO_CYCLE: HierarchyInfoMode[] = ["standard", "detailed"];
-
-interface SelectionSnapshot {
-	isDragging?: boolean;
-	isStart?: boolean;
-	getSelectedText(): string;
-}
-
-const getSelectionText = (selection: SelectionSnapshot | null): string => {
-	return typeof selection?.getSelectedText === "function"
-		? selection.getSelectedText().trim()
-		: "";
-};
 
 const APP_PALETTE = {
 	bg: "#020617",
@@ -425,6 +426,31 @@ const isBoxRenderable = (
 		renderable !== null &&
 		"backgroundColor" in renderable
 	);
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null;
+
+const normalizeDetailSectionBorders = (node: unknown): void => {
+	if (!isRecord(node)) {
+		return;
+	}
+
+	const props = isRecord(node.props) ? node.props : null;
+	if (
+		props?.border === true &&
+		props.borderColor === DETAIL_SCROLL_SECTION_BORDER_COLOR
+	) {
+		props.border = [...DETAIL_SCROLL_SECTION_BORDER];
+	}
+
+	if (!Array.isArray(node.children)) {
+		return;
+	}
+
+	for (const child of node.children) {
+		normalizeDetailSectionBorders(child);
+	}
 };
 
 const clearTerminalScreen = () => {
@@ -955,30 +981,6 @@ const isSideviewShortcut = (key: KeyEvent): boolean => {
 	});
 };
 
-const patchTextBufferViewSelection = () => {
-	const proto = TextBufferView.prototype as unknown as {
-		guard(): void;
-		getSelection(): { start: number; end: number } | null;
-		lib: { textBufferViewGetSelectionInfo(viewPtr: unknown): unknown };
-		viewPtr: unknown;
-	};
-	proto.getSelection = function (): { start: number; end: number } | null {
-		proto.guard.call(this);
-		const packedInfo = this.lib.textBufferViewGetSelectionInfo(this.viewPtr);
-		const asBigInt =
-			typeof packedInfo === "bigint"
-				? packedInfo
-				: BigInt(packedInfo as number);
-		if (asBigInt === 0xffff_ffff_ffff_ffffn) {
-			return null;
-		}
-		return {
-			start: Number(asBigInt >> 32n),
-			end: Number(asBigInt & 0xffff_ffffn),
-		};
-	};
-};
-
 const main = async () => {
 	const renderer = await createCliRenderer({
 		exitOnCtrlC: false,
@@ -1278,6 +1280,16 @@ const main = async () => {
 		render();
 	};
 
+	const handleDetailMouseDown = (
+		event: Parameters<typeof handleDetailMouseDownEvent>[0],
+	) =>
+		handleDetailMouseDownEvent(event, {
+			isDetailMode: state.isDetailMode,
+			isSideviewMode: state.isSideviewMode,
+			setFocusedPane,
+			closeDetailView,
+		});
+
 	const stopPolling = () => {
 		if (interval) {
 			clearInterval(interval);
@@ -1355,21 +1367,12 @@ const main = async () => {
 							id: DETAIL_CONTAINER_ID,
 							width: 0,
 							height: "100%",
+							border: true,
+							borderColor: "#334155",
 							backgroundColor: "#0F172A",
+							overflow: "hidden",
 							visible: false,
-							onMouseDown: (event) => {
-								event.preventDefault();
-								event.stopPropagation();
-								setFocusedPane("detail");
-								if (
-									event.button === MouseButton.RIGHT &&
-									state.isDetailMode &&
-									!state.isSideviewMode
-								) {
-									event.preventDefault();
-									closeDetailView();
-								}
-							},
+							onMouseDown: handleDetailMouseDown,
 							onMouseScroll: (event) => {
 								event.preventDefault();
 								event.stopPropagation();
@@ -1383,20 +1386,8 @@ const main = async () => {
 								height: "100%",
 								margin: 2,
 								backgroundColor: "#0F172A",
-								wrapperOptions: { padding: 1 },
-								onMouseDown: (event) => {
-									event.preventDefault();
-									event.stopPropagation();
-									setFocusedPane("detail");
-									if (
-										event.button === MouseButton.RIGHT &&
-										state.isDetailMode &&
-										!state.isSideviewMode
-									) {
-										event.preventDefault();
-										closeDetailView();
-									}
-								},
+								wrapperOptions: { padding: DETAIL_SCROLLBOX_WRAPPER_PADDING },
+								onMouseDown: handleDetailMouseDown,
 								onMouseScroll: (event) => {
 									event.preventDefault();
 									event.stopPropagation();
@@ -1414,31 +1405,14 @@ const main = async () => {
 							position: "absolute",
 							top: 0,
 							left: 0,
-							width: "100%",
-							height: "100%",
-							border: true,
+							width: 0,
+							height: 0,
+							visible: false,
+							border: false,
 							borderColor: "#334155",
 							backgroundColor: "transparent",
 							shouldFill: false,
 							zIndex: 10,
-						}),
-						Box({
-							position: "absolute",
-							top: -1,
-							left: 0,
-							width: "100%",
-							height: 1,
-							backgroundColor: APP_PALETTE.bg,
-							zIndex: 20,
-						}),
-						Box({
-							position: "absolute",
-							bottom: -1,
-							left: 0,
-							width: "100%",
-							height: 1,
-							backgroundColor: APP_PALETTE.bg,
-							zIndex: 20,
 						}),
 					),
 					Box(
@@ -2032,21 +2006,36 @@ const main = async () => {
 				? innerWidth
 				: detailWidth
 			: 0;
+		const detailScrollBoxWidth = Math.max(detailPaneWidth - 4, 1);
+		const detailVerticalScrollbarWidth = showDetail
+			? Math.max(
+					getSafeNumber(
+						existingDetailScrollBox.verticalScrollBar.width,
+						DETAIL_SCROLLBOX_SCROLLBAR_WIDTH,
+					),
+					DETAIL_SCROLLBOX_SCROLLBAR_WIDTH,
+				)
+			: 0;
+		const detailContentWidth = getDetailPanelContentWidth(
+			detailScrollBoxWidth,
+			DETAIL_SCROLLBOX_WRAPPER_PADDING,
+			detailVerticalScrollbarWidth,
+		);
 
 		existingDetailContainer.visible = showDetail;
 		existingDetailContainer.width = detailPaneWidth;
 		existingDetailContainer.height = contentHeight;
-
-		existingDetailFrameOverlay.visible = showDetail;
-		existingDetailFrameOverlay.width = "100%";
-		existingDetailFrameOverlay.height = "100%";
-		existingDetailFrameOverlay.borderColor =
+		existingDetailContainer.borderColor =
 			showDetail && state.focusedPane === "detail"
 				? APP_PALETTE.accent
 				: "#334155";
 
+		existingDetailFrameOverlay.visible = false;
+		existingDetailFrameOverlay.width = 0;
+		existingDetailFrameOverlay.height = 0;
+
 		existingDetailScrollBox.visible = showDetail;
-		existingDetailScrollBox.width = Math.max(detailPaneWidth - 4, 1);
+		existingDetailScrollBox.width = detailScrollBoxWidth;
 		existingDetailScrollBox.height = Math.max(contentHeight - 6, 1);
 
 		existingHierarchyContainer.visible = showHierarchy;
@@ -2101,19 +2090,19 @@ const main = async () => {
 		}
 
 		if (showDetail) {
-			replaceChildren(detailContent, [
-				createDetailPanelContent({
-					session: selectedSession,
-					messageCount: selectedSession?.id
-						? state.messageCountBySessionId[selectedSession.id]
-						: undefined,
-					sessions: state.allSessions,
-					messageCountBySessionId: state.messageCountBySessionId,
-					status: selectedState.status,
-					summary: selectedState.summary,
-					width: Math.max(detailPaneWidth - 4, 1),
-				}),
-			]);
+			const detailPanelContent = createDetailPanelContent({
+				session: selectedSession,
+				messageCount: selectedSession?.id
+					? state.messageCountBySessionId[selectedSession.id]
+					: undefined,
+				sessions: state.allSessions,
+				messageCountBySessionId: state.messageCountBySessionId,
+				status: selectedState.status,
+				summary: selectedState.summary,
+				width: detailContentWidth,
+			});
+			normalizeDetailSectionBorders(detailPanelContent);
+			replaceChildren(detailContent, [detailPanelContent]);
 		} else if (detailContent.getChildren().length > 0) {
 			replaceChildren(detailContent, []);
 		}
@@ -2459,8 +2448,7 @@ const main = async () => {
 	};
 
 	const hasActiveTextSelection = (): boolean => {
-		const selection = renderer.getSelection() as SelectionSnapshot | null;
-		return Boolean(selection?.isDragging);
+		return isTextSelectionInProgress(renderer.getSelection());
 	};
 
 	const applyRefreshResponseState = (response: RefreshResponse) => {
@@ -2499,7 +2487,7 @@ const main = async () => {
 	};
 
 	const clearCompletedTextSelection = (): boolean => {
-		const selection = renderer.getSelection() as SelectionSnapshot | null;
+		const selection = renderer.getSelection();
 		if (!selection || hasActiveTextSelection()) {
 			return false;
 		}
@@ -2510,12 +2498,12 @@ const main = async () => {
 	};
 
 	const copyCompletedTextSelection = (): boolean => {
-		const selection = renderer.getSelection() as SelectionSnapshot | null;
+		const selection = renderer.getSelection();
 		if (!selection || hasActiveTextSelection()) {
 			return false;
 		}
 
-		const selectedText = getSelectionText(selection);
+		const selectedText = getTextSelectionText(selection);
 		if (!selectedText) {
 			return clearCompletedTextSelection();
 		}
@@ -3578,7 +3566,7 @@ const main = async () => {
 	};
 
 	renderer.on("resize", scheduleRender);
-	renderer.on("selection", (selection: SelectionSnapshot | null) => {
+	renderer.on("selection", (selection) => {
 		if (!selection) {
 			clearCompletedTextSelection();
 			return;

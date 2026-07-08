@@ -14,7 +14,7 @@ import {
 import { type Session, SessionStatus } from "../types";
 import { getSessionAgentDisplayName } from "./sessionAgentDisplay";
 
-type PanelSize = number | `${number}%` | "100%";
+export type PanelSize = number | `${number}%` | "100%";
 type MessageCountBySessionId = Partial<Record<string, number>>;
 type RelationBasis = "project" | "directory" | "standalone";
 
@@ -73,6 +73,8 @@ const PANEL_COLORS = {
 const DETAIL_TWO_COLUMN_MIN_WIDTH = 96;
 const DETAIL_COLUMN_GAP = 2;
 const DETAIL_TWO_COLUMN_MIN_METRIC_COLUMNS = 2;
+const DETAIL_PANEL_SCROLLBOX_WRAPPER_PADDING = 2;
+const DETAIL_PANEL_SCROLLBOX_SCROLLBAR_WIDTH = 2;
 
 const STATUS_COLOR_MAP: Record<SessionStatus, `#${string}`> = {
 	[SessionStatus.pending]: "#F59E0B",
@@ -524,6 +526,21 @@ const getMetricColumnCount = (width?: number): number => {
 	}
 
 	return 1;
+};
+
+export const getDetailPanelContentWidth = (
+	width: PanelSize,
+	wrapperPadding: number,
+	verticalScrollbarWidth = 0,
+): PanelSize => {
+	if (typeof width !== "number") {
+		return width;
+	}
+
+	return Math.max(
+		width - Math.floor(wrapperPadding) * 2 - Math.floor(verticalScrollbarWidth),
+		1,
+	);
 };
 
 const getSummaryText = (params: {
@@ -1112,6 +1129,12 @@ export const DetailPanel = ({
 	width = "100%",
 	height = "100%",
 }: DetailPanelProps) => {
+	const contentWidth = getDetailPanelContentWidth(
+		width,
+		DETAIL_PANEL_SCROLLBOX_WRAPPER_PADDING,
+		DETAIL_PANEL_SCROLLBOX_SCROLLBAR_WIDTH,
+	);
+
 	return ScrollBox(
 		{
 			id: scrollBoxId,
@@ -1120,7 +1143,7 @@ export const DetailPanel = ({
 			border: true,
 			borderColor: PANEL_COLORS.border,
 			backgroundColor: PANEL_COLORS.surface,
-			wrapperOptions: { padding: 2 },
+			wrapperOptions: { padding: DETAIL_PANEL_SCROLLBOX_WRAPPER_PADDING },
 		},
 		createDetailPanelContent({
 			session,
@@ -1129,7 +1152,7 @@ export const DetailPanel = ({
 			messageCountBySessionId,
 			status,
 			summary,
-			width,
+			width: contentWidth,
 		}),
 	);
 };
