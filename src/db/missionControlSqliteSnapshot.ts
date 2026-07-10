@@ -182,9 +182,7 @@ export const getMissionControlSnapshotFromSqlite = (params: {
 			const directory =
 				row.workspace_path ?? fallbacks.directory.get(row.session_id) ?? "";
 			const titleSource = row.title ?? fallbacks.title.get(row.session_id);
-			const title = titleSource
-				? truncateTitle(titleSource)
-				: `session_${row.session_id}`;
+			const title = titleSource ? truncateTitle(titleSource) : row.session_id;
 			const modelFallback = fallbacks.model.get(row.session_id);
 			const timeCreated = normalizeTimestampMs(row.created_at) ?? 0;
 			const timeUpdated =

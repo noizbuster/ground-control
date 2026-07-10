@@ -400,7 +400,7 @@ describe("getMissionControlSnapshotFromSqlite", () => {
 		expect(session.sourceMetadata?.rawSource).toBe(fixture.dbPath);
 	});
 
-	it("defaults title to session_<id> when sessions.title is null", () => {
+	it("defaults title to the raw session id when sessions.title is null", () => {
 		const fixture = createMcSqliteFixture({
 			sessions: [
 				{
@@ -419,7 +419,7 @@ describe("getMissionControlSnapshotFromSqlite", () => {
 		if (!result.ok) {
 			return;
 		}
-		expect(result.value.sessions[0].title).toBe("session_abc123");
+		expect(result.value.sessions[0].title).toBe("abc123");
 	});
 
 	it("falls back time_updated to updated_at when last_activity_at is null", () => {

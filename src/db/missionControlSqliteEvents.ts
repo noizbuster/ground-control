@@ -47,10 +47,9 @@ const parsePayloadEvent = (
 	}
 };
 
-// Scans session_events.payload_json latest-first (seq DESC) per session and
-// extracts directory (event.sessionTree.cwd), title (event.message on
-// run.command.received), and model (event.modelProviderSelection) fallbacks.
-// Stops per session once each field is found or the per-session scan cap hits.
+// Queries explicit metadata titles independently so old renames remain visible,
+// then scans session_events.payload_json latest-first (seq DESC) per session for
+// directory, prompt-title, and model fallbacks. The generic scan remains capped.
 // Only the requested session ids are queried; the caller decides who needs
 // fallbacks based on raw column nullity.
 export const fetchEventMetadataFallbacks = (
@@ -59,6 +58,7 @@ export const fetchEventMetadataFallbacks = (
 ): McMetadataFallbacksBySession => {
 	const directoryBySession = new Map<string, string>();
 	const titleBySession = new Map<string, string>();
+	const promptTitleBySession = new Map<string, string>();
 	const modelBySession = new Map<
 		string,
 		{ providerID: string; currentModelID: string }
@@ -73,6 +73,30 @@ export const fetchEventMetadataFallbacks = (
 	}
 
 	const placeholders = sessionIds.map(() => "?").join(", ");
+	const metadataTitleRows = database
+		.prepare(
+			`SELECT session_id, seq, type, payload_json
+			 FROM session_events
+			 WHERE session_id IN (${placeholders})
+			   AND type = 'session.metadata.updated'
+			 ORDER BY session_id, seq DESC`,
+		)
+		.all(...sessionIds) as unknown as EventPayloadRow[];
+
+	for (const row of metadataTitleRows) {
+		if (titleBySession.has(row.session_id)) {
+			continue;
+		}
+		const event = parsePayloadEvent(row.payload_json);
+		if (!event || !isJsonObject(event.sessionTree)) {
+			continue;
+		}
+		const name = (event.sessionTree as { name?: unknown }).name;
+		if (typeof name === "string" && name.length > 0) {
+			titleBySession.set(row.session_id, name);
+		}
+	}
+
 	const rows = database
 		.prepare(
 			`SELECT session_id, seq, type, payload_json
@@ -83,7 +107,7 @@ export const fetchEventMetadataFallbacks = (
 		.all(...sessionIds) as unknown as EventPayloadRow[];
 
 	const directoryDone = new Set<string>();
-	const titleDone = new Set<string>();
+	const promptTitleDone = new Set<string>();
 	const modelDone = new Set<string>();
 	const scannedBySession = new Map<string, number>();
 
@@ -108,13 +132,13 @@ export const fetchEventMetadataFallbacks = (
 		}
 
 		if (
-			!titleDone.has(row.session_id) &&
+			!promptTitleDone.has(row.session_id) &&
 			row.type === "run.command.received" &&
 			typeof event.message === "string" &&
 			event.message.length > 0
 		) {
-			titleBySession.set(row.session_id, event.message);
-			titleDone.add(row.session_id);
+			promptTitleBySession.set(row.session_id, event.message);
+			promptTitleDone.add(row.session_id);
 		}
 
 		if (!modelDone.has(row.session_id)) {
@@ -130,6 +154,12 @@ export const fetchEventMetadataFallbacks = (
 					modelDone.add(row.session_id);
 				}
 			}
+		}
+	}
+
+	for (const [sessionId, promptTitle] of promptTitleBySession) {
+		if (!titleBySession.has(sessionId)) {
+			titleBySession.set(sessionId, promptTitle);
 		}
 	}
 
