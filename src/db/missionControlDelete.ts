@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 import { which } from "../lib/which";
 import { createQueryFailedDatabaseError, type DatabaseResult } from "./index";
 
@@ -10,6 +11,9 @@ export interface MissionControlDeleteResult {
 export interface DeleteMissionControlSessionOptions {
 	force?: boolean;
 	mcExecutable?: string;
+	databasePath?: string;
+	expectedTreeToken?: string;
+	environment?: NodeJS.ProcessEnv;
 }
 
 const MISSION_CONTROL_DELETE_LINE_PATTERN =
@@ -18,10 +22,12 @@ const MISSION_CONTROL_DELETE_LINE_PATTERN =
 const runMissionControlDelete = (
 	executable: string,
 	args: string[],
+	environment: NodeJS.ProcessEnv,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
 	return new Promise((resolve, reject) => {
 		const child = spawn(executable, args, {
 			stdio: ["ignore", "pipe", "pipe"],
+			env: environment,
 		});
 		let stdoutText = "";
 		let stderrText = "";
@@ -50,11 +56,21 @@ export const deleteMissionControlSession = async (
 	if (options.force) {
 		args.push("--force");
 	}
+	if (options.expectedTreeToken) {
+		args.push("--expected-tree-token", options.expectedTreeToken);
+	}
+	const environment = {
+		...(options.environment ?? process.env),
+		...(options.databasePath
+			? { MCTRL_DATA_DIR: dirname(options.databasePath) }
+			: {}),
+	};
 
 	try {
 		const { stdout, stderr, exitCode } = await runMissionControlDelete(
 			executable,
 			args,
+			environment,
 		);
 
 		if (exitCode !== 0) {

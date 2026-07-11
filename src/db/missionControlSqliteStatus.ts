@@ -16,6 +16,7 @@ export type MappedSessionStatus = {
 export const mapMissionControlSessionStatus = (
 	status: string | null,
 	awaitingReason: string | null,
+	lifecycleReason?: string,
 ): MappedSessionStatus => {
 	switch (status) {
 		case "running":
@@ -46,7 +47,10 @@ export const mapMissionControlSessionStatus = (
 		case "idle":
 			return {
 				status: SessionStatus.waiting,
-				statusDetail: "Idle between prompts",
+				statusDetail:
+					lifecycleReason === "aborted"
+						? "Idle (aborted)"
+						: "Idle between prompts",
 			};
 		case "stopped":
 			return { status: SessionStatus.completed, statusDetail: undefined };

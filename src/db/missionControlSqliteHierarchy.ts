@@ -1,18 +1,9 @@
-// Mission Control SQLite hierarchy assembly.
-//
-// Takes the flat session list produced by the snapshot module and builds the
-// parent/child tree using strict precedence:
-//   1. sessions.parent_session_id is authoritative (roots = null parent).
-//   2. sessions.root_session_id recovers orphans whose direct parent row is
-//      missing by re-linking them under the named root.
-//   3. session_relations (kind 'subagent' | 'parent_child') fills missing
-//      parent links for sessions whose parent_session_id is null — NEVER
-//      overriding an explicit parent_session_id.
-// Unrecovered orphans surface a "root session not found" session issue.
-// Child counts and the active-children status override mirror src/db/pi.ts.
-
 import { isActiveStatus } from "../lib/hierarchyHelpers";
 import { type Session, SessionStatus, type SubagentSession } from "../types";
+import {
+	computeMcCanonicalTreeToken,
+	getMcCanonicalTreeNodes,
+} from "./missionControlSqliteTreeToken";
 
 export interface McSessionRelationInput {
 	readonly parent_session_id: string | null;
@@ -20,35 +11,84 @@ export interface McSessionRelationInput {
 	readonly kind: string;
 }
 
-const FILL_RELATION_KINDS = new Set(["subagent", "parent_child"]);
+const RELATION_KINDS = new Set(["subagent", "parent_child"]);
+const MAX_COMPONENT_SESSIONS = 4_096;
 
-const resolveRootSessionId = (
-	sessionId: string,
-	effectiveParent: ReadonlyMap<string, string | null>,
-	sessionsById: ReadonlyMap<string, unknown>,
-): string | undefined => {
-	const seen = new Set<string>([sessionId]);
-	let parentId = effectiveParent.get(sessionId) ?? null;
-	while (parentId !== null) {
-		if (seen.has(parentId)) {
-			return undefined;
+const collectComponent = (
+	start: string,
+	adjacency: ReadonlyMap<string, ReadonlySet<string>>,
+): Set<string> => {
+	const component = new Set([start]);
+	const pending = [start];
+	while (pending.length > 0) {
+		const current = pending.shift();
+		if (current === undefined) break;
+		for (const related of adjacency.get(current) ?? []) {
+			if (component.has(related)) continue;
+			component.add(related);
+			pending.push(related);
 		}
-		seen.add(parentId);
-		if (!sessionsById.has(parentId)) {
-			return undefined;
-		}
-		const nextParent = effectiveParent.get(parentId) ?? null;
-		if (nextParent === null) {
-			return parentId;
-		}
-		parentId = nextParent;
 	}
-	return sessionId;
+	return component;
 };
+
+const hasCycle = (
+	component: ReadonlySet<string>,
+	parents: ReadonlyMap<string, string | null>,
+): boolean => {
+	for (const sessionId of component) {
+		const seen = new Set<string>();
+		let current: string | null = sessionId;
+		while (current !== null && component.has(current)) {
+			if (seen.has(current)) return true;
+			seen.add(current);
+			current = parents.get(current) ?? null;
+		}
+	}
+	return false;
+};
+
+const addEdge = (
+	childId: string,
+	parentId: string,
+	sessions: ReadonlyMap<string, Session>,
+	adjacency: Map<string, Set<string>>,
+	issues: Map<string, string>,
+): void => {
+	if (childId === parentId) {
+		issues.set(childId, "self-parent edge");
+		return;
+	}
+	if (!sessions.has(parentId)) {
+		issues.set(childId, `parent ${JSON.stringify(parentId)} not found`);
+		return;
+	}
+	adjacency.get(childId)?.add(parentId);
+	adjacency.get(parentId)?.add(childId);
+};
+
+const cloneWithCanonicalMetadata = (
+	session: Session,
+	parentId: string | null,
+	token: string,
+): Session => ({
+	...session,
+	parent_id: parentId,
+	sourceMetadata: {
+		...session.sourceMetadata,
+		missionControl: session.sourceMetadata?.missionControl
+			? {
+					...session.sourceMetadata.missionControl,
+					effectiveParentId: parentId,
+					treeToken: token,
+				}
+			: undefined,
+	},
+	subagentSessions: [],
+});
 
 export const assembleSqliteHierarchy = (params: {
 	flatSessions: readonly Session[];
-	rootSessionIdBySessionId: ReadonlyMap<string, string | null>;
 	relations: readonly McSessionRelationInput[];
 	statusBySessionId: Partial<Record<string, SessionStatus>>;
 	sourceLabel: string;
@@ -57,103 +97,131 @@ export const assembleSqliteHierarchy = (params: {
 	statusBySessionId: Partial<Record<string, SessionStatus>>;
 	sessionIssues: Partial<Record<string, string>>;
 } => {
-	const { flatSessions, rootSessionIdBySessionId, relations, sourceLabel } =
-		params;
-	const statusBySessionId = params.statusBySessionId;
-
-	const sessionsById = new Map<string, Session>();
-	for (const session of flatSessions) {
-		sessionsById.set(session.id, session);
-	}
-
-	const effectiveParent = new Map<string, string | null>();
-	for (const session of flatSessions) {
-		effectiveParent.set(session.id, session.parent_id);
-	}
-
-	for (const session of flatSessions) {
-		const explicitParent = session.parent_id;
-		if (explicitParent === null || sessionsById.has(explicitParent)) {
+	const sessions = new Map(
+		params.flatSessions.map((session) => [session.id, session]),
+	);
+	const parents = new Map<string, string | null>();
+	const adjacency = new Map<string, Set<string>>(
+		params.flatSessions.map((session) => [session.id, new Set<string>()]),
+	);
+	const issues = new Map<string, string>();
+	const fallbacks = new Map<string, McSessionRelationInput[]>();
+	for (const relation of params.relations) {
+		if (
+			!RELATION_KINDS.has(relation.kind) ||
+			relation.parent_session_id === null
+		)
 			continue;
-		}
-		const rootId = rootSessionIdBySessionId.get(session.id) ?? null;
-		if (rootId !== null && rootId !== session.id && sessionsById.has(rootId)) {
-			effectiveParent.set(session.id, rootId);
-		}
+		const child = sessions.get(relation.child_session_id);
+		if (child === undefined || child.parent_id !== null) continue;
+		const candidates = fallbacks.get(child.id) ?? [];
+		candidates.push(relation);
+		fallbacks.set(child.id, candidates);
 	}
-
-	for (const session of flatSessions) {
+	for (const session of params.flatSessions) {
 		if (session.parent_id !== null) {
+			parents.set(session.id, session.parent_id);
+			addEdge(session.id, session.parent_id, sessions, adjacency, issues);
 			continue;
 		}
-		for (const relation of relations) {
-			if (
-				relation.child_session_id !== session.id ||
-				!FILL_RELATION_KINDS.has(relation.kind) ||
-				relation.parent_session_id === null
-			) {
-				continue;
-			}
-			const candidateParent = relation.parent_session_id;
-			if (candidateParent !== session.id && sessionsById.has(candidateParent)) {
-				effectiveParent.set(session.id, candidateParent);
-				break;
+		const candidates = fallbacks.get(session.id) ?? [];
+		if (candidates.length === 0) {
+			parents.set(session.id, null);
+			continue;
+		}
+		if (candidates.length > 1)
+			issues.set(session.id, "multiple eligible parent relations");
+		const selected = candidates[0]?.parent_session_id ?? null;
+		parents.set(session.id, selected);
+		for (const candidate of candidates) {
+			if (candidate.parent_session_id !== null) {
+				addEdge(
+					session.id,
+					candidate.parent_session_id,
+					sessions,
+					adjacency,
+					issues,
+				);
 			}
 		}
 	}
 
-	const rootSessionsById = new Map<string, Session>();
-	for (const session of flatSessions) {
-		if ((effectiveParent.get(session.id) ?? null) !== null) {
-			continue;
-		}
-		rootSessionsById.set(session.id, {
-			...session,
-			subagentSessions: [],
-		});
-	}
-
+	const statusBySessionId = { ...params.statusBySessionId };
 	const sessionIssues: Partial<Record<string, string>> = {};
-	for (const session of flatSessions) {
-		if ((effectiveParent.get(session.id) ?? null) === null) {
+	const roots: Session[] = [];
+	const visited = new Set<string>();
+	for (const sessionId of sessions.keys()) {
+		if (visited.has(sessionId)) continue;
+		const component = collectComponent(sessionId, adjacency);
+		for (const member of component) visited.add(member);
+		if (component.size > MAX_COMPONENT_SESSIONS) {
+			for (const member of component) {
+				sessionIssues[member] =
+					`${params.sourceLabel} unstable session hierarchy: component exceeds ${MAX_COMPONENT_SESSIONS} sessions.`;
+			}
 			continue;
 		}
-		const rootId = resolveRootSessionId(
-			session.id,
-			effectiveParent,
-			sessionsById,
+		const cycle = hasCycle(component, parents);
+		const unstable =
+			cycle || [...component].some((member) => issues.has(member));
+		if (unstable) {
+			for (const member of component) {
+				const detail =
+					issues.get(member) ??
+					(cycle ? "cycle detected" : "connected component conflict");
+				sessionIssues[member] =
+					`${params.sourceLabel} unstable session hierarchy: ${detail}.`;
+			}
+			continue;
+		}
+		const rootId = [...component].find(
+			(member) => (parents.get(member) ?? null) === null,
 		);
-		const rootSession = rootId ? rootSessionsById.get(rootId) : undefined;
-		if (!rootSession) {
-			sessionIssues[session.id] = `${sourceLabel} root session not found.`;
-			continue;
+		if (rootId === undefined) continue;
+		const rootSource = sessions.get(rootId);
+		if (rootSource === undefined) continue;
+		const canonical = new Map<string, Session>();
+		for (const member of component) {
+			const source = sessions.get(member);
+			if (source === undefined) continue;
+			canonical.set(
+				member,
+				cloneWithCanonicalMetadata(
+					source,
+					parents.get(member) ?? null,
+					computeMcCanonicalTreeToken(member, parents, component),
+				),
+			);
 		}
-		rootSession.subagentSessions = [
-			...(rootSession.subagentSessions ?? []),
-			session as SubagentSession,
-		];
-	}
-
-	for (const rootSession of rootSessionsById.values()) {
-		const children = rootSession.subagentSessions ?? [];
-		const openChildCount = children.filter((child) =>
+		const root = canonical.get(rootId);
+		if (root === undefined) continue;
+		const subagents: SubagentSession[] = [];
+		for (const { sessionId: childId } of getMcCanonicalTreeNodes(
+			rootId,
+			parents,
+			component,
+		).slice(1)) {
+			const child = canonical.get(childId);
+			if (child !== undefined) subagents.push(child);
+		}
+		root.subagentSessions = subagents;
+		const openChildCount = root.subagentSessions.filter((child) =>
 			isActiveStatus(child.status),
 		).length;
-		const closedChildCount = children.length - openChildCount;
-		rootSession.sourceMetadata = {
-			...rootSession.sourceMetadata,
+		root.sourceMetadata = {
+			...root.sourceMetadata,
 			openChildCount,
-			closedChildCount,
+			closedChildCount: root.subagentSessions.length - openChildCount,
 		};
 		if (openChildCount > 0) {
-			rootSession.status = SessionStatus.running;
-			rootSession.statusDetail = `Awaiting ${openChildCount} child session${openChildCount === 1 ? "" : "s"}`;
-			statusBySessionId[rootSession.id] = SessionStatus.running;
+			root.status = SessionStatus.running;
+			root.statusDetail = `Awaiting ${openChildCount} child session${openChildCount === 1 ? "" : "s"}`;
+			statusBySessionId[root.id] = SessionStatus.running;
 		}
+		roots.push(root);
 	}
-
 	return {
-		sessions: [...rootSessionsById.values()].sort(
+		sessions: roots.sort(
 			(left, right) => right.time_updated - left.time_updated,
 		),
 		statusBySessionId,

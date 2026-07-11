@@ -267,7 +267,10 @@ describe("sessionSource helpers", () => {
 	it("prepends the resolved attach executable directory to PATH", () => {
 		expect(
 			getAttachLaunchEnvironment(
-				{ cmd: ["/home/noiz/.bun/bin/omp", "--resume", "session"], cwd: "/repo" },
+				{
+					cmd: ["/home/noiz/.bun/bin/omp", "--resume", "session"],
+					cwd: "/repo",
+				},
 				{ PATH: "/repo/node_modules/.bin:/usr/bin", HOME: "/home/noiz" },
 			),
 		).toEqual({
@@ -313,9 +316,18 @@ describe("mission-control source", () => {
 		expect(getDefaultSessionCapabilities("mission-control")).toEqual({
 			attach: true,
 			delete: true,
-			abortChildren: false,
+			abortChildren: true,
 			hierarchy: true,
 		});
+	});
+
+	it("enables child-only abort for mission-control sessions", () => {
+		expect(
+			canAbortSessionChildren({
+				sessionSource: "mission-control",
+				capabilities: undefined,
+			}),
+		).toBe(true);
 	});
 
 	it("returns the Mission Control label", () => {

@@ -597,12 +597,12 @@ describe("getMissionControlSnapshotFromSqlite — hierarchy + metadata enrichmen
 			return;
 		}
 		expect(result.value.sessions).toHaveLength(0);
-		expect(result.value.sessionIssues["orphan_child"]).toBe(
-			"Mission Control root session not found.",
+		expect(result.value.sessionIssues["orphan_child"]).toContain(
+			'parent "ghost_parent" not found',
 		);
 	});
 
-	it("recovers an orphan under root_session_id when the direct parent row is missing", () => {
+	it("ignores root_session_id when an explicit parent row is missing", () => {
 		const fixture = createMcSqliteFixture({
 			sessions: [
 				{
@@ -631,11 +631,10 @@ describe("getMissionControlSnapshotFromSqlite — hierarchy + metadata enrichmen
 		}
 		expect(result.value.sessions).toHaveLength(1);
 		expect(result.value.sessions[0].id).toBe("real_root");
-		expect(result.value.sessions[0].subagentSessions).toHaveLength(1);
-		expect(result.value.sessions[0].subagentSessions?.[0]?.id).toBe(
-			"recovered_child",
+		expect(result.value.sessions[0].subagentSessions).toEqual([]);
+		expect(result.value.sessionIssues["recovered_child"]).toContain(
+			"missing_direct_parent",
 		);
-		expect(result.value.sessionIssues["recovered_child"]).toBeUndefined();
 	});
 
 	it("fills a missing parent link via session_relations for a child with null parent_session_id, without overriding an explicit parent_session_id", () => {

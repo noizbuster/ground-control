@@ -9,8 +9,29 @@ export interface RefreshCoordinatorSnapshot {
 	readonly hasQueuedRefresh: boolean;
 }
 
+export interface RefreshRequestTicket {
+	readonly requestId: RefreshRequestId;
+	readonly shouldDispatch: boolean;
+}
+
+export type RefreshCompletionResult =
+	| { readonly ok: true }
+	| { readonly ok: false; readonly error: Error };
+
+export class RefreshCompletionError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "RefreshCompletionError";
+	}
+}
+
 export interface RefreshCoordinator {
-	requestRefresh(): RefreshRequestId | null;
+	requestRefresh(): RefreshRequestTicket;
+	waitForRefresh(requestId: RefreshRequestId): Promise<void>;
+	settleRefresh(
+		requestId: RefreshRequestId,
+		result: RefreshCompletionResult,
+	): void;
 	completeRefresh(requestId: RefreshRequestId): RefreshRequestId | null;
 	shouldApplyResponse(requestId: RefreshRequestId): boolean;
 	getSnapshot(): RefreshCoordinatorSnapshot;
@@ -21,6 +42,12 @@ interface RefreshCoordinatorState {
 	latestRequestId: RefreshRequestId | null;
 	activeRequestId: RefreshRequestId | null;
 	hasQueuedRefresh: boolean;
+}
+
+interface RefreshWaiter {
+	readonly requestId: RefreshRequestId;
+	readonly resolve: () => void;
+	readonly reject: (error: Error) => void;
 }
 
 const getPhase = (state: RefreshCoordinatorState): RefreshCoordinatorPhase => {
@@ -42,6 +69,7 @@ export const createRefreshCoordinator = (): RefreshCoordinator => {
 		activeRequestId: null,
 		hasQueuedRefresh: false,
 	};
+	const waiters: RefreshWaiter[] = [];
 
 	const issueRequest = (): RefreshRequestId => {
 		const requestId = state.nextRequestId;
@@ -55,10 +83,27 @@ export const createRefreshCoordinator = (): RefreshCoordinator => {
 		requestRefresh: () => {
 			if (state.activeRequestId !== null) {
 				state.hasQueuedRefresh = true;
-				return null;
+				return { requestId: state.nextRequestId, shouldDispatch: false };
 			}
 
-			return issueRequest();
+			return { requestId: issueRequest(), shouldDispatch: true };
+		},
+
+		waitForRefresh: (requestId) =>
+			new Promise((resolve, reject) => {
+				waiters.push({ requestId, resolve, reject });
+			}),
+
+		settleRefresh: (requestId, result) => {
+			const completed = waiters.filter(
+				(waiter) => waiter.requestId <= requestId,
+			);
+			for (const waiter of completed) {
+				const waiterIndex = waiters.indexOf(waiter);
+				if (waiterIndex >= 0) waiters.splice(waiterIndex, 1);
+				if (result.ok) waiter.resolve();
+				else waiter.reject(result.error);
+			}
 		},
 
 		completeRefresh: (requestId) => {

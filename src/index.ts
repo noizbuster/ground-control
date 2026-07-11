@@ -55,9 +55,16 @@ import {
 	getRenderedGridColumnCount,
 	moveSelectionInGrid,
 } from "./lib/gridScroll";
+import { resolveKillFallbackRoute } from "./lib/killFallbackRoute";
+import {
+	executeMissionControlFallback,
+	type MissionControlFallbackPlan,
+	prepareMissionControlChildAbort,
+} from "./lib/missionControlChildAbort";
 import { patchTextBufferViewSelection } from "./lib/opentuiSelectionPatch";
 import {
 	createRefreshCoordinator,
+	RefreshCompletionError,
 	type RefreshRequestId,
 } from "./lib/refreshCoordinator";
 import { createRefreshRenderSignature } from "./lib/refreshRenderSignature";
@@ -363,6 +370,8 @@ interface AppState {
 	killFallbackRemaining: string[];
 	killFallbackConfirmed: string[];
 	killFallbackCurrentIndex: number;
+	killFallbackNotice: string | null;
+	missionControlFallbackPlan: MissionControlFallbackPlan | null;
 	toastMessage: string | null;
 	toastTimer: ReturnType<typeof setTimeout> | null;
 	renderedDetailSessionId: string | null;
@@ -790,6 +799,7 @@ const createKillFallbackDialog = (params: {
 	currentIndex: number;
 	totalCount: number;
 	confirmedCount: number;
+	notice: string | null;
 	width: number;
 }) => {
 	return Box(
@@ -822,6 +832,16 @@ const createKillFallbackDialog = (params: {
 			width: "100%",
 			wrapMode: "word",
 		}),
+		...(params.notice
+			? [
+					Text({
+						content: params.notice,
+						fg: APP_PALETTE.warning,
+						width: "100%",
+						wrapMode: "word",
+					}),
+				]
+			: []),
 		Text({
 			content: t`${bold(params.childTitle)}`,
 			fg: APP_PALETTE.text,
@@ -836,7 +856,7 @@ const createKillFallbackDialog = (params: {
 		}),
 		Box({ height: 1 }),
 		Text({
-			content: t`${dim("Progress: ")}${fg(APP_PALETTE.accent)(`${params.confirmedCount} confirmed`)}${dim(", ")}${fg(APP_PALETTE.muted)(`${params.currentIndex - params.confirmedCount} skipped`)}`,
+			content: t`${dim("Progress: ")}${fg(APP_PALETTE.accent)(`${params.confirmedCount} confirmed`)}${dim(", ")}${fg(APP_PALETTE.muted)(`${Math.max(params.currentIndex - 1 - params.confirmedCount, 0)} skipped`)}`,
 			fg: APP_PALETTE.muted,
 			width: "100%",
 			wrapMode: "word",
@@ -1010,6 +1030,8 @@ const main = async () => {
 		killFallbackRemaining: [],
 		killFallbackConfirmed: [],
 		killFallbackCurrentIndex: 0,
+		killFallbackNotice: null,
+		missionControlFallbackPlan: null,
 		toastMessage: null,
 		toastTimer: null,
 		renderedDetailSessionId: null,
@@ -2183,6 +2205,7 @@ const main = async () => {
 								currentIndex: state.killFallbackCurrentIndex + 1,
 								totalCount: state.killFallbackRemaining.length,
 								confirmedCount: state.killFallbackConfirmed.length,
+								notice: state.killFallbackNotice,
 								width: Math.min(Math.max(width - 8, 36), 72),
 							}),
 						]
@@ -2447,6 +2470,18 @@ const main = async () => {
 		}
 	};
 
+	const settleRefreshWaiters = (response: RefreshResponse) => {
+		refreshCoordinator.settleRefresh(
+			response.requestId,
+			response.ok
+				? { ok: true }
+				: {
+						ok: false,
+						error: new RefreshCompletionError(response.error.message),
+					},
+		);
+	};
+
 	const hasActiveTextSelection = (): boolean => {
 		return isTextSelectionInProgress(renderer.getSelection());
 	};
@@ -2470,6 +2505,7 @@ const main = async () => {
 		const response = pendingSelectionRefreshResponse;
 		pendingSelectionRefreshResponse = null;
 		applyRefreshResponseState(response);
+		settleRefreshWaiters(response);
 		return true;
 	};
 
@@ -2527,6 +2563,7 @@ const main = async () => {
 			}
 
 			applyRefreshResponseState(response);
+			settleRefreshWaiters(response);
 		} finally {
 			completeRefreshRequest(response.requestId);
 		}
@@ -2556,6 +2593,7 @@ const main = async () => {
 				}
 
 				applyRefreshResponseState(response);
+				settleRefreshWaiters(response);
 			}
 		} finally {
 			completeRefreshRequest(activeRequestId);
@@ -2587,13 +2625,11 @@ const main = async () => {
 			return;
 		}
 
-		const requestId = refreshCoordinator.requestRefresh();
-		if (requestId === null) {
-			return;
-		}
+		const ticket = refreshCoordinator.requestRefresh();
+		if (!ticket.shouldDispatch) return;
 
 		try {
-			dispatchRefreshRequest(requestId);
+			dispatchRefreshRequest(ticket.requestId);
 		} catch (error) {
 			failActiveRefreshRequest(
 				error instanceof Error
@@ -2601,6 +2637,24 @@ const main = async () => {
 					: "Failed to dispatch refresh request to worker.",
 			);
 		}
+	};
+
+	const refreshSessionsAndWait = (): Promise<void> => {
+		applyPendingSelectionWork();
+		const ticket = refreshCoordinator.requestRefresh();
+		const completion = refreshCoordinator.waitForRefresh(ticket.requestId);
+		if (ticket.shouldDispatch) {
+			try {
+				dispatchRefreshRequest(ticket.requestId);
+			} catch (error) {
+				failActiveRefreshRequest(
+					error instanceof Error
+						? error.message
+						: "Failed to dispatch refresh request to worker.",
+				);
+			}
+		}
+		return completion;
 	};
 
 	const scheduleRender = () => {
@@ -3039,7 +3093,11 @@ const main = async () => {
 					return;
 				}
 			} else if (selectedSession?.sessionSource === "mission-control") {
-				const deleteResult = await deleteMissionControlSession(sessionId);
+				const databasePath =
+					selectedSession.sourceMetadata?.missionControl?.canonicalDatabasePath;
+				const deleteResult = await deleteMissionControlSession(sessionId, {
+					...(databasePath ? { databasePath } : {}),
+				});
 				if (!deleteResult.ok) {
 					state.isDeletingSession = false;
 					state.deleteConfirmationError = sanitizeText(
@@ -3120,12 +3178,7 @@ const main = async () => {
 			return;
 		}
 
-		const allChildren = selectedSession.subagentSessions ?? [];
-		const activeChildren = allChildren.filter(
-			(s) =>
-				s.status !== SessionStatus.completed &&
-				s.status !== SessionStatus.failed,
-		);
+		const activeChildren = getAbortableChildren(selectedSession);
 
 		if (activeChildren.length === 0) {
 			showToast("No active child sessions to abort");
@@ -3136,6 +3189,8 @@ const main = async () => {
 		state.pendingKillChildrenCount = activeChildren.length;
 		state.killChildrenError = null;
 		state.isKillingChildren = false;
+		state.killFallbackNotice = null;
+		state.missionControlFallbackPlan = null;
 		render();
 	};
 
@@ -3153,7 +3208,23 @@ const main = async () => {
 		state.killFallbackRemaining = [];
 		state.killFallbackConfirmed = [];
 		state.killFallbackCurrentIndex = 0;
+		state.killFallbackNotice = null;
+		state.missionControlFallbackPlan = null;
 		render();
+	};
+
+	const getAbortableChildren = (session: Session): SubagentSession[] => {
+		const children = session.subagentSessions ?? [];
+		if (session.sessionSource === "mission-control") {
+			return children.filter(
+				(child) => child.sourceMetadata?.missionControl?.abortable === true,
+			);
+		}
+		return children.filter(
+			(child) =>
+				child.status !== SessionStatus.completed &&
+				child.status !== SessionStatus.failed,
+		);
 	};
 
 	const gracefulAbortSession = async (
@@ -3209,11 +3280,7 @@ const main = async () => {
 			return;
 		}
 
-		const activeChildren = selectedSession.subagentSessions.filter(
-			(s) =>
-				s.status !== SessionStatus.completed &&
-				s.status !== SessionStatus.failed,
-		);
+		const activeChildren = getAbortableChildren(selectedSession);
 
 		if (activeChildren.length === 0) {
 			state.pendingKillSessionId = null;
@@ -3230,6 +3297,38 @@ const main = async () => {
 		renderer.intermediateRender();
 
 		try {
+			if (selectedSession.sessionSource === "mission-control") {
+				const result = await prepareMissionControlChildAbort(selectedSession, {
+					refreshAfterStop: refreshSessionsAndWait,
+				});
+				state.isKillingChildren = false;
+				if (result.kind === "failed") {
+					state.killChildrenError = result.error;
+					startPolling();
+					render();
+					return;
+				}
+				if (result.kind === "fallback") {
+					state.missionControlFallbackPlan = result.plan;
+					state.killFallbackRemaining = result.plan.roots.map(
+						(root) => root.sessionId,
+					);
+					state.killFallbackConfirmed = [];
+					state.killFallbackCurrentIndex = 0;
+					state.killFallbackNotice = result.notices.join(" ") || null;
+					startPolling();
+					render();
+					return;
+				}
+				state.pendingKillSessionId = null;
+				state.pendingKillChildrenCount = 0;
+				state.killChildrenError = null;
+				state.gridFollowSelectionOnRender = true;
+				showToast("Stopped Mission Control child sessions");
+				startPolling();
+				return;
+			}
+
 			const projectDir = selectedSession.directory || process.cwd();
 
 			const results = await Promise.allSettled(
@@ -3310,6 +3409,8 @@ const main = async () => {
 			state.killFallbackRemaining = [];
 			state.killFallbackConfirmed = [];
 			state.killFallbackCurrentIndex = 0;
+			state.killFallbackNotice = null;
+			state.missionControlFallbackPlan = null;
 			state.pendingKillSessionId = null;
 			state.pendingKillChildrenCount = 0;
 			state.killChildrenError = null;
@@ -3327,9 +3428,60 @@ const main = async () => {
 			const rootSession = state.allSessions.find(
 				(session) => session.id === state.pendingKillSessionId,
 			);
+			const missionControlPlan = state.missionControlFallbackPlan;
+			const fallbackRoute = resolveKillFallbackRoute(
+				missionControlPlan,
+				rootSession?.sessionSource,
+			);
+			if (fallbackRoute === "mission-control" && missionControlPlan) {
+				const result = await executeMissionControlFallback(
+					missionControlPlan,
+					confirmedIds,
+				);
+				if (!result.ok) {
+					state.isKillingChildren = false;
+					state.killChildrenError = result.error;
+					state.killFallbackRemaining = [];
+					state.killFallbackConfirmed = [];
+					state.killFallbackCurrentIndex = 0;
+					state.killFallbackNotice = null;
+					state.missionControlFallbackPlan = null;
+					startPolling();
+					render();
+					return;
+				}
+				state.isKillingChildren = false;
+				state.pendingKillSessionId = null;
+				state.pendingKillChildrenCount = 0;
+				state.killChildrenError = null;
+				state.killFallbackRemaining = [];
+				state.killFallbackConfirmed = [];
+				state.killFallbackCurrentIndex = 0;
+				state.killFallbackNotice = null;
+				state.missionControlFallbackPlan = null;
+				state.gridFollowSelectionOnRender = true;
+				showToast(
+					`Deleted ${result.deletedRootIds.length} child session subtree${result.deletedRootIds.length === 1 ? "" : "s"}`,
+				);
+				startPolling();
+				refreshSessions();
+				return;
+			}
+			if (fallbackRoute === "stale-mission-control") {
+				state.isKillingChildren = false;
+				state.killChildrenError =
+					"Mission Control fallback confirmation is stale.";
+				state.killFallbackRemaining = [];
+				state.killFallbackConfirmed = [];
+				state.killFallbackCurrentIndex = 0;
+				state.killFallbackNotice = null;
+				startPolling();
+				render();
+				return;
+			}
 			const results = await Promise.allSettled(
 				confirmedIds.map(async (childId) => {
-					if (rootSession?.sessionSource === "codex") {
+					if (fallbackRoute === "codex") {
 						const result = await deleteCodexSession(childId);
 						if (!result.ok) {
 							throw result.error;
@@ -3365,6 +3517,8 @@ const main = async () => {
 			state.killFallbackRemaining = [];
 			state.killFallbackConfirmed = [];
 			state.killFallbackCurrentIndex = 0;
+			state.killFallbackNotice = null;
+			state.missionControlFallbackPlan = null;
 			state.gridFollowSelectionOnRender = true;
 
 			if (failedCount > 0) {
@@ -3392,6 +3546,8 @@ const main = async () => {
 		state.killFallbackRemaining = [];
 		state.killFallbackConfirmed = [];
 		state.killFallbackCurrentIndex = 0;
+		state.killFallbackNotice = null;
+		state.missionControlFallbackPlan = null;
 		render();
 	};
 

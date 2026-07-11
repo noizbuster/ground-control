@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const MC_DB_FILENAME = "memory.db";
 const MC_XDG_SUBDIR = "mission-control";
@@ -37,3 +40,48 @@ export const resolveMissionControlDatabasePath = (): string => {
 		join(homedir(), ".local", "share");
 	return join(xdgDataHome, MC_XDG_SUBDIR, MC_DB_FILENAME);
 };
+
+export interface MissionControlDatabaseIdentity {
+	readonly databasePath: string;
+	readonly databaseFileUrl: string;
+	readonly dbIdentity: string;
+}
+
+const uppercaseWindowsDrive = (path: string): string => {
+	if (!/^[A-Za-z]:[\\/]/u.test(path)) {
+		return path;
+	}
+	return `${path[0]?.toUpperCase() ?? ""}${path.slice(1)}`;
+};
+
+export const missionControlIdentityFromCanonicalDatabasePath = (
+	inputDatabasePath: string,
+	platform: NodeJS.Platform = process.platform,
+): MissionControlDatabaseIdentity => {
+	const databasePath =
+		platform === "win32"
+			? uppercaseWindowsDrive(inputDatabasePath)
+			: inputDatabasePath;
+	const fileUrl = pathToFileURL(databasePath, {
+		windows: platform === "win32",
+	});
+	if (fileUrl.hostname.length > 0) {
+		fileUrl.hostname = fileUrl.hostname.toLowerCase();
+	}
+	const databaseFileUrl = fileUrl.href;
+	return {
+		databasePath,
+		databaseFileUrl,
+		dbIdentity: createHash("sha256")
+			.update(databaseFileUrl, "utf8")
+			.digest("hex"),
+	};
+};
+
+export const resolveMissionControlDatabaseIdentity = (
+	databasePath: string,
+): MissionControlDatabaseIdentity =>
+	missionControlIdentityFromCanonicalDatabasePath(
+		realpathSync.native(databasePath),
+		process.platform,
+	);

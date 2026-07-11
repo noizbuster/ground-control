@@ -18,3 +18,8 @@ export {
 } from "./missionControlDelete";
 export { resolveMissionControlDatabasePath } from "./missionControlSqlite";
 export { getMissionControlSnapshotFromSqlite } from "./missionControlSqliteSnapshot";
+export {
+	type MissionControlStopResult,
+	type StopMissionControlChildrenOptions,
+	stopMissionControlChildren,
+} from "./missionControlStop";

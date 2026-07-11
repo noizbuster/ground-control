@@ -57,7 +57,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 | `t` | Open hierarchy directly in timeline view |
 | `a` | Attach to the selected session |
 | `i` | Copy the selected session ID |
-| `K` | Stop active child sessions when supported (detail/sideview mode only) |
+| `K` | Stop supported child sessions while leaving the selected parent active (detail/sideview mode only) |
 | `d` | Request delete for the selected session |
 | `y` / `n` | Confirm or cancel delete prompt |
 | `r` | Refresh immediately |
@@ -67,14 +67,16 @@ After launch, use these shortcuts to navigate and control the monitor:
 
 ### Stop Child Sessions (`K`)
 
-Available in detail or sideview mode. Press `K` (Shift+K) to gracefully stop all active (non-completed, non-failed) child sessions of the selected session.
+Available in detail or sideview mode. Press `K` (Shift+K) to stop supported child sessions of the selected session. For Mission Control, the selected parent remains active.
 
-Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Child-abort is supported for OpenCode and Codex sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mc --session <session-id>` (`mctrl` is honored as a legacy alias/fallback). Mission Control delete uses `mc session delete <session-id>` (`mctrl` is honored as a legacy alias/fallback); if any session in the tree has an active lock the CLI refuses and surfaces the error, so stop the live session first and retry.
+Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Child-abort is supported for OpenCode, Codex, and Mission Control sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mc --session <session-id>` (`mctrl` is honored as a legacy alias/fallback).
 
-The stop flow works in two stages:
+OpenCode keeps its source-native two-stage flow:
 
 1. **Graceful stop**: sends a "stop" message to each child session via `opencode run --session <id>`, which triggers normal completion (`finish: "stop"`).
 2. **Delete fallback**: if graceful stop fails for any child, a per-item confirmation dialog appears where you can choose to delete (`y`), skip (`n`), or cancel all (`Esc`/`q`).
+
+Mission Control uses one awaited `mc session stop <parent> --child-only` command with `MCTRL_DATA_DIR` set to the selected database's parent. `mctrl` is used only when `mc` is unavailable. Exit `0` completes without a fallback. Exit `2`, a launch failure, a refresh failure, or an unstable hierarchy never opens a fallback. Only exit `1` triggers a fresh snapshot of still-abortable descendants: missing or expired leases may enter confirmation; a live lease shows `Owner still active; retry stop`; unknown lease authority is no-delete. Before deletion, Ground Control takes a second snapshot and requires the same eligible members, raw statuses, lease safety, and tree tokens. Each confirmed minimal subtree root is deleted once with a non-force guarded command and its refreshed token. `K` never stops its selected Mission Control parent and never routes a Mission Control fallback through OpenCode.
 
 ### Session Filter Modes (`f`)
 
@@ -117,7 +119,7 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - Claude Code attach actions use the local `claude` CLI.
 - Pi attach actions use the local `pi` CLI; Pi delete removes the selected JSONL session and any loaded descendant JSONL sessions.
 - omp attach actions use the local `omp` CLI; omp delete removes the selected JSONL session, loaded descendant JSONL sessions, and sibling artifact directories, but not shared blob storage.
-- Mission Control attach actions use the local `mc` CLI (`mctrl` is honored as a legacy alias/fallback); Mission Control delete uses `mc session delete <session-id>` (`mctrl` is honored as a legacy alias/fallback), which removes the session and its descendants plus their index entries and refuses live-locked sessions unless stopped first.
+- Mission Control attach actions use the local `mc` CLI (`mctrl` is honored as a legacy alias/fallback). Mission Control delete removes a canonical descendant subtree and is destructive. Ground Control sends `mc session delete <id> --expected-tree-token <sha256>` only after the two-refresh confirmation flow; a changed tree or live lease refuses the non-force delete.
 - Codex delete uses the local `codex app-server` archive flow plus cleanup of archived rollout files and local index/state entries.
 - Claude Code delete intentionally refuses live sessions, then removes matching `projects/`, `file-history/`, `session-env/`, `tasks/`, and stale `sessions/*.json` artifacts from local `.claude/` storage. This follows the official `.claude` storage guidance: Claude Code does not expose a delete subcommand, but its local session data can be removed directly.
 - Non-interactive mode (missing TTY stdin/stdout) prints a tab-separated snapshot and exits.
@@ -140,6 +142,12 @@ pnpm lint
 pnpm check
 pnpm test
 ```
+
+## Mission Control Paired Release
+
+Mission Control session stop and Ground Control's Mission Control `K` path are a synchronized release pair. Ground Control uses `mc` first and falls back to the `mctrl` alias only when `mc` is unavailable. It does not inspect command versions, help text, or capabilities to select a behavior.
+
+The current Linux implementation verification is local: the isolated cross-repository runner passed the five documented scenarios. The immutable-SHA Linux, macOS, and Windows workflow is a separate post-authorization release gate. No hosted run is claimed here; until explicit authorization produces hosted receipts, that gate is pending. See [`docs/mc-child-abort-release.md`](docs/mc-child-abort-release.md) for the operator and release contract.
 
 ## Project Structure
 

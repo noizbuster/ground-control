@@ -1,13 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
 import {
 	chmodSync,
 	existsSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { deleteMissionControlSession } from "../src/db/missionControl";
 
 const tempRoots: string[] = [];
@@ -172,5 +173,37 @@ echo "Deleted session mc-root (1 events)"
 		} finally {
 			process.env.PATH = originalPath;
 		}
+	});
+
+	it("routes guarded non-force delete to the selected data directory", async () => {
+		const root = createTempRoot();
+		const argvPath = join(root, "argv");
+		const dataDirPath = join(root, "data-dir");
+		const databasePath = join(root, "selected-store", "memory.db");
+		const token = "a".repeat(64);
+		const fakeMc = writeExecutable(
+			join(root, "mc"),
+			`${SHEBANG}printf '%s\n' "$@" > "${argvPath}"
+printf '%s' "$MCTRL_DATA_DIR" > "${dataDirPath}"
+echo "Deleted session mc-child (2 events)"
+`,
+		);
+
+		const result = await deleteMissionControlSession("mc-child", {
+			mcExecutable: fakeMc,
+			databasePath,
+			expectedTreeToken: token,
+		});
+
+		expect(result.ok).toBe(true);
+		expect(readFileSync(argvPath, "utf8").trim().split("\n")).toEqual([
+			"session",
+			"delete",
+			"mc-child",
+			"--expected-tree-token",
+			token,
+		]);
+		expect(readFileSync(dataDirPath, "utf8")).toBe(dirname(databasePath));
+		expect(readFileSync(argvPath, "utf8")).not.toContain("--force");
 	});
 });
