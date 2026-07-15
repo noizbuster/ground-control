@@ -347,26 +347,6 @@ export function SessionCard(props: SessionCardProps) {
 				props.onSelect?.(session.id);
 			},
 		},
-		...(waitingEdgeLine
-			? [
-					Text({
-						content: waitingEdgeLine,
-						width: contentWidth,
-						wrapMode: "none",
-						truncate: true,
-					}),
-				]
-			: []),
-		...(recentCompletionEdgeLine
-			? [
-					Text({
-						content: recentCompletionEdgeLine,
-						width: contentWidth,
-						wrapMode: "none",
-						truncate: true,
-					}),
-				]
-			: []),
 		Text({
 			content: t`${bold(fg(isActiveSelection ? CARD_COLORS.selectedAccent : CARD_COLORS.title)(title))}`,
 			width: contentWidth,
@@ -422,5 +402,25 @@ export function SessionCard(props: SessionCardProps) {
 			wrapMode: "none",
 			truncate: true,
 		}),
+		...(waitingEdgeLine
+			? [
+					Text({
+						content: waitingEdgeLine,
+						width: contentWidth,
+						wrapMode: "none",
+						truncate: true,
+					}),
+				]
+			: []),
+		...(recentCompletionEdgeLine
+			? [
+					Text({
+						content: recentCompletionEdgeLine,
+						width: contentWidth,
+						wrapMode: "none",
+						truncate: true,
+					}),
+				]
+			: []),
 	);
 }
