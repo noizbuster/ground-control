@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { computeOpenCodeSnapshot } from "../src/db/opencode";
+import {
+	collectAbsentSessionIds,
+	computeOpenCodeSnapshot,
+	mergeOpenCodeCacheState,
+	seedOpenCodeCacheState,
+} from "../src/db/opencode";
 import type { MessageData } from "../src/types";
 
 let database: DatabaseSync;
@@ -232,5 +237,117 @@ describe("computeOpenCodeSnapshot — union of changed and non-terminal", () => 
 				finish: "stop",
 			});
 		}
+	});
+});
+
+describe("computeOpenCodeSnapshot — hard-delete presence", () => {
+	it("returns live activeSessionIds on every incremental tick even when max is unchanged", () => {
+		seedSession("sess-keep", 3000);
+		seedSession("sess-drop", 1000);
+		insertMessage("sess-keep", RUNNING_MESSAGE, 1000);
+		insertMessage("sess-drop", RUNNING_MESSAGE, 1000);
+
+		const full = computeOpenCodeSnapshot(database);
+		expect(full.activeSessionIds).toBeUndefined();
+
+		const incrementalBeforeDelete = computeOpenCodeSnapshot(database, {
+			since: full.maxUpdatedAt,
+		});
+		expect(incrementalBeforeDelete.changed).toBe(false);
+		expect([...(incrementalBeforeDelete.activeSessionIds ?? [])].sort()).toEqual(
+			["sess-drop", "sess-keep"],
+		);
+
+		// Hard delete a non-max session — MAX(time_updated) stays 3000.
+		database.prepare("DELETE FROM session WHERE id = ?").run("sess-drop");
+
+		const incrementalAfterDelete = computeOpenCodeSnapshot(database, {
+			since: full.maxUpdatedAt,
+		});
+		expect(incrementalAfterDelete.changed).toBe(false);
+		expect(incrementalAfterDelete.maxUpdatedAt).toBe(3000);
+		expect(incrementalAfterDelete.removedSessionIds).toEqual([]);
+		expect(incrementalAfterDelete.activeSessionIds).toEqual(["sess-keep"]);
+	});
+
+	it("lists archived sessions in removedSessionIds when soft-archived", () => {
+		seedSession("sess-1", 2000);
+		insertMessage("sess-1", RUNNING_MESSAGE, 1000);
+
+		const full = computeOpenCodeSnapshot(database);
+		database
+			.prepare(
+				"UPDATE session SET time_archived = ?, time_updated = ? WHERE id = ?",
+			)
+			.run(2500, 2500, "sess-1");
+
+		const incremental = computeOpenCodeSnapshot(database, {
+			since: full.maxUpdatedAt,
+		});
+		expect(incremental.changed).toBe(true);
+		expect(incremental.removedSessionIds).toEqual(["sess-1"]);
+		expect(incremental.activeSessionIds).toEqual([]);
+	});
+});
+
+describe("mergeOpenCodeCacheState — hard-delete and archive eviction", () => {
+	it("drops hard-deleted sessions from cache when changed is false", () => {
+		seedSession("sess-keep", 3000);
+		seedSession("sess-drop", 1000);
+		insertMessage("sess-keep", RUNNING_MESSAGE, 1000);
+		insertMessage("sess-drop", RUNNING_MESSAGE, 1000);
+
+		const full = computeOpenCodeSnapshot(database);
+		const cache = seedOpenCodeCacheState(full);
+		expect([...cache.rawSessionsById.keys()].sort()).toEqual([
+			"sess-drop",
+			"sess-keep",
+		]);
+
+		database.prepare("DELETE FROM session WHERE id = ?").run("sess-drop");
+		const incremental = computeOpenCodeSnapshot(database, {
+			since: full.maxUpdatedAt,
+		});
+		expect(incremental.changed).toBe(false);
+
+		mergeOpenCodeCacheState(cache, incremental);
+		expect([...cache.rawSessionsById.keys()]).toEqual(["sess-keep"]);
+		expect(cache.latestMessages["sess-drop"]).toBeUndefined();
+		expect(cache.messageCounts["sess-drop"]).toBeUndefined();
+		expect(cache.waitingSignals["sess-drop"]).toBeUndefined();
+		expect(cache.lastRefreshTime).toBe(full.maxUpdatedAt);
+	});
+
+	it("drops archived sessions via activeSessionIds even without relying on removedSessionIds alone", () => {
+		seedSession("parent", 2000);
+		seedSession("child", 1500);
+		insertMessage("parent", RUNNING_MESSAGE, 1000);
+		insertMessage("child", RUNNING_MESSAGE, 1000);
+
+		const full = computeOpenCodeSnapshot(database);
+		const cache = seedOpenCodeCacheState(full);
+
+		database
+			.prepare(
+				"UPDATE session SET time_archived = ?, time_updated = ? WHERE id = ?",
+			)
+			.run(2500, 2500, "child");
+
+		const incremental = computeOpenCodeSnapshot(database, {
+			since: full.maxUpdatedAt,
+		});
+		mergeOpenCodeCacheState(cache, incremental);
+
+		expect(cache.rawSessionsById.has("child")).toBe(false);
+		expect(cache.rawSessionsById.has("parent")).toBe(true);
+	});
+});
+
+describe("collectAbsentSessionIds", () => {
+	it("returns cached ids missing from the live set", () => {
+		expect(
+			collectAbsentSessionIds(["a", "b", "c"], ["a", "c"]).sort(),
+		).toEqual(["b"]);
+		expect(collectAbsentSessionIds(["a"], ["a", "b"])).toEqual([]);
 	});
 });
