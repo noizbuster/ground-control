@@ -36,7 +36,7 @@ describe("stopMissionControlChildren", () => {
 		const argvPath = join(root, "argv");
 		const dataDirPath = join(root, "data-dir");
 		const countPath = join(root, "count");
-		const databasePath = join(root, "selected", "memory.db");
+		const databasePath = join(root, "selected", "mission-control.db");
 		const fakeMc = executable(
 			join(root, "mc"),
 			`printf '%s\n' "$@" > "${argvPath}"
@@ -72,7 +72,7 @@ exit 1
 		process.env.PATH = root;
 		try {
 			const result = await stopMissionControlChildren("mc-parent", {
-				databasePath: join(root, "memory.db"),
+				databasePath: join(root, "mission-control.db"),
 			});
 			expect(result.exitCode).toBe(0);
 			expect(existsSync(markerPath)).toBe(true);
@@ -91,7 +91,7 @@ exit 1
 		process.env.PATH = root;
 		try {
 			const result = await stopMissionControlChildren("mc-parent", {
-				databasePath: join(root, "memory.db"),
+				databasePath: join(root, "mission-control.db"),
 			});
 			expect(result.exitCode).toBe(0);
 			expect(existsSync(mcMarker)).toBe(true);
@@ -107,7 +107,7 @@ exit 1
 
 		await expect(
 			stopMissionControlChildren("mc-parent", {
-				databasePath: join(root, "memory.db"),
+				databasePath: join(root, "mission-control.db"),
 				mcExecutable: fakeMc,
 				timeoutMs: 20,
 			}),

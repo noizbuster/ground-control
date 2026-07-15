@@ -1,6 +1,6 @@
 // On-disk Mission Control SQLite fixture helper.
 //
-// Builds a real `memory.db` (not `:memory:`) under a temp dir using
+// Builds a real `mission-control.db` (not `:memory:`) under a temp dir using
 // `node:sqlite` DatabaseSync, with table/column names that match the Mission
 // Control data-dir schema exactly. NOT NULL and foreign-key constraints from
 // the production schema are relaxed here so tests can seed partial rows; only
@@ -251,7 +251,7 @@ export const createMcSqliteFixture = (
 ): McSqliteFixture => {
 	const dir = mkdtempSync(join(tmpdir(), "gctrl-mc-sqlite-"));
 	createdDirs.push(dir);
-	const dbPath = join(dir, options.dbName ?? "memory.db");
+	const dbPath = join(dir, options.dbName ?? "mission-control.db");
 	const database = new DatabaseSync(dbPath);
 	const includeRelations = options.includeRelations ?? true;
 	createMcSchema(database, includeRelations);

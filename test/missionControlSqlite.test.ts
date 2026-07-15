@@ -28,7 +28,7 @@ const clearMcEnv = (): void => {
 };
 
 const expectedXdgDefault = (): string =>
-	join(homedir(), ".local", "share", "mission-control", "memory.db");
+	join(homedir(), ".local", "share", "mission-control", "mission-control.db");
 
 beforeEach(() => {
 	envSnapshot = {};
@@ -51,33 +51,37 @@ afterEach(() => {
 
 describe("resolveMissionControlDatabasePath", () => {
 	it("honors GCTRL_MC_DB_PATH when absolute", () => {
-		process.env.GCTRL_MC_DB_PATH = "/custom/memory.db";
-		expect(resolveMissionControlDatabasePath()).toBe("/custom/memory.db");
+		process.env.GCTRL_MC_DB_PATH = "/custom/mission-control.db";
+		expect(resolveMissionControlDatabasePath()).toBe(
+			"/custom/mission-control.db",
+		);
 	});
 
 	it("homedir-expands a relative GCTRL_MC_DB_PATH", () => {
-		process.env.GCTRL_MC_DB_PATH = "mc/memory.db";
+		process.env.GCTRL_MC_DB_PATH = "mc/mission-control.db";
 		expect(resolveMissionControlDatabasePath()).toBe(
-			join(homedir(), "mc", "memory.db"),
+			join(homedir(), "mc", "mission-control.db"),
 		);
 	});
 
-	it("falls back to MCTRL_DATA_DIR/memory.db when the DB path is unset (absolute)", () => {
+	it("falls back to MCTRL_DATA_DIR/mission-control.db when the DB path is unset (absolute)", () => {
 		process.env.MCTRL_DATA_DIR = "/data";
-		expect(resolveMissionControlDatabasePath()).toBe("/data/memory.db");
+		expect(resolveMissionControlDatabasePath()).toBe(
+			"/data/mission-control.db",
+		);
 	});
 
-	it("homedir-expands a relative MCTRL_DATA_DIR before appending memory.db", () => {
+	it("homedir-expands a relative MCTRL_DATA_DIR before appending mission-control.db", () => {
 		process.env.MCTRL_DATA_DIR = "data";
 		expect(resolveMissionControlDatabasePath()).toBe(
-			join(homedir(), "data", "memory.db"),
+			join(homedir(), "data", "mission-control.db"),
 		);
 	});
 
-	it("falls back to XDG_DATA_HOME/mission-control/memory.db when only XDG is set", () => {
+	it("falls back to XDG_DATA_HOME/mission-control/mission-control.db when only XDG is set", () => {
 		process.env.XDG_DATA_HOME = "/xdg";
 		expect(resolveMissionControlDatabasePath()).toBe(
-			"/xdg/mission-control/memory.db",
+			"/xdg/mission-control/mission-control.db",
 		);
 	});
 
@@ -88,14 +92,18 @@ describe("resolveMissionControlDatabasePath", () => {
 	it("falls through an empty GCTRL_MC_DB_PATH to the next precedence level", () => {
 		process.env.GCTRL_MC_DB_PATH = "   ";
 		process.env.MCTRL_DATA_DIR = "/data";
-		expect(resolveMissionControlDatabasePath()).toBe("/data/memory.db");
+		expect(resolveMissionControlDatabasePath()).toBe(
+			"/data/mission-control.db",
+		);
 	});
 
 	it("respects GCTRL_MC_DB_PATH over MCTRL_DATA_DIR and XDG_DATA_HOME (full precedence stack)", () => {
-		process.env.GCTRL_MC_DB_PATH = "/override/memory.db";
+		process.env.GCTRL_MC_DB_PATH = "/override/mission-control.db";
 		process.env.MCTRL_DATA_DIR = "/data";
 		process.env.XDG_DATA_HOME = "/xdg";
-		expect(resolveMissionControlDatabasePath()).toBe("/override/memory.db");
+		expect(resolveMissionControlDatabasePath()).toBe(
+			"/override/mission-control.db",
+		);
 	});
 });
 

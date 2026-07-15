@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const MC_DB_FILENAME = "memory.db";
+const MC_DB_FILENAME = "mission-control.db";
 const MC_XDG_SUBDIR = "mission-control";
 
 const trimToUndefined = (value: unknown): string | undefined => {
@@ -22,8 +22,8 @@ const resolveHomeRelative = (value: string): string =>
 
 // Mission Control SQLite DB path with three-level precedence:
 //   1. GCTRL_MC_DB_PATH (when set and non-empty)
-//   2. ${MCTRL_DATA_DIR}/memory.db (when MCTRL_DATA_DIR is set)
-//   3. ${XDG_DATA_HOME:-~/.local/share}/mission-control/memory.db
+//   2. ${MCTRL_DATA_DIR}/mission-control.db (when MCTRL_DATA_DIR is set)
+//   3. ${XDG_DATA_HOME:-~/.local/share}/mission-control/mission-control.db
 export const resolveMissionControlDatabasePath = (): string => {
 	const override = trimToUndefined(process.env.GCTRL_MC_DB_PATH);
 	if (override) {

@@ -14,28 +14,32 @@ import {
 const TASK_3_IDENTITY_VECTORS = [
 	{
 		platform: "linux" as const,
-		input: "/home/alice/.local/share/mission-control/memory.db",
-		databasePath: "/home/alice/.local/share/mission-control/memory.db",
-		fileUrl: "file:///home/alice/.local/share/mission-control/memory.db",
-		dbIdentity:
-			"8df978b1b91de5716a7aa2b1421579d3ad84cb4b8fef3002a21c340e44094f3b",
-	},
-	{
-		platform: "win32" as const,
-		input: "c:\\Users\\Alice\\AppData\\Roaming\\mission-control\\memory.db",
+		input: "/home/alice/.local/share/mission-control/mission-control.db",
 		databasePath:
-			"C:\\Users\\Alice\\AppData\\Roaming\\mission-control\\memory.db",
-		fileUrl: "file:///C:/Users/Alice/AppData/Roaming/mission-control/memory.db",
+			"/home/alice/.local/share/mission-control/mission-control.db",
+		fileUrl:
+			"file:///home/alice/.local/share/mission-control/mission-control.db",
 		dbIdentity:
-			"488afdd858d13406509f2689433ec2304dd6d8b25cda0a0c05a6364eec481bee",
+			"6317fdfef52d195bb6bddd5ce82484ac9abd4d4b567fb85a4ab06d867ea94392",
 	},
 	{
 		platform: "win32" as const,
-		input: "\\\\SERVER\\Team Share\\mission-control\\memory.db",
-		databasePath: "\\\\SERVER\\Team Share\\mission-control\\memory.db",
-		fileUrl: "file://server/Team%20Share/mission-control/memory.db",
+		input: "c:\\Users\\Alice\\AppData\\Roaming\\mission-control\\mission-control.db",
+		databasePath:
+			"C:\\Users\\Alice\\AppData\\Roaming\\mission-control\\mission-control.db",
+		fileUrl:
+			"file:///C:/Users/Alice/AppData/Roaming/mission-control/mission-control.db",
 		dbIdentity:
-			"5d85abad1b8a4618d5e8ec55d636f9106cba3e8e4ddef0b89c41d22822b5fca0",
+			"e096f04ec938133c55f50210fed3db6b750e43dd8a2478ae6de818a24f9b9cda",
+	},
+	{
+		platform: "win32" as const,
+		input: "\\\\SERVER\\Team Share\\mission-control\\mission-control.db",
+		databasePath:
+			"\\\\SERVER\\Team Share\\mission-control\\mission-control.db",
+		fileUrl: "file://server/Team%20Share/mission-control/mission-control.db",
+		dbIdentity:
+			"e0efcad44653d3d93081f8e8e6a6850cd0ed82e4ca7d00d8a1a1c5b5f3c4878b",
 	},
 ] as const;
 

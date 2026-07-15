@@ -1015,8 +1015,8 @@ describe("getMissionControlSnapshot (SQLite-primary orchestrator)", () => {
 		cleanupMcSqliteFixtures();
 	});
 
-	it("returns missing_database naming memory.db when the SQLite database is missing", () => {
-		process.env.GCTRL_MC_DB_PATH = "/nonexistent/path/memory.db";
+	it("returns missing_database naming mission-control.db when the SQLite database is missing", () => {
+		process.env.GCTRL_MC_DB_PATH = "/nonexistent/path/mission-control.db";
 		process.env.XDG_DATA_HOME = "/nonexistent/xdg";
 
 		const result = getMissionControlSnapshot();
@@ -1026,6 +1026,6 @@ describe("getMissionControlSnapshot (SQLite-primary orchestrator)", () => {
 			return;
 		}
 		expect(result.error.code).toBe("missing_database");
-		expect(result.error.message).toContain("memory.db");
+		expect(result.error.message).toContain("mission-control.db");
 	});
 });

@@ -179,7 +179,7 @@ echo "Deleted session mc-root (1 events)"
 		const root = createTempRoot();
 		const argvPath = join(root, "argv");
 		const dataDirPath = join(root, "data-dir");
-		const databasePath = join(root, "selected-store", "memory.db");
+		const databasePath = join(root, "selected-store", "mission-control.db");
 		const token = "a".repeat(64);
 		const fakeMc = writeExecutable(
 			join(root, "mc"),

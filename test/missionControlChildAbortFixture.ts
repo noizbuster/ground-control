@@ -5,7 +5,7 @@ import {
 	type SubagentSession,
 } from "../src/types";
 
-export const DATABASE_PATH = "/selected/mc/memory.db";
+export const DATABASE_PATH = "/selected/mc/mission-control.db";
 const DATABASE_IDENTITY = "d".repeat(64);
 
 export const mcSession = (params: {
