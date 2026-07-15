@@ -1282,6 +1282,11 @@ export const deleteClaudeSession = async (
 			}
 		}
 
+		// Drop log/active-session cache entries for deleted paths so same-process
+		// readers never serve pre-delete summaries (worker has its own module
+		// instance and rescans directories on each refresh).
+		invalidateClaudeSessionCaches();
+
 		return {
 			ok: true,
 			value: {

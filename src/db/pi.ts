@@ -1737,6 +1737,10 @@ const deletePiFamilySession = async (
 			}
 		}
 
+		// Drop parsed-log cache entries so deleted session files cannot be
+		// re-served from memory in the same process (matches Codex/Claude).
+		invalidatePiSessionCaches();
+
 		return {
 			ok: true,
 			value: { deletedSessionPaths, deletedArtifactPaths },
