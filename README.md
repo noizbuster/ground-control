@@ -17,7 +17,7 @@ Make sure these are available before running `gctrl`:
 - `~/.claude/projects/` and/or `~/.claude/sessions/` exist for Claude Code monitoring
 - `~/.pi/agent/sessions/` exists for Pi monitoring
 - `~/.omp/agent/sessions/` exists for omp monitoring
-- `~/.local/share/mission-control/memory.db` exists for Mission Control monitoring
+- `~/.local/share/mission-control/mission-control.db` exists for Mission Control monitoring
 
 ### Run with `npx`
 
@@ -47,6 +47,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 | Key | Action |
 | --- | --- |
 | `h` / `j` / `k` / `l` / `←` / `↑` / `↓` / `→` | Move selection in the session grid |
+| `PgUp` / `PgDn` | Jump selection by a page of rows in the session grid (or scroll detail/hierarchy by one page) |
 | `j` / `k` / `↑` / `↓` (detail focus) | Scroll session detail |
 | `Tab` | Switch focus between grid and detail pane (when sideview is enabled) |
 | `Enter` | Open the selected session detail view |
@@ -96,6 +97,7 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 | `f` | Cycle filter mode (latest / busy / all) |
 | `←` / `→` / `h` / `l` | Pan timeline (timeline mode only) |
 | `j` / `k` / `Up` / `Down` | Scroll |
+| `PgUp` / `PgDn` | Scroll by one page |
 | `Esc` / `q` | Close hierarchy view |
 
 ## Requirements
@@ -107,13 +109,13 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - The monitor reads Claude Code session state from `~/.claude/sessions/*.json` and enriches it with `~/.claude/projects/**/*.jsonl`.
 - The monitor reads Pi JSONL sessions from `~/.pi/agent/sessions/**/*.jsonl`.
 - The monitor reads omp JSONL sessions from `~/.omp/agent/sessions/**/*.jsonl`.
-- The monitor reads Mission Control session state from the SQLite store at `~/.local/share/mission-control/memory.db`. If that database is missing or unreadable, Mission Control sessions are not shown.
+- The monitor reads Mission Control session state from the SQLite store at `~/.local/share/mission-control/mission-control.db`. If that database is missing or unreadable, Mission Control sessions are not shown.
 - Override the OpenCode database path with `GCTRL_DB_PATH=/custom/path/opencode.db`.
 - Override Codex paths with `GCTRL_CODEX_STATE_DB_PATH=/custom/path/state.sqlite`, `GCTRL_CODEX_SESSIONS_DIR=/custom/path/sessions`, `GCTRL_CODEX_ARCHIVED_SESSIONS_DIR=/custom/path/archived_sessions`, and `GCTRL_CODEX_SESSION_INDEX_PATH=/custom/path/session_index.jsonl`.
 - Override Claude Code paths with `GCTRL_CLAUDE_PROJECTS_DIR=/custom/path/projects` and `GCTRL_CLAUDE_SESSIONS_DIR=/custom/path/sessions`.
 - Override Pi sessions with `GCTRL_PI_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are also honored.
 - Override omp sessions with `GCTRL_OMP_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`, and XDG omp candidates are also honored.
-- Override the Mission Control SQLite database with `GCTRL_MC_DB_PATH=/custom/path/memory.db` (primary); `MCTRL_DATA_DIR=/custom/path` is also honored and resolves to `<MCTRL_DATA_DIR>/memory.db`, and `XDG_DATA_HOME` is honored for the default `~/.local/share/mission-control/memory.db` location.
+- Override the Mission Control SQLite database with `GCTRL_MC_DB_PATH=/custom/path/mission-control.db` (primary); `MCTRL_DATA_DIR=/custom/path` is also honored and resolves to `<MCTRL_DATA_DIR>/mission-control.db`, and `XDG_DATA_HOME` is honored for the default `~/.local/share/mission-control/mission-control.db` location.
 - OpenCode attach/delete/child-abort actions use the `opencode` CLI.
 - Codex attach/delete/child-abort actions use the local `codex` CLI and app-server protocol.
 - Claude Code attach actions use the local `claude` CLI.
