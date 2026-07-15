@@ -53,6 +53,7 @@ import {
 	clampSelection,
 	getGridVisibleRowCount,
 	getRenderedGridColumnCount,
+	moveSelectionByPageInGrid,
 	moveSelectionInGrid,
 } from "./lib/gridScroll";
 import { resolveKillFallbackRoute } from "./lib/killFallbackRoute";
@@ -1862,8 +1863,8 @@ const main = async () => {
 		);
 		const hierarchyScrollHint =
 			effectiveHierarchyViewMode === "flow"
-				? "↑/↓: scroll | ←/→: pan timeline"
-				: "↑/↓: scroll";
+				? "↑/↓/PgUp/PgDn: scroll | ←/→: pan timeline"
+				: "↑/↓/PgUp/PgDn: scroll";
 		const selectedSessionForActions =
 			state.sessions[state.selectedIndex] ?? null;
 		const canAttachSelected = canAttachToSession(selectedSessionForActions);
@@ -1884,8 +1885,8 @@ const main = async () => {
 			: state.isHierarchyMode
 				? `Tab: view(${hierarchyViewLabel}) | x: info(${state.hierarchyInfoMode}) | f: filter(${hierarchyFilterLabel}) | ${hierarchyScrollHint} | q/Esc: close`
 				: state.focusedPane === "detail"
-					? `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`
-					: `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`;
+					? `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓/PgUp/PgDn: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`
+					: `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/PgUp/PgDn: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`;
 		const styledShortcutGuide = deletePromptActive
 			? state.pendingDeleteSessionId
 				? state.isDeletingSession
@@ -1898,11 +1899,11 @@ const main = async () => {
 						: t`${fg(APP_PALETTE.warning)("Abort child sessions? ")}${footerShortcut("y")}${dim(": confirm | ")}${footerShortcut("Esc/n")}${dim(": cancel")}`
 			: state.isHierarchyMode
 				? effectiveHierarchyViewMode === "flow"
-					? t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(hierarchyFilterLabel)}${dim(") | ")}${footerShortcut("↑/↓")}${dim(": scroll | ")}${footerShortcut("←/→")}${dim(": pan timeline | ")}${footerShortcut("q/Esc")}${dim(": close")}`
-					: t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(hierarchyFilterLabel)}${dim(") | ")}${footerShortcut("↑/↓")}${dim(": scroll | ")}${footerShortcut("q/Esc")}${dim(": close")}`
+					? t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(hierarchyFilterLabel)}${dim(") | ")}${footerShortcut("↑/↓/PgUp/PgDn")}${dim(": scroll | ")}${footerShortcut("←/→")}${dim(": pan timeline | ")}${footerShortcut("q/Esc")}${dim(": close")}`
+					: t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(hierarchyFilterLabel)}${dim(") | ")}${footerShortcut("↑/↓/PgUp/PgDn")}${dim(": scroll | ")}${footerShortcut("q/Esc")}${dim(": close")}`
 				: state.focusedPane === "detail"
-					? t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut("↑/↓")}${dim(": scroll detail | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`
-					: t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut("arrows")}${dim(": move grid | ")}${footerShortcut("Enter")}${dim(": detail | ")}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`;
+					? t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut("↑/↓/PgUp/PgDn")}${dim(": scroll detail | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`
+					: t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut("arrows/PgUp/PgDn")}${dim(": move grid | ")}${footerShortcut("Enter")}${dim(": detail | ")}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`;
 		const footerAvailableWidth = innerWidth;
 		const footerWraps =
 			shortcutGuide.length + focusSummary.length + FOOTER_INLINE_GAP >
@@ -2702,6 +2703,28 @@ const main = async () => {
 		}
 	};
 
+	const getScrollPageDelta = (scrollBoxId: string): number => {
+		const scrollBox = renderer.root.findDescendantById(scrollBoxId);
+		if (!isScrollBoxRenderable(scrollBox) || !scrollBox.visible) {
+			return DETAIL_SCROLL_STEP * 3;
+		}
+
+		return Math.max(
+			getSafeNumber(scrollBox.height, DETAIL_SCROLL_STEP * 3) - 1,
+			1,
+		);
+	};
+
+	const scrollHierarchyPage = (direction: "up" | "down") => {
+		const pageDelta = getScrollPageDelta(HIERARCHY_SCROLLBOX_ID);
+		scrollHierarchy(direction === "up" ? -pageDelta : pageDelta);
+	};
+
+	const scrollDetailPage = (direction: "up" | "down") => {
+		const pageDelta = getScrollPageDelta(DETAIL_SCROLLBOX_ID);
+		scrollDetail(direction === "up" ? -pageDelta : pageDelta);
+	};
+
 	const TIMELINE_SCROLL_STEP = 8;
 
 	const isHierarchyNarrowMode = (paneWidth?: number): boolean => {
@@ -2818,11 +2841,10 @@ const main = async () => {
 		render();
 	};
 
-	const moveSelection = (direction: "left" | "right" | "up" | "down") => {
-		if (state.sessions.length === 0) {
-			return;
-		}
-
+	const getGridLayoutMetrics = (): {
+		columnCount: number;
+		gridHeight: number;
+	} => {
 		const fallbackInnerWidth = Math.max(
 			getSafeNumber(renderer.width, 80) - ROOT_PADDING_X,
 			1,
@@ -2836,6 +2858,10 @@ const main = async () => {
 			isScrollBoxRenderable(gridScrollBox) && gridScrollBox.visible
 				? Math.max(getSafeNumber(gridScrollBox.width, fallbackGridWidth), 1)
 				: fallbackGridWidth;
+		const measuredGridHeight =
+			isScrollBoxRenderable(gridScrollBox) && gridScrollBox.visible
+				? Math.max(getSafeNumber(gridScrollBox.height, 1), 1)
+				: Math.max(getSafeNumber(renderer.height, 24) - 6, 1);
 		const measuredGridVerticalScrollbarInset =
 			isScrollBoxRenderable(gridScrollBox) &&
 			gridScrollBox.visible &&
@@ -2856,10 +2882,45 @@ const main = async () => {
 		);
 		state.renderedGridColumnCount = renderedColumnCount;
 
+		return {
+			columnCount: renderedColumnCount,
+			gridHeight: measuredGridHeight,
+		};
+	};
+
+	const moveSelection = (direction: "left" | "right" | "up" | "down") => {
+		if (state.sessions.length === 0) {
+			return;
+		}
+
+		const { columnCount } = getGridLayoutMetrics();
+
 		const nextIndex = moveSelectionInGrid({
 			sessions: state.sessions,
 			selectedIndex: state.selectedIndex < 0 ? 0 : state.selectedIndex,
-			columnCount: renderedColumnCount,
+			columnCount,
+			direction,
+		});
+
+		if (nextIndex !== state.selectedIndex) {
+			state.selectedIndex = nextIndex;
+			state.selectedSessionId = state.sessions[nextIndex]?.id ?? null;
+			state.gridFollowSelectionOnRender = true;
+			render();
+		}
+	};
+
+	const moveSelectionByPage = (direction: "up" | "down") => {
+		if (state.sessions.length === 0) {
+			return;
+		}
+
+		const { columnCount, gridHeight } = getGridLayoutMetrics();
+		const nextIndex = moveSelectionByPageInGrid({
+			sessions: state.sessions,
+			selectedIndex: state.selectedIndex < 0 ? 0 : state.selectedIndex,
+			columnCount,
+			visibleRowCount: getGridVisibleRowCount(gridHeight),
 			direction,
 		});
 
@@ -3890,6 +3951,16 @@ const main = async () => {
 				return;
 			}
 
+			if (key.name === "pageup") {
+				scrollHierarchyPage("up");
+				return;
+			}
+
+			if (key.name === "pagedown") {
+				scrollHierarchyPage("down");
+				return;
+			}
+
 			if (getEffectiveHierarchyViewMode() === "flow") {
 				if (key.name === "left" || key.name === "h") {
 					scrollTimeline(-TIMELINE_SCROLL_STEP);
@@ -4048,6 +4119,24 @@ const main = async () => {
 				}
 
 				moveSelection("up");
+				break;
+
+			case "pageup":
+				if (state.focusedPane === "detail") {
+					scrollDetailPage("up");
+					break;
+				}
+
+				moveSelectionByPage("up");
+				break;
+
+			case "pagedown":
+				if (state.focusedPane === "detail") {
+					scrollDetailPage("down");
+					break;
+				}
+
+				moveSelectionByPage("down");
 				break;
 
 			case "return":

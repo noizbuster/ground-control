@@ -162,3 +162,29 @@ export const moveSelectionInGrid = (params: {
 		}
 	}
 };
+
+export const moveSelectionByPageInGrid = (params: {
+	sessions: Session[];
+	selectedIndex: number;
+	columnCount: number;
+	visibleRowCount: number;
+	direction: "up" | "down";
+}): number => {
+	const { sessions, selectedIndex, columnCount, visibleRowCount, direction } =
+		params;
+
+	if (sessions.length === 0) {
+		return -1;
+	}
+
+	const currentIndex = clampSelection(sessions, selectedIndex);
+	const safeColumnCount = Math.max(1, Math.floor(columnCount));
+	const pageRows = Math.max(1, Math.floor(visibleRowCount));
+	const pageStep = pageRows * safeColumnCount;
+
+	if (direction === "up") {
+		return Math.max(0, currentIndex - pageStep);
+	}
+
+	return Math.min(sessions.length - 1, currentIndex + pageStep);
+};
