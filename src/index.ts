@@ -2950,6 +2950,10 @@ const main = async () => {
 			return;
 		}
 
+		if (renderer.getSelection()) {
+			renderer.clearSelection();
+		}
+
 		state.isDetailMode = false;
 		state.isSideviewMode = state.detailReturnToSideview;
 		state.focusedPane = "grid";
@@ -3720,6 +3724,10 @@ const main = async () => {
 		);
 		if (nextIndex < 0) {
 			return;
+		}
+
+		if (renderer.getSelection()) {
+			renderer.clearSelection();
 		}
 
 		if (

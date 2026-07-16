@@ -114,14 +114,28 @@ const detailMouseEvent = (params: {
 };
 
 describe("detail text selection", () => {
-	it("treats the initial selection-start frame as active", () => {
+	it("treats only isDragging as an in-progress selection", () => {
 		expect(isTextSelectionInProgress(null)).toBe(false);
-		expect(isTextSelectionInProgress(selectionSnapshot({ isDragging: true }))).toBe(
-			true,
-		);
-		expect(isTextSelectionInProgress(selectionSnapshot({ isStart: true }))).toBe(
-			true,
-		);
+		// mousedown / drag window (start frame also has isDragging=true)
+		expect(
+			isTextSelectionInProgress(
+				selectionSnapshot({ isDragging: true, isStart: true }),
+			),
+		).toBe(true);
+		expect(
+			isTextSelectionInProgress(selectionSnapshot({ isDragging: true })),
+		).toBe(true);
+		// post-mouseup pure click: OpenTUI leaves isStart true after finishSelection
+		expect(
+			isTextSelectionInProgress(
+				selectionSnapshot({ isDragging: false, isStart: true }),
+			),
+		).toBe(false);
+		expect(
+			isTextSelectionInProgress(
+				selectionSnapshot({ isDragging: false, isStart: false }),
+			),
+		).toBe(false);
 	});
 
 	it("trims selected text before copying", () => {

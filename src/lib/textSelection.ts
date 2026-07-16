@@ -15,5 +15,6 @@ export const getTextSelectionText = (
 export const isTextSelectionInProgress = (
 	selection: Pick<TextSelectionSnapshot, "isDragging" | "isStart"> | null,
 ): boolean => {
-	return Boolean(selection?.isDragging || selection?.isStart);
+	// OpenTUI can leave isStart=true after mouseup; only isDragging is in-progress.
+	return Boolean(selection?.isDragging);
 };
