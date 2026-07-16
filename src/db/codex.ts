@@ -16,6 +16,7 @@ import {
 	refreshCacheEntryLru,
 } from "../lib/boundedCache";
 import { isActiveStatus } from "../lib/hierarchyHelpers";
+import { isOrphanedRunningActivity } from "../lib/orphanedRunning";
 import type { SessionSnapshot } from "../lib/sessionSnapshot";
 import {
 	getDefaultSessionCapabilities,
@@ -127,6 +128,7 @@ export interface CodexSessionLogSummary {
 	abortedReason?: string;
 	startedAtMs?: number;
 	completedAtMs?: number;
+	lastActivityAtMs?: number;
 }
 
 interface ParsedCodexThreadSource {
@@ -701,6 +703,13 @@ export const summarizeCodexSessionLogContent = (
 		const payload = (entry.payload ?? {}) as Record<string, unknown>;
 		const payloadType = getPayloadString(payload, "type");
 		const timestampMs = parseIsoTimestampMs(entry.timestamp);
+		if (
+			typeof timestampMs === "number" &&
+			(summary.lastActivityAtMs === undefined ||
+				timestampMs > summary.lastActivityAtMs)
+		) {
+			summary.lastActivityAtMs = timestampMs;
+		}
 
 		if (
 			entry.type === "response_item" &&
@@ -892,6 +901,7 @@ const logSummaryCache = new Map<
 // re-reading their rollout log every refresh (was the dominant worker CPU cost).
 interface CachedThreadLog {
 	updatedAtMs: number | null;
+	logMtimeMs: number | null;
 	summary?: CodexSessionLogSummary;
 	issue?: string;
 }
@@ -992,8 +1002,10 @@ const readCodexLogSummary = (
 export const resolveCodexStatus = (params: {
 	summary?: CodexSessionLogSummary;
 	edgeStats?: ThreadEdgeStats;
+	nowMs?: number;
 }): CodexStatusResolution => {
 	const { summary, edgeStats } = params;
+	const nowMs = params.nowMs ?? Date.now();
 	const openChildCount = edgeStats?.openChildCount ?? 0;
 	const lastEventType = trimToUndefined(summary?.lastEventType);
 
@@ -1011,6 +1023,17 @@ export const resolveCodexStatus = (params: {
 				status: SessionStatus.waiting,
 				finishReason: "awaiting_user",
 				statusDetail: "Awaiting user input",
+			};
+		}
+
+		const hasLiveTools = (summary.activeToolNames?.length ?? 0) > 0;
+		const lastActivityAtMs =
+			summary.lastActivityAtMs ?? summary.startedAtMs ?? summary.completedAtMs;
+		if (!hasLiveTools && isOrphanedRunningActivity(lastActivityAtMs, nowMs)) {
+			return {
+				status: SessionStatus.unknown,
+				finishReason: "interrupted",
+				statusDetail: "Interrupted (no recent activity)",
 			};
 		}
 
@@ -1659,8 +1682,16 @@ export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 
 		for (const thread of threadRows) {
 			liveThreadIds.add(thread.id);
+			ensureCodexLogIndex(sessionsDirectory);
+			const logPath = logPathCache.get(thread.id);
+			const logMtimeMs =
+				logPath && existsSync(logPath) ? statSync(logPath).mtimeMs : null;
 			const cached = threadLogSummaryCache.get(thread.id);
-			if (cached && cached.updatedAtMs === thread.updated_at_ms) {
+			if (
+				cached &&
+				cached.updatedAtMs === thread.updated_at_ms &&
+				cached.logMtimeMs === logMtimeMs
+			) {
 				if (cached.summary) {
 					logSummaries[thread.id] = cached.summary;
 				}
@@ -1671,7 +1702,10 @@ export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 			}
 
 			const logResult = readCodexLogSummary(thread.id, sessionsDirectory);
-			const entry: CachedThreadLog = { updatedAtMs: thread.updated_at_ms };
+			const entry: CachedThreadLog = {
+				updatedAtMs: thread.updated_at_ms,
+				logMtimeMs,
+			};
 			if (logResult.summary) {
 				logSummaries[thread.id] = logResult.summary;
 				entry.summary = logResult.summary;

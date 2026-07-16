@@ -88,6 +88,24 @@ describe("Codex waiting status detection", () => {
 		});
 	});
 
+	it("records lastActivityAtMs from the newest log event", () => {
+		const summary = summarizeCodexSessionLogContent(
+			[
+				buildTaskStartedEvent("2026-07-16T07:55:28.000Z"),
+				stringifyEvent({
+					timestamp: "2026-07-16T07:56:50.043Z",
+					type: "event_msg",
+					payload: { type: "token_count" },
+				}),
+			].join("\n"),
+		);
+
+		expect(summary.lastActivityAtMs).toBe(
+			Date.parse("2026-07-16T07:56:50.043Z"),
+		);
+		expect(summary.taskState).toBe("running");
+	});
+
 	it("maps approval-gated exec calls to waiting when no regular calls are running", () => {
 		const currentTimestamp = new Date().toISOString();
 		const summary = summarizeCodexSessionLogContent(

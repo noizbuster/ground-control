@@ -347,6 +347,63 @@ describe("resolveCodexStatus", () => {
 			statusDetail: "Turn aborted (interrupted)",
 		});
 	});
+
+	it("maps stale running tasks without live tools to interrupted", () => {
+		const nowMs = Date.parse("2026-07-16T08:10:00.000Z");
+		expect(
+			resolveCodexStatus({
+				summary: {
+					messageCount: 2,
+					taskState: "running",
+					lastActivityAtMs: Date.parse("2026-07-16T07:56:50.000Z"),
+					startedAtMs: Date.parse("2026-07-16T07:55:28.000Z"),
+				},
+				nowMs,
+			}),
+		).toEqual({
+			status: SessionStatus.unknown,
+			finishReason: "interrupted",
+			statusDetail: "Interrupted (no recent activity)",
+		});
+	});
+
+	it("keeps fresh running tasks without live tools as running", () => {
+		const nowMs = Date.parse("2026-07-16T07:57:00.000Z");
+		expect(
+			resolveCodexStatus({
+				summary: {
+					messageCount: 2,
+					taskState: "running",
+					lastActivityAtMs: Date.parse("2026-07-16T07:56:50.000Z"),
+					startedAtMs: Date.parse("2026-07-16T07:55:28.000Z"),
+				},
+				nowMs,
+			}),
+		).toEqual({
+			status: SessionStatus.running,
+			finishReason: "task_started",
+			statusDetail: "Task running",
+		});
+	});
+
+	it("keeps stale running tasks with live tools as running", () => {
+		const nowMs = Date.parse("2026-07-16T08:10:00.000Z");
+		expect(
+			resolveCodexStatus({
+				summary: {
+					messageCount: 2,
+					taskState: "running",
+					activeToolNames: ["exec_command"],
+					lastActivityAtMs: Date.parse("2026-07-16T07:56:50.000Z"),
+				},
+				nowMs,
+			}),
+		).toEqual({
+			status: SessionStatus.running,
+			finishReason: "task_started",
+			statusDetail: "Task running",
+		});
+	});
 });
 
 describe("buildCodexSessionSnapshot", () => {
