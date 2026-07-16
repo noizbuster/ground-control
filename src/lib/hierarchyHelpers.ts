@@ -851,10 +851,17 @@ export const getStatusLabel = (
 		return IDLE_STATUS_LABEL;
 	}
 
+	const finishReason = options.finishReason;
+	if (
+		finishReason === "interrupted" ||
+		finishReason === "turn_aborted"
+	) {
+		return "Interrupted";
+	}
+
 	const displayStatus = getDisplayStatus(status, options);
 	const baseLabel =
 		STATUS_LABEL_MAP[displayStatus] ?? STATUS_LABEL_MAP[SessionStatus.unknown];
-	const finishReason = options.finishReason;
 	if (
 		finishReason &&
 		finishReason !== "stop" &&
