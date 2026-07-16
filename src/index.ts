@@ -72,6 +72,7 @@ import { createRefreshRenderSignature } from "./lib/refreshRenderSignature";
 import {
 	applySessionFilter,
 	applySessionSort,
+	isSettledSession,
 	normalizeDirectoryPath,
 	type SessionFilterMode,
 	type SessionSortMode,
@@ -2354,16 +2355,16 @@ const main = async () => {
 			),
 		);
 
-		const orderedCompletedSessions = snapshot.sessions
-			.filter((session) => session.status === SessionStatus.completed)
+		const orderedSettledSessions = snapshot.sessions
+			.filter((session) => isSettledSession(session))
 			.sort((left, right) => right.time_updated - left.time_updated);
-		const latestCompletedSessionId = orderedCompletedSessions[0]?.id ?? null;
+		const latestCompletedSessionId = orderedSettledSessions[0]?.id ?? null;
 
 		const externalDirectoryPinnedSessionIds = new Set<string>();
 		if (state.externalAttachedSessionDirectoryCounts.size > 0) {
-			const nonCompletedCountByDirectory = new Map<string, number>();
+			const nonSettledCountByDirectory = new Map<string, number>();
 			for (const session of snapshot.sessions) {
-				if (session.status === SessionStatus.completed) {
+				if (isSettledSession(session)) {
 					continue;
 				}
 
@@ -2372,8 +2373,8 @@ const main = async () => {
 					normalizeDirectoryPath(session.directory),
 				);
 				const existingCount =
-					nonCompletedCountByDirectory.get(directoryKey) ?? 0;
-				nonCompletedCountByDirectory.set(directoryKey, existingCount + 1);
+					nonSettledCountByDirectory.get(directoryKey) ?? 0;
+				nonSettledCountByDirectory.set(directoryKey, existingCount + 1);
 			}
 
 			const remainingDirectorySlots = new Map<string, number>();
@@ -2381,15 +2382,15 @@ const main = async () => {
 				directoryKey,
 				totalSlots,
 			] of state.externalAttachedSessionDirectoryCounts) {
-				const consumedByNonCompleted =
-					nonCompletedCountByDirectory.get(directoryKey) ?? 0;
-				const remainingSlots = totalSlots - consumedByNonCompleted;
+				const consumedByNonSettled =
+					nonSettledCountByDirectory.get(directoryKey) ?? 0;
+				const remainingSlots = totalSlots - consumedByNonSettled;
 				if (remainingSlots > 0) {
 					remainingDirectorySlots.set(directoryKey, remainingSlots);
 				}
 			}
 
-			for (const session of orderedCompletedSessions) {
+			for (const session of orderedSettledSessions) {
 				const directoryKey = getExternalAttachedDirectoryKey(
 					session.sessionSource,
 					normalizeDirectoryPath(session.directory),

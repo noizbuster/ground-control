@@ -277,6 +277,8 @@ export function SessionCard(props: SessionCardProps) {
 	const isRecentlyCompletedSession = isRecentlyCompleted(
 		displayStatus,
 		session.time_updated,
+		Date.now(),
+		session.finishReason,
 	);
 	// Awaiting-user edge always wins over stalled/blocked when both apply.
 	const stallLevel: StallLevel = showWaitingTreatment

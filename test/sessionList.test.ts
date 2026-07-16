@@ -7,6 +7,7 @@ const createSession = (params: {
 	status: SessionStatus;
 	timeUpdated: number;
 	directory?: string;
+	finishReason?: string;
 }): Session => ({
 	id: params.id,
 	title: params.id,
@@ -18,6 +19,7 @@ const createSession = (params: {
 	time_updated: params.timeUpdated,
 	sessionSource: "omp",
 	status: params.status,
+	finishReason: params.finishReason,
 });
 
 describe("session list filtering", () => {
@@ -49,6 +51,58 @@ describe("session list filtering", () => {
 		expect(sorted.map((session) => [session.id, session.status])).toEqual([
 			["running", SessionStatus.running],
 			["pinned-completed", SessionStatus.completed],
+		]);
+	});
+
+	it("hides interrupted sessions in active mode unless pinned", () => {
+		const running = createSession({
+			id: "running",
+			status: SessionStatus.running,
+			timeUpdated: 40,
+		});
+		const interrupted = createSession({
+			id: "interrupted",
+			status: SessionStatus.unknown,
+			timeUpdated: 50,
+			finishReason: "interrupted",
+		});
+		const pinnedInterrupted = createSession({
+			id: "pinned-interrupted",
+			status: SessionStatus.unknown,
+			timeUpdated: 60,
+			finishReason: "turn_aborted",
+		});
+
+		const filtered = applySessionFilter(
+			[running, interrupted, pinnedInterrupted],
+			"active",
+			new Set(["pinned-interrupted"]),
+		);
+
+		expect(filtered.hiddenCompletedCount).toBe(1);
+		expect(filtered.sessions.map((session) => session.id).sort()).toEqual([
+			"pinned-interrupted",
+			"running",
+		]);
+	});
+
+	it("excludes interrupted sessions from busy mode", () => {
+		const running = createSession({
+			id: "running",
+			status: SessionStatus.running,
+			timeUpdated: 10,
+		});
+		const interrupted = createSession({
+			id: "interrupted",
+			status: SessionStatus.unknown,
+			timeUpdated: 20,
+			finishReason: "interrupted",
+		});
+
+		const filtered = applySessionFilter([running, interrupted], "busy");
+
+		expect(filtered.sessions.map((session) => session.id)).toEqual([
+			"running",
 		]);
 	});
 });

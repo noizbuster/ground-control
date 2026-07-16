@@ -14,8 +14,13 @@ export const isRecentlyCompleted = (
 	status: SessionStatus | undefined,
 	timeUpdated: number,
 	now: number = Date.now(),
+	finishReason?: string,
 ): boolean => {
-	if (status !== SessionStatus.completed) {
+	const isSettledStatus =
+		status === SessionStatus.completed ||
+		finishReason === "interrupted" ||
+		finishReason === "turn_aborted";
+	if (!isSettledStatus) {
 		return false;
 	}
 

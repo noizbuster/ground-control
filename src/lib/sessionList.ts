@@ -15,19 +15,30 @@ export const normalizeDirectoryPath = (directory: string): string => {
 	return shouldNormalizeDirectoryCase ? normalized.toLowerCase() : normalized;
 };
 
-const isNonCompletedSessionStatus = (status?: SessionStatus): boolean =>
-	status !== SessionStatus.completed;
+export const isInterruptedSession = (session: Session): boolean =>
+	session.finishReason === "interrupted" ||
+	session.finishReason === "turn_aborted";
 
-const getSessionStatusSortRank = (status?: SessionStatus): number => {
-	if (status === SessionStatus.waiting) {
+export const isSettledSession = (session: Session): boolean =>
+	session.status === SessionStatus.completed || isInterruptedSession(session);
+
+const isActiveWorkSession = (session: Session): boolean =>
+	!isSettledSession(session);
+
+const getSessionStatusSortRank = (session: Session): number => {
+	if (isInterruptedSession(session)) {
+		return 3;
+	}
+
+	if (session.status === SessionStatus.waiting) {
 		return 0;
 	}
 
-	if (status === SessionStatus.running) {
+	if (session.status === SessionStatus.running) {
 		return 1;
 	}
 
-	if (status === SessionStatus.completed) {
+	if (session.status === SessionStatus.completed) {
 		return 3;
 	}
 
@@ -46,9 +57,7 @@ export const applySessionFilter = (
 
 		case "busy":
 			return {
-				sessions: sessions.filter((session) =>
-					isNonCompletedSessionStatus(session.status),
-				),
+				sessions: sessions.filter((session) => isActiveWorkSession(session)),
 				hiddenCompletedCount: 0,
 			};
 
@@ -70,7 +79,7 @@ export const applySessionFilter = (
 			let hiddenCompletedCount = 0;
 
 			const filteredSessions = orderedSessions.filter((session) => {
-				if (isNonCompletedSessionStatus(session.status)) {
+				if (isActiveWorkSession(session)) {
 					return true;
 				}
 
@@ -89,7 +98,7 @@ export const applySessionFilter = (
 					return true;
 				}
 
-				if (session.status === SessionStatus.completed) {
+				if (isSettledSession(session)) {
 					hiddenCompletedCount += 1;
 				}
 
@@ -109,7 +118,7 @@ export const applySessionFilter = (
 			let hiddenCompletedCount = 0;
 
 			const filteredSessions = orderedSessions.filter((session) => {
-				if (isNonCompletedSessionStatus(session.status)) {
+				if (isActiveWorkSession(session)) {
 					return true;
 				}
 
@@ -152,8 +161,8 @@ export const applySessionSort = (
 			}
 
 			case "status": {
-				const leftRank = getSessionStatusSortRank(left.status);
-				const rightRank = getSessionStatusSortRank(right.status);
+				const leftRank = getSessionStatusSortRank(left);
+				const rightRank = getSessionStatusSortRank(right);
 
 				if (leftRank !== rightRank) {
 					return leftRank - rightRank;
