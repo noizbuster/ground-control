@@ -2,6 +2,7 @@ export enum SessionStatus {
 	pending = "pending",
 	running = "running",
 	waiting = "waiting",
+	idle = "idle",
 	completed = "completed",
 	failed = "failed",
 	unknown = "unknown",

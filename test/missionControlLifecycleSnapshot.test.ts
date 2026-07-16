@@ -55,7 +55,7 @@ describe("Mission Control raw lifecycle and lease snapshot metadata", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		const session = result.value.sessions[0];
-		expect(session.status).toBe("waiting");
+		expect(session.status).toBe("idle");
 		expect(session.statusDetail).toBe("Idle (aborted)");
 		expect(session.sourceMetadata?.missionControl).toMatchObject({
 			rawLifecycleStatus: "idle",

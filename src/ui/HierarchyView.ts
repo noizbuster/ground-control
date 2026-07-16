@@ -101,6 +101,7 @@ const STATUS_COLOR_MAP: Record<SessionStatus, `#${string}`> = {
 	[SessionStatus.pending]: "#F59E0B",
 	[SessionStatus.running]: "#3B82F6",
 	[SessionStatus.waiting]: "#F97316",
+	[SessionStatus.idle]: "#64748B",
 	[SessionStatus.completed]: VIEW_COLORS.text,
 	[SessionStatus.failed]: "#EF4444",
 	[SessionStatus.unknown]: "#64748B",
@@ -639,6 +640,7 @@ const getDetailedMetadataContent = (
 const getTimelineTrackEndMarker = (status: SessionStatus): string => {
 	switch (status) {
 		case SessionStatus.completed:
+		case SessionStatus.idle:
 			return "●";
 		case SessionStatus.failed:
 			return "✕";

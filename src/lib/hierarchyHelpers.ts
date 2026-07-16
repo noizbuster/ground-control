@@ -789,6 +789,7 @@ export const STATUS_LABEL_MAP: Record<SessionStatus, string> = {
 	[SessionStatus.pending]: "Pending",
 	[SessionStatus.running]: "Running",
 	[SessionStatus.waiting]: "Waiting",
+	[SessionStatus.idle]: "Idle",
 	[SessionStatus.completed]: "Completed",
 	[SessionStatus.failed]: "Failed",
 	[SessionStatus.unknown]: "Unknown",
@@ -814,12 +815,16 @@ export const getDisplayStatus = (
 ): SessionStatus => {
 	const resolvedStatus = status ?? SessionStatus.unknown;
 
+	if (resolvedStatus === SessionStatus.idle) {
+		return SessionStatus.idle;
+	}
+
 	if (
 		resolvedStatus === SessionStatus.waiting &&
 		options.finishReason &&
 		IDLE_WAITING_FINISH_REASONS.has(options.finishReason)
 	) {
-		return SessionStatus.completed;
+		return SessionStatus.idle;
 	}
 
 	if (
@@ -843,6 +848,10 @@ export const getStatusLabel = (
 		return AWAITING_SUBAGENT_STATUS_LABEL;
 	}
 
+	if (status === SessionStatus.idle) {
+		return IDLE_STATUS_LABEL;
+	}
+
 	if (
 		status === SessionStatus.waiting &&
 		options.finishReason &&
@@ -852,10 +861,7 @@ export const getStatusLabel = (
 	}
 
 	const finishReason = options.finishReason;
-	if (
-		finishReason === "interrupted" ||
-		finishReason === "turn_aborted"
-	) {
+	if (finishReason === "interrupted" || finishReason === "turn_aborted") {
 		return "Interrupted";
 	}
 

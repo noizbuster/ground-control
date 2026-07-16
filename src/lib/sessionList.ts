@@ -23,7 +23,7 @@ export const isSettledSession = (session: Session): boolean =>
 	session.status === SessionStatus.completed || isInterruptedSession(session);
 
 const isActiveWorkSession = (session: Session): boolean =>
-	!isSettledSession(session);
+	!isSettledSession(session) && session.status !== SessionStatus.idle;
 
 const getSessionStatusSortRank = (session: Session): number => {
 	if (isInterruptedSession(session)) {
@@ -36,6 +36,10 @@ const getSessionStatusSortRank = (session: Session): number => {
 
 	if (session.status === SessionStatus.running) {
 		return 1;
+	}
+
+	if (session.status === SessionStatus.idle) {
+		return 2;
 	}
 
 	if (session.status === SessionStatus.completed) {

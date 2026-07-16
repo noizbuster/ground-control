@@ -46,7 +46,7 @@ export const mapMissionControlSessionStatus = (
 			}
 		case "idle":
 			return {
-				status: SessionStatus.waiting,
+				status: SessionStatus.idle,
 				statusDetail:
 					lifecycleReason === "aborted"
 						? "Idle (aborted)"

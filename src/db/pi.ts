@@ -1345,6 +1345,7 @@ const resolveTaskResultStatus = (
 			});
 			if (
 				fallbackDisplayStatus === SessionStatus.completed ||
+				fallbackDisplayStatus === SessionStatus.idle ||
 				fallbackStatus === SessionStatus.failed
 			) {
 				return { status: fallbackStatus };

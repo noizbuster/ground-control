@@ -188,7 +188,7 @@ describe("getMissionControlSnapshotFromSqlite", () => {
 		);
 	});
 
-	it("maps idle to waiting / 'Idle between prompts'", () => {
+	it("maps idle to SessionStatus.idle / 'Idle between prompts'", () => {
 		const fixture = createMcSqliteFixture({
 			sessions: [
 				{
@@ -207,8 +207,9 @@ describe("getMissionControlSnapshotFromSqlite", () => {
 		if (!result.ok) {
 			return;
 		}
-		expect(result.value.sessions[0].status).toBe(SessionStatus.waiting);
+		expect(result.value.sessions[0].status).toBe(SessionStatus.idle);
 		expect(result.value.sessions[0].statusDetail).toBe("Idle between prompts");
+		expect(result.value.statusBySessionId["sess_idle"]).toBe(SessionStatus.idle);
 	});
 
 	it("maps stopped to completed with no statusDetail", () => {

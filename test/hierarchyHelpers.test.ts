@@ -36,32 +36,34 @@ describe("hierarchy status helpers", () => {
 		expect(getStatusLabel(SessionStatus.waiting)).toBe("Waiting");
 	});
 
-	it("renders idle waiting sessions with completed visuals", () => {
+	it("renders idle waiting sessions with idle visuals", () => {
 		expect(
 			getDisplayStatus(SessionStatus.waiting, {
 				finishReason: "end_turn",
 			}),
-		).toBe(SessionStatus.completed);
+		).toBe(SessionStatus.idle);
 		expect(
 			getDisplayStatus(SessionStatus.waiting, {
 				finishReason: "active_session",
 			}),
-		).toBe(SessionStatus.completed);
+		).toBe(SessionStatus.idle);
 		expect(
 			getDisplayStatus(SessionStatus.waiting, {
 				finishReason: "toolUse",
 			}),
-		).toBe(SessionStatus.completed);
+		).toBe(SessionStatus.idle);
 		expect(
 			getDisplayStatus(SessionStatus.waiting, {
 				finishReason: "tool_use",
 			}),
-		).toBe(SessionStatus.completed);
+		).toBe(SessionStatus.idle);
 		expect(
 			getDisplayStatus(SessionStatus.waiting, {
 				finishReason: "tool-calls",
 			}),
 		).toBe(SessionStatus.waiting);
+		expect(getDisplayStatus(SessionStatus.idle)).toBe(SessionStatus.idle);
+		expect(getStatusLabel(SessionStatus.idle)).toBe("Idle");
 	});
 });
 
