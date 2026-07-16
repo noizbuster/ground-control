@@ -49,10 +49,35 @@ export const getLatestActivityTimestamp = (
 	return latest;
 };
 
-/**
- * Returns stalled (5m) or blocked (10m) when a non-complete/non-idle session
- * and all its subagents have produced no updates.
- */
+export const getInactiveDurationMs = (
+	session: StallActivitySource,
+	now: number = Date.now(),
+): number | null => {
+	const latestActivity = normalizeTimestamp(
+		getLatestActivityTimestamp(session),
+	);
+	if (latestActivity === null) {
+		return null;
+	}
+
+	return Math.max(0, now - latestActivity);
+};
+
+export const formatInactiveDuration = (inactiveForMs: number): string => {
+	const totalMinutes = Math.max(0, Math.floor(inactiveForMs / 60_000));
+	if (totalMinutes < 60) {
+		return `${totalMinutes}m`;
+	}
+
+	const hours = Math.floor(totalMinutes / 60);
+	const minutes = totalMinutes % 60;
+	if (minutes === 0) {
+		return `${hours}h`;
+	}
+
+	return `${hours}h${minutes}m`;
+};
+
 export const getStallLevel = (
 	status: SessionStatus | undefined,
 	session: StallActivitySource,
@@ -62,14 +87,11 @@ export const getStallLevel = (
 		return "none";
 	}
 
-	const latestActivity = normalizeTimestamp(
-		getLatestActivityTimestamp(session),
-	);
-	if (latestActivity === null) {
+	const inactiveForMs = getInactiveDurationMs(session, now);
+	if (inactiveForMs === null) {
 		return "none";
 	}
 
-	const inactiveForMs = now - latestActivity;
 	if (inactiveForMs >= BLOCKED_THRESHOLD_MS) {
 		return "blocked";
 	}

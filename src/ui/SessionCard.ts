@@ -14,7 +14,12 @@ import {
 	getSessionSourceColor,
 	getSessionSourceLabel,
 } from "../lib/sessionSource";
-import { getStallLevel, type StallLevel } from "../lib/stallDetection";
+import {
+	formatInactiveDuration,
+	getInactiveDurationMs,
+	getStallLevel,
+	type StallLevel,
+} from "../lib/stallDetection";
 import { type Session, SessionStatus } from "../types";
 import { getSessionAgentDisplayName } from "./sessionAgentDisplay";
 
@@ -41,6 +46,7 @@ const STATUS_COLORS: Record<SessionStatus, string> = {
 	[SessionStatus.pending]: "#94A3B8",
 	[SessionStatus.running]: "#60A5FA",
 	[SessionStatus.waiting]: "#FBBF24",
+	[SessionStatus.idle]: "#94A3B8",
 	[SessionStatus.completed]: CARD_COLORS.title,
 	[SessionStatus.failed]: "#F87171",
 	[SessionStatus.unknown]: "#94A3B8",
@@ -193,6 +199,9 @@ const formatStatus = (
 	finishReason?: string,
 ): string => {
 	const baseLabel = getStatusLabel(status, { runningSubagents, finishReason });
+	if (status === SessionStatus.idle || baseLabel === "Idle") {
+		return "IDLE";
+	}
 	if (status !== SessionStatus.waiting) {
 		return baseLabel.toUpperCase();
 	}
@@ -202,14 +211,17 @@ const formatStatus = (
 
 const buildWaitingEdge = (
 	contentWidth: number,
+	status: SessionStatus,
 	finishReason?: string,
 ): string => {
 	const edgeWidth = Math.max(contentWidth, 11);
-	const waitingLabel = getStatusLabel(SessionStatus.waiting, { finishReason });
+	const waitingLabel = getStatusLabel(status, { finishReason });
 	const label =
 		waitingLabel === "Waiting"
 			? "[awaiting user]"
-			: `[${waitingLabel.toLowerCase()}]`;
+			: waitingLabel === "Idle"
+				? "[idle]"
+				: `[${waitingLabel.toLowerCase()}]`;
 
 	if (edgeWidth <= label.length + 2) {
 		return truncateText(label, edgeWidth);
@@ -232,9 +244,17 @@ const buildRecentCompletionEdge = (contentWidth: number): string => {
 const buildStallEdge = (
 	contentWidth: number,
 	level: Exclude<StallLevel, "none">,
+	inactiveForMs?: number | null,
 ): string => {
 	const edgeWidth = Math.max(contentWidth, 11);
-	const label = level === "blocked" ? "[blocked]" : "[stalled]";
+	const baseLabel = level === "blocked" ? "[blocked]" : "[stalled]";
+	const durationLabel =
+		level === "blocked" &&
+		typeof inactiveForMs === "number" &&
+		Number.isFinite(inactiveForMs)
+			? ` ${formatInactiveDuration(inactiveForMs)}`
+			: "";
+	const label = `${baseLabel}${durationLabel}`;
 
 	if (edgeWidth <= label.length + 2) {
 		return truncateText(label, edgeWidth);
@@ -271,19 +291,26 @@ export function SessionCard(props: SessionCardProps) {
 		runningSubagents: runningSubagentCount,
 		finishReason: session.finishReason,
 	});
+	const isIdleStatus =
+		status === SessionStatus.idle || displayStatus === SessionStatus.idle;
 	const showWaitingTreatment =
-		isWaiting && displayStatus === SessionStatus.waiting;
+		!isIdleStatus &&
+		isWaiting &&
+		displayStatus === SessionStatus.waiting;
 	const waitingEmphasisStrength = showWaitingTreatment ? 1 : 0;
+	const nowMs = Date.now();
 	const isRecentlyCompletedSession = isRecentlyCompleted(
 		displayStatus,
 		session.time_updated,
-		Date.now(),
+		nowMs,
 		session.finishReason,
 	);
 	// Awaiting-user edge always wins over stalled/blocked when both apply.
 	const stallLevel: StallLevel = showWaitingTreatment
 		? "none"
-		: getStallLevel(status, session);
+		: getStallLevel(status, session, nowMs);
+	const inactiveForMs =
+		stallLevel === "blocked" ? getInactiveDurationMs(session, nowMs) : null;
 	const borderColor = showWaitingTreatment
 		? interpolateHexColor(
 				agentColor,
@@ -335,7 +362,11 @@ export function SessionCard(props: SessionCardProps) {
 		session.finishReason,
 	);
 	const statusColor = STATUS_COLORS[displayStatus];
-	const waitingEdge = buildWaitingEdge(contentWidth, session.finishReason);
+	const waitingEdge = buildWaitingEdge(
+		contentWidth,
+		status,
+		session.finishReason,
+	);
 
 	const idLine = t`${dim(shortId)}`;
 
@@ -347,7 +378,7 @@ export function SessionCard(props: SessionCardProps) {
 	const stallEdgeLine =
 		stallLevel === "none"
 			? undefined
-			: t`${bold(fg(stallEdgeColor(stallLevel))(buildStallEdge(contentWidth, stallLevel)))}`;
+			: t`${bold(fg(stallEdgeColor(stallLevel))(buildStallEdge(contentWidth, stallLevel, inactiveForMs)))}`;
 	const recentCompletionEdgeLine =
 		!showWaitingTreatment && stallLevel === "none" && isRecentlyCompletedSession
 			? t`${bold(fg(CARD_COLORS.recentCompletedEdge)(buildRecentCompletionEdge(contentWidth)))}`

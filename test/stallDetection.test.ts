@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	BLOCKED_THRESHOLD_MS,
+	formatInactiveDuration,
+	getInactiveDurationMs,
 	getLatestActivityTimestamp,
 	getStallLevel,
 	STALL_THRESHOLD_MS,
@@ -144,5 +146,25 @@ describe("getStallLevel", () => {
 		});
 
 		expect(getStallLevel(SessionStatus.failed, session, NOW)).toBe("none");
+	});
+});
+
+describe("inactive duration helpers", () => {
+	it("reports minutes since the latest root or subagent activity", () => {
+		const session = createSession({
+			time_updated: NOW - 15 * 60 * 1000,
+			subagentSessions: [
+				createSubagent({ time_updated: NOW - 12 * 60 * 1000 }),
+			],
+		});
+
+		expect(getInactiveDurationMs(session, NOW)).toBe(12 * 60 * 1000);
+	});
+
+	it("formats short blocked durations as minutes and hours", () => {
+		expect(formatInactiveDuration(0)).toBe("0m");
+		expect(formatInactiveDuration(12 * 60 * 1000)).toBe("12m");
+		expect(formatInactiveDuration(60 * 60 * 1000)).toBe("1h");
+		expect(formatInactiveDuration(90 * 60 * 1000)).toBe("1h30m");
 	});
 });

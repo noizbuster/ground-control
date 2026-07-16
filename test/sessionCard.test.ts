@@ -109,18 +109,18 @@ describe("session stall edge", () => {
 		expect(lines.some((line) => line.startsWith("[blocked]"))).toBe(false);
 	});
 
-	it("renders a red blocked edge after 10 minutes without updates", () => {
+	it("renders a red blocked edge with inactive minutes after 10 minutes", () => {
 		const lines = getRenderedTextLines(
 			SessionCard({
 				session: createSession({
 					status: SessionStatus.running,
-					time_updated: Date.now() - 10 * 60 * 1000,
+					time_updated: Date.now() - 12 * 60 * 1000,
 				}),
 				width: 38,
 			}),
 		);
 
-		expect(lines.some((line) => line.startsWith("[blocked]"))).toBe(true);
+		expect(lines.some((line) => line.startsWith("[blocked] 12m"))).toBe(true);
 		expect(lines.some((line) => line.startsWith("[stalled]"))).toBe(false);
 	});
 
