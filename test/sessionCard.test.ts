@@ -93,6 +93,72 @@ describe("shortenDirectoryPath", () => {
 	});
 });
 
+describe("session stall edge", () => {
+	it("renders an orange stalled edge after 5 minutes without updates", () => {
+		const lines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					status: SessionStatus.running,
+					time_updated: Date.now() - 5 * 60 * 1000,
+				}),
+				width: 38,
+			}),
+		);
+
+		expect(lines.some((line) => line.startsWith("[stalled]"))).toBe(true);
+		expect(lines.some((line) => line.startsWith("[blocked]"))).toBe(false);
+	});
+
+	it("renders a red blocked edge after 10 minutes without updates", () => {
+		const lines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					status: SessionStatus.running,
+					time_updated: Date.now() - 10 * 60 * 1000,
+				}),
+				width: 38,
+			}),
+		);
+
+		expect(lines.some((line) => line.startsWith("[blocked]"))).toBe(true);
+		expect(lines.some((line) => line.startsWith("[stalled]"))).toBe(false);
+	});
+
+	it("prefers awaiting user over stalled when both would apply", () => {
+		const lines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					status: SessionStatus.waiting,
+					time_updated: Date.now() - 10 * 60 * 1000,
+				}),
+				isWaiting: true,
+				width: 38,
+			}),
+		);
+
+		expect(lines.some((line) => line.startsWith("[awaiting user]"))).toBe(true);
+		expect(lines.some((line) => line.startsWith("[stalled]"))).toBe(false);
+		expect(lines.some((line) => line.startsWith("[blocked]"))).toBe(false);
+	});
+
+	it("does not render stall edges for idle sessions", () => {
+		const lines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					status: SessionStatus.waiting,
+					finishReason: "end_turn",
+					time_updated: Date.now() - 10 * 60 * 1000,
+				}),
+				isWaiting: true,
+				width: 38,
+			}),
+		);
+
+		expect(lines.some((line) => line.startsWith("[stalled]"))).toBe(false);
+		expect(lines.some((line) => line.startsWith("[blocked]"))).toBe(false);
+	});
+});
+
 describe("session agent display", () => {
 	it("uses Default for root session card agents that would otherwise show Unknown", () => {
 		const lines = getRenderedTextLines(

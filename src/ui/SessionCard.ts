@@ -14,6 +14,7 @@ import {
 	getSessionSourceColor,
 	getSessionSourceLabel,
 } from "../lib/sessionSource";
+import { getStallLevel, type StallLevel } from "../lib/stallDetection";
 import { type Session, SessionStatus } from "../types";
 import { getSessionAgentDisplayName } from "./sessionAgentDisplay";
 
@@ -32,6 +33,8 @@ const CARD_COLORS = {
 	selectedAccent: "#F59E0B",
 	waitingEdge: "#FBBF24",
 	recentCompletedEdge: "#4ADE80",
+	stalledEdge: "#F59E0B",
+	blockedEdge: "#F87171",
 } as const;
 
 const STATUS_COLORS: Record<SessionStatus, string> = {
@@ -226,6 +229,26 @@ const buildRecentCompletionEdge = (contentWidth: number): string => {
 	return `${label}${"+".repeat(edgeWidth - label.length)}`;
 };
 
+const buildStallEdge = (
+	contentWidth: number,
+	level: Exclude<StallLevel, "none">,
+): string => {
+	const edgeWidth = Math.max(contentWidth, 11);
+	const label = level === "blocked" ? "[blocked]" : "[stalled]";
+
+	if (edgeWidth <= label.length + 2) {
+		return truncateText(label, edgeWidth);
+	}
+
+	return `${label}${"-".repeat(edgeWidth - label.length)}`;
+};
+
+const stallEdgeColor = (level: Exclude<StallLevel, "none">): string => {
+	return level === "blocked"
+		? CARD_COLORS.blockedEdge
+		: CARD_COLORS.stalledEdge;
+};
+
 export function SessionCard(props: SessionCardProps) {
 	const width = clampWidth(props.width);
 	const contentWidth = width - CONTENT_WIDTH_OFFSET;
@@ -255,18 +278,26 @@ export function SessionCard(props: SessionCardProps) {
 		displayStatus,
 		session.time_updated,
 	);
+	// Awaiting-user edge always wins over stalled/blocked when both apply.
+	const stallLevel: StallLevel = showWaitingTreatment
+		? "none"
+		: getStallLevel(status, session);
 	const borderColor = showWaitingTreatment
 		? interpolateHexColor(
 				agentColor,
 				CARD_COLORS.waitingEdge,
 				waitingEmphasisStrength,
 			)
-		: isRecentlyCompletedSession
-			? CARD_COLORS.recentCompletedEdge
-			: agentColor;
+		: stallLevel !== "none"
+			? stallEdgeColor(stallLevel)
+			: isRecentlyCompletedSession
+				? CARD_COLORS.recentCompletedEdge
+				: agentColor;
 	const isActiveSelection = props.isSelected && (props.isActivePane ?? true);
 	const borderStyle =
-		isActiveSelection || isRecentlyCompletedSession ? "heavy" : "rounded";
+		isActiveSelection || isRecentlyCompletedSession || stallLevel !== "none"
+			? "heavy"
+			: "rounded";
 
 	const title = truncateText(
 		session.title.trim() || "Untitled session",
@@ -311,9 +342,14 @@ export function SessionCard(props: SessionCardProps) {
 	const waitingEdgeLine = showWaitingTreatment
 		? t`${bold(fg(interpolateHexColor(CARD_COLORS.meta, CARD_COLORS.waitingEdge, waitingEmphasisStrength))(waitingEdge))}`
 		: undefined;
-	const recentCompletionEdgeLine = isRecentlyCompletedSession
-		? t`${bold(fg(CARD_COLORS.recentCompletedEdge)(buildRecentCompletionEdge(contentWidth)))}`
-		: undefined;
+	const stallEdgeLine =
+		stallLevel === "none"
+			? undefined
+			: t`${bold(fg(stallEdgeColor(stallLevel))(buildStallEdge(contentWidth, stallLevel)))}`;
+	const recentCompletionEdgeLine =
+		!showWaitingTreatment && stallLevel === "none" && isRecentlyCompletedSession
+			? t`${bold(fg(CARD_COLORS.recentCompletedEdge)(buildRecentCompletionEdge(contentWidth)))}`
+			: undefined;
 	const agentLine = t`${dim("agent   ")}${fg(sourceColor)(sourceLabel)}${dim(" · ")}${fg(agentColor)(agentLabel)}`;
 	const subagentLine = t`${dim("subagents ")}${fg(CARD_COLORS.title)(`${runningSubagentCount} / ${subagentCount}`)}`;
 	const directoryLine = t`${dim("dir     ")}${fg(CARD_COLORS.title)(directoryLabel)}`;
@@ -406,6 +442,16 @@ export function SessionCard(props: SessionCardProps) {
 			? [
 					Text({
 						content: waitingEdgeLine,
+						width: contentWidth,
+						wrapMode: "none",
+						truncate: true,
+					}),
+				]
+			: []),
+		...(stallEdgeLine
+			? [
+					Text({
+						content: stallEdgeLine,
 						width: contentWidth,
 						wrapMode: "none",
 						truncate: true,
