@@ -58,7 +58,7 @@ After launch, use these shortcuts to navigate and control the monitor:
 | `t` | Open hierarchy directly in timeline view |
 | `a` | Attach to the selected session |
 | `i` | Copy the selected session ID |
-| `K` | Stop supported child sessions while leaving the selected parent active (detail/sideview mode only) |
+| `K` | Stop stuck/active sessions for the selection (children +, for OpenCode/Codex, a non-terminal selected parent). Graceful stop first; delete fallback on failure |
 | `d` | Request delete for the selected session |
 | `y` / `n` | Confirm or cancel delete prompt |
 | `r` | Refresh immediately |
@@ -66,16 +66,19 @@ After launch, use these shortcuts to navigate and control the monitor:
 | `Esc` / `q` | Cancel prompt, close current view, or quit from the main view |
 | `Ctrl+C` | Quit immediately |
 
-### Stop Child Sessions (`K`)
+### Stop Stuck/Active Sessions (`K`)
 
-Available in detail or sideview mode. Press `K` (Shift+K) to stop supported child sessions of the selected session. For Mission Control, the selected parent remains active.
+Press `K` (Shift+K) from the main grid, detail, or sideview to stop stuck or still-active sessions under the selection.
 
-Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Child-abort is supported for OpenCode, Codex, and Mission Control sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mc --session <session-id>` (`mctrl` is honored as a legacy alias/fallback).
+- **OpenCode / Codex**: stops every non-terminal child/descendant, and also stops the selected parent when the parent itself is non-terminal (running/waiting/pending/unknown/idle). This covers unfinished compaction, zombie busy roots, and mid-stream hangs.
+- **Mission Control**: stops abortable children only. The selected Mission Control parent is never stopped (existing contract).
+
+Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Session-stop is supported for OpenCode, Codex, and Mission Control sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mc --session <session-id>` (`mctrl` is honored as a legacy alias/fallback).
 
 OpenCode keeps its source-native two-stage flow:
 
-1. **Graceful stop**: sends a "stop" message to each child session via `opencode run --session <id>`, which triggers normal completion (`finish: "stop"`).
-2. **Delete fallback**: if graceful stop fails for any child, a per-item confirmation dialog appears where you can choose to delete (`y`), skip (`n`), or cancel all (`Esc`/`q`).
+1. **Graceful stop**: sends a "stop" message to each target session via `opencode run --session <id> stop`, which triggers normal completion (`finish: "stop"`).
+2. **Delete fallback**: if graceful stop fails for any target, a per-item confirmation dialog appears where you can choose to delete (`y`), skip (`n`), or cancel all (`Esc`/`q`).
 
 Mission Control uses one awaited `mc session stop <parent> --child-only` command with `MCTRL_DATA_DIR` set to the selected database's parent. `mctrl` is used only when `mc` is unavailable. Exit `0` completes without a fallback. Exit `2`, a launch failure, a refresh failure, or an unstable hierarchy never opens a fallback. Only exit `1` triggers a fresh snapshot of still-abortable descendants: missing or expired leases may enter confirmation; a live lease shows `Owner still active; retry stop`; unknown lease authority is no-delete. Before deletion, Ground Control takes a second snapshot and requires the same eligible members, raw statuses, lease safety, and tree tokens. Each confirmed minimal subtree root is deleted once with a non-force guarded command and its refreshed token. `K` never stops its selected Mission Control parent and never routes a Mission Control fallback through OpenCode.
 

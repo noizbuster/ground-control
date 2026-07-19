@@ -47,6 +47,10 @@ import {
 	isSessionProcessComm,
 	parseAttachedSessionIdsFromProcessList,
 } from "./lib/attachedSessionSignals";
+import {
+	formatAbortTargetSummary,
+	getAbortTargets,
+} from "./lib/abortTargets";
 import { handleDetailMouseDown as handleDetailMouseDownEvent } from "./lib/detailMouse";
 import {
 	clampGridScrollTop,
@@ -367,6 +371,8 @@ interface AppState {
 	deleteConfirmationError: string | null;
 	pendingKillSessionId: string | null;
 	pendingKillChildrenCount: number;
+	pendingKillIncludesSelected: boolean;
+	pendingKillSummary: string | null;
 	isKillingChildren: boolean;
 	killChildrenError: string | null;
 	killFallbackRemaining: string[];
@@ -721,20 +727,21 @@ const createStatsModalContent = (state: AppState, modalWidth: number) => {
 const createKillChildrenConfirmationDialog = (params: {
 	sessionTitle: string;
 	sessionId: string;
-	childCount: number;
+	summary: string;
 	width: number;
 	isKilling: boolean;
 	errorMessage: string | null;
 }) => {
+	const targetLabel = params.summary;
 	const heading = params.isKilling
-		? "Aborting child sessions"
-		: "Abort child sessions";
+		? "Stopping stuck/active sessions"
+		: "Stop stuck/active sessions";
 	const body = params.isKilling
-		? `Aborting ${params.childCount} child session${params.childCount === 1 ? "" : "s"}. Please wait.`
-		: `Abort ${params.childCount} active child session${params.childCount === 1 ? "" : "s"}? Sessions will be gracefully stopped via the server when available. Otherwise, sessions will be deleted.`;
+		? `Stopping ${targetLabel}. Please wait.`
+		: `Stop ${targetLabel}? Graceful stop is tried first (finish: stop). If that fails, you can delete per session.`;
 	const hint = params.isKilling
 		? "The session list will refresh automatically when done."
-		: "Press y to abort children. Press Esc or n to cancel.";
+		: "Press y to stop. Press Esc or n to cancel.";
 
 	return Box(
 		{
@@ -1027,6 +1034,8 @@ const main = async () => {
 		deleteConfirmationError: null,
 		pendingKillSessionId: null,
 		pendingKillChildrenCount: 0,
+		pendingKillIncludesSelected: false,
+		pendingKillSummary: null,
 		isKillingChildren: false,
 		killChildrenError: null,
 		killFallbackRemaining: [],
@@ -1870,9 +1879,13 @@ const main = async () => {
 			state.sessions[state.selectedIndex] ?? null;
 		const canAttachSelected = canAttachToSession(selectedSessionForActions);
 		const canDeleteSelected = canDeleteSession(selectedSessionForActions);
+		const selectedAbortPlan =
+			selectedSessionForActions &&
+			canAbortSessionChildren(selectedSessionForActions)
+				? getAbortTargets(selectedSessionForActions)
+				: null;
 		const canAbortChildrenSelected =
-			(state.isDetailMode || state.isSideviewMode) &&
-			canAbortSessionChildren(selectedSessionForActions);
+			(selectedAbortPlan?.targets.length ?? 0) > 0;
 		const shortcutGuide = deletePromptActive
 			? state.pendingDeleteSessionId
 				? state.isDeletingSession
@@ -1882,12 +1895,12 @@ const main = async () => {
 					? "Deleting confirmed sessions..."
 					: state.killFallbackRemaining.length > 0
 						? "Delete child? y: delete | n: skip | Esc: cancel all"
-						: "Abort child sessions? y: confirm | Esc/n: cancel"
+						: "Stop stuck/active sessions? y: confirm | Esc/n: cancel"
 			: state.isHierarchyMode
 				? `Tab: view(${hierarchyViewLabel}) | x: info(${state.hierarchyInfoMode}) | f: filter(${hierarchyFilterLabel}) | ${hierarchyScrollHint} | q/Esc: close`
 				: state.focusedPane === "detail"
-					? `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓/PgUp/PgDn: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`
-					: `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/PgUp/PgDn: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`;
+					? `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓/PgUp/PgDn: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: stop stuck` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`
+					: `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/PgUp/PgDn: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: stop stuck` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`;
 		const styledShortcutGuide = deletePromptActive
 			? state.pendingDeleteSessionId
 				? state.isDeletingSession
@@ -1897,14 +1910,14 @@ const main = async () => {
 					? t`${fg(APP_PALETTE.warning)("Deleting confirmed sessions...")}`
 					: state.killFallbackRemaining.length > 0
 						? t`${fg(APP_PALETTE.danger)("Delete child? ")}${footerShortcut("y")}${dim(": delete | ")}${footerShortcut("n")}${dim(": skip | ")}${footerShortcut("Esc")}${dim(": cancel all")}`
-						: t`${fg(APP_PALETTE.warning)("Abort child sessions? ")}${footerShortcut("y")}${dim(": confirm | ")}${footerShortcut("Esc/n")}${dim(": cancel")}`
+						: t`${fg(APP_PALETTE.warning)("Stop stuck/active sessions? ")}${footerShortcut("y")}${dim(": confirm | ")}${footerShortcut("Esc/n")}${dim(": cancel")}`
 			: state.isHierarchyMode
 				? effectiveHierarchyViewMode === "flow"
 					? t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(hierarchyFilterLabel)}${dim(") | ")}${footerShortcut("↑/↓/PgUp/PgDn")}${dim(": scroll | ")}${footerShortcut("←/→")}${dim(": pan timeline | ")}${footerShortcut("q/Esc")}${dim(": close")}`
 					: t`${footerShortcut("Tab")}${dim(": view(")}${footerState(hierarchyViewLabel)}${dim(") | ")}${footerShortcut("x")}${dim(": info(")}${footerState(state.hierarchyInfoMode)}${dim(") | ")}${footerShortcut("f")}${dim(": filter(")}${footerState(hierarchyFilterLabel)}${dim(") | ")}${footerShortcut("↑/↓/PgUp/PgDn")}${dim(": scroll | ")}${footerShortcut("q/Esc")}${dim(": close")}`
 				: state.focusedPane === "detail"
-					? t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut("↑/↓/PgUp/PgDn")}${dim(": scroll detail | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`
-					: t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut("arrows/PgUp/PgDn")}${dim(": move grid | ")}${footerShortcut("Enter")}${dim(": detail | ")}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: abort children` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`;
+					? t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut("↑/↓/PgUp/PgDn")}${dim(": scroll detail | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: stop stuck` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`
+					: t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut("arrows/PgUp/PgDn")}${dim(": move grid | ")}${footerShortcut("Enter")}${dim(": detail | ")}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: stop stuck` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`;
 		const footerAvailableWidth = innerWidth;
 		const footerWraps =
 			shortcutGuide.length + focusSummary.length + FOOTER_INLINE_GAP >
@@ -1970,7 +1983,7 @@ const main = async () => {
 					? "deleting sessions..."
 					: state.killFallbackRemaining.length > 0
 						? `delete confirm: ${state.killFallbackCurrentIndex + 1}/${state.killFallbackRemaining.length}`
-						: `abort armed: ${state.pendingKillChildrenCount} children`
+						: `stop armed: ${state.pendingKillSummary ?? `${state.pendingKillChildrenCount} targets`}`
 				: deletePromptActive
 					? state.isDeletingSession
 						? "delete in progress"
@@ -1990,7 +2003,7 @@ const main = async () => {
 					? t`${fg(APP_PALETTE.warning)("deleting sessions...")}`
 					: state.killFallbackRemaining.length > 0
 						? t`${fg(APP_PALETTE.danger)("delete confirm")}${dim(": ")}${footerState(`${state.killFallbackCurrentIndex + 1}/${state.killFallbackRemaining.length}`)}`
-						: t`${fg(APP_PALETTE.warning)("abort armed")}${dim(": ")}${footerState(`${state.pendingKillChildrenCount} children`)}`
+						: t`${fg(APP_PALETTE.warning)("stop armed")}${dim(": ")}${footerState(state.pendingKillSummary ?? `${state.pendingKillChildrenCount} targets`)}`
 				: deletePromptActive
 					? state.isDeletingSession
 						? t`${fg(APP_PALETTE.warning)("delete in progress")}`
@@ -2221,7 +2234,9 @@ const main = async () => {
 										"Selected session",
 									),
 									sessionId: state.pendingKillSessionId,
-									childCount: state.pendingKillChildrenCount,
+									summary:
+										state.pendingKillSummary ??
+										`${state.pendingKillChildrenCount} child session${state.pendingKillChildrenCount === 1 ? "" : "s"}`,
 									width: Math.min(Math.max(width - 8, 36), 72),
 									isKilling: state.isKillingChildren,
 									errorMessage: state.killChildrenError,
@@ -3239,20 +3254,22 @@ const main = async () => {
 		if (!selectedSession) return;
 		if (!canAbortSessionChildren(selectedSession)) {
 			showToast(
-				`${getSessionSourceLabel(selectedSession.sessionSource)} child abort is not available yet`,
+				`${getSessionSourceLabel(selectedSession.sessionSource)} session stop is not available yet`,
 			);
 			return;
 		}
 
-		const activeChildren = getAbortableChildren(selectedSession);
+		const plan = getAbortTargets(selectedSession);
 
-		if (activeChildren.length === 0) {
-			showToast("No active child sessions to abort");
+		if (plan.targets.length === 0) {
+			showToast("No stuck or active sessions to stop");
 			return;
 		}
 
 		state.pendingKillSessionId = selectedSession.id;
-		state.pendingKillChildrenCount = activeChildren.length;
+		state.pendingKillChildrenCount = plan.childCount;
+		state.pendingKillIncludesSelected = plan.includesSelected;
+		state.pendingKillSummary = formatAbortTargetSummary(plan);
 		state.killChildrenError = null;
 		state.isKillingChildren = false;
 		state.killFallbackNotice = null;
@@ -3269,6 +3286,8 @@ const main = async () => {
 			return;
 		state.pendingKillSessionId = null;
 		state.pendingKillChildrenCount = 0;
+		state.pendingKillIncludesSelected = false;
+		state.pendingKillSummary = null;
 		state.isKillingChildren = false;
 		state.killChildrenError = null;
 		state.killFallbackRemaining = [];
@@ -3279,22 +3298,11 @@ const main = async () => {
 		render();
 	};
 
-	const getAbortableChildren = (session: Session): SubagentSession[] => {
-		const children = session.subagentSessions ?? [];
-		if (session.sessionSource === "mission-control") {
-			return children.filter(
-				(child) => child.sourceMetadata?.missionControl?.abortable === true,
-			);
-		}
-		return children.filter(
-			(child) =>
-				child.status !== SessionStatus.completed &&
-				child.status !== SessionStatus.failed,
-		);
-	};
-
 	const gracefulAbortSession = async (
-		session: SubagentSession,
+		session: Pick<
+			SubagentSession,
+			"id" | "sessionSource" | "directory" | "sourceMetadata"
+		>,
 		projectDir: string,
 	): Promise<{ ok: boolean; error?: string }> => {
 		if (session.sessionSource === "codex") {
@@ -3337,20 +3345,24 @@ const main = async () => {
 		const selectedSession = state.allSessions.find(
 			(s) => s.id === rootSessionId,
 		);
-		if (!selectedSession?.subagentSessions?.length) {
+		if (!selectedSession) {
 			state.pendingKillSessionId = null;
 			state.pendingKillChildrenCount = 0;
+			state.pendingKillIncludesSelected = false;
+			state.pendingKillSummary = null;
 			state.isKillingChildren = false;
 			state.killChildrenError = null;
 			render();
 			return;
 		}
 
-		const activeChildren = getAbortableChildren(selectedSession);
+		const plan = getAbortTargets(selectedSession);
 
-		if (activeChildren.length === 0) {
+		if (plan.targets.length === 0) {
 			state.pendingKillSessionId = null;
 			state.pendingKillChildrenCount = 0;
+			state.pendingKillIncludesSelected = false;
+			state.pendingKillSummary = null;
 			state.isKillingChildren = false;
 			state.killChildrenError = null;
 			render();
@@ -3388,6 +3400,8 @@ const main = async () => {
 				}
 				state.pendingKillSessionId = null;
 				state.pendingKillChildrenCount = 0;
+				state.pendingKillIncludesSelected = false;
+				state.pendingKillSummary = null;
 				state.killChildrenError = null;
 				state.gridFollowSelectionOnRender = true;
 				showToast("Stopped Mission Control child sessions");
@@ -3396,11 +3410,12 @@ const main = async () => {
 			}
 
 			const projectDir = selectedSession.directory || process.cwd();
+			const targets = plan.targets;
 
 			const results = await Promise.allSettled(
-				activeChildren.map((child) => gracefulAbortSession(child, projectDir)),
+				targets.map((target) => gracefulAbortSession(target, projectDir)),
 			);
-			const failedIds = activeChildren
+			const failedIds = targets
 				.filter((_, i) => {
 					const result = results[i];
 					return (
@@ -3409,8 +3424,8 @@ const main = async () => {
 						(result.status === "fulfilled" && !result.value.ok)
 					);
 				})
-				.map((child) => child.id);
-			const successCount = activeChildren.length - failedIds.length;
+				.map((target) => target.id);
+			const successCount = targets.length - failedIds.length;
 
 			if (failedIds.length > 0) {
 				state.isKillingChildren = false;
@@ -3419,7 +3434,7 @@ const main = async () => {
 				state.killFallbackCurrentIndex = 0;
 				if (successCount > 0) {
 					showToast(
-						`Stopped ${successCount}/${activeChildren.length} children (${failedIds.length} need delete)`,
+						`Stopped ${successCount}/${targets.length} sessions (${failedIds.length} need delete)`,
 					);
 				}
 				startPolling();
@@ -3430,10 +3445,14 @@ const main = async () => {
 			state.isKillingChildren = false;
 			state.pendingKillSessionId = null;
 			state.pendingKillChildrenCount = 0;
+			state.pendingKillIncludesSelected = false;
+			state.pendingKillSummary = null;
 			state.killChildrenError = null;
 			state.gridFollowSelectionOnRender = true;
 
-			showToast(`Stopped ${activeChildren.length} child sessions`);
+			showToast(
+				`Stopped ${targets.length} session${targets.length === 1 ? "" : "s"}`,
+			);
 			startPolling();
 			refreshSessions();
 		} catch (error) {
@@ -3441,7 +3460,7 @@ const main = async () => {
 			state.killChildrenError =
 				error instanceof Error
 					? error.message
-					: "Failed to abort child sessions.";
+					: "Failed to stop stuck/active sessions.";
 			startPolling();
 			render();
 		}
@@ -3479,6 +3498,8 @@ const main = async () => {
 			state.missionControlFallbackPlan = null;
 			state.pendingKillSessionId = null;
 			state.pendingKillChildrenCount = 0;
+			state.pendingKillIncludesSelected = false;
+			state.pendingKillSummary = null;
 			state.killChildrenError = null;
 			render();
 			return;
@@ -3519,6 +3540,8 @@ const main = async () => {
 				state.isKillingChildren = false;
 				state.pendingKillSessionId = null;
 				state.pendingKillChildrenCount = 0;
+				state.pendingKillIncludesSelected = false;
+				state.pendingKillSummary = null;
 				state.killChildrenError = null;
 				state.killFallbackRemaining = [];
 				state.killFallbackConfirmed = [];
@@ -3579,6 +3602,8 @@ const main = async () => {
 			state.isKillingChildren = false;
 			state.pendingKillSessionId = null;
 			state.pendingKillChildrenCount = 0;
+			state.pendingKillIncludesSelected = false;
+			state.pendingKillSummary = null;
 			state.killChildrenError = null;
 			state.killFallbackRemaining = [];
 			state.killFallbackConfirmed = [];
@@ -3589,10 +3614,12 @@ const main = async () => {
 
 			if (failedCount > 0) {
 				showToast(
-					`Deleted ${successCount}/${confirmedIds.length} children (${failedCount} failed)`,
+					`Deleted ${successCount}/${confirmedIds.length} sessions (${failedCount} failed)`,
 				);
 			} else {
-				showToast(`Deleted ${confirmedIds.length} child sessions`);
+				showToast(
+					`Deleted ${confirmedIds.length} session${confirmedIds.length === 1 ? "" : "s"}`,
+				);
 			}
 			startPolling();
 			refreshSessions();
@@ -3608,6 +3635,8 @@ const main = async () => {
 	const cancelKillFallbackConfirmation = () => {
 		state.pendingKillSessionId = null;
 		state.pendingKillChildrenCount = 0;
+		state.pendingKillIncludesSelected = false;
+		state.pendingKillSummary = null;
 		state.killChildrenError = null;
 		state.killFallbackRemaining = [];
 		state.killFallbackConfirmed = [];
@@ -4061,11 +4090,7 @@ const main = async () => {
 			return;
 		}
 
-		if (
-			key.name === "k" &&
-			key.shift &&
-			(state.isDetailMode || state.isSideviewMode)
-		) {
+		if (key.name === "k" && key.shift) {
 			openKillChildrenConfirmation();
 			return;
 		}
