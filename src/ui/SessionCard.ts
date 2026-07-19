@@ -308,7 +308,7 @@ export function SessionCard(props: SessionCardProps) {
 	// Awaiting-user edge always wins over stalled/blocked when both apply.
 	const stallLevel: StallLevel = showWaitingTreatment
 		? "none"
-		: getStallLevel(status, session, nowMs);
+		: getStallLevel(displayStatus, session, nowMs);
 	const inactiveForMs =
 		stallLevel === "blocked" ? getInactiveDurationMs(session, nowMs) : null;
 	const borderColor = showWaitingTreatment

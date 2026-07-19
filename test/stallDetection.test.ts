@@ -76,6 +76,23 @@ describe("getStallLevel", () => {
 		expect(getStallLevel(SessionStatus.completed, session, NOW)).toBe("none");
 	});
 
+	it("stalls AWAITING SUBAGENT when display status is running and children are idle", () => {
+		// Card label uses completed+running children → displayStatus running.
+		// Stall must use that display status, not raw completed.
+		const session = createSession({
+			status: SessionStatus.completed,
+			time_updated: NOW - BLOCKED_THRESHOLD_MS - 1,
+			subagentSessions: [
+				createSubagent({
+					status: SessionStatus.running,
+					time_updated: NOW - BLOCKED_THRESHOLD_MS - 1,
+				}),
+			],
+		});
+
+		expect(getStallLevel(SessionStatus.running, session, NOW)).toBe("blocked");
+	});
+
 	it("returns none for idle waiting sessions", () => {
 		const session = createSession({
 			status: SessionStatus.waiting,
