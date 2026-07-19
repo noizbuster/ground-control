@@ -34,6 +34,7 @@ import { deleteClaudeSession } from "./db/claude";
 import { deleteCodexSession } from "./db/codex";
 import { abortCodexChildSession } from "./db/codex-child-abort";
 import { deleteMissionControlSession } from "./db/missionControl";
+import { stopOpencodeSession } from "./db/opencode-session-stop";
 import { deleteOmpSession, deletePiSession } from "./db/pi";
 import {
 	createErrorResponse,
@@ -738,7 +739,7 @@ const createKillChildrenConfirmationDialog = (params: {
 		: "Stop stuck/active sessions";
 	const body = params.isKilling
 		? `Stopping ${targetLabel}. Please wait.`
-		: `Stop ${targetLabel}? Graceful stop is tried first (finish: stop). If that fails, you can delete per session.`;
+		: `Stop ${targetLabel}? Order: abort API → stop message → delete confirmation if both fail.`;
 	const hint = params.isKilling
 		? "The session list will refresh automatically when done."
 		: "Press y to stop. Press Esc or n to cancel.";
@@ -3309,33 +3310,10 @@ const main = async () => {
 			return abortCodexChildSession(session);
 		}
 
-		try {
-			const opencodeExecutable = which("opencode") ?? "opencode";
-			const proc = spawn(
-				opencodeExecutable,
-				["run", "--session", session.id, "stop"],
-				{ cwd: projectDir, stdio: ["ignore", "pipe", "pipe"] },
-			);
-			const exitCode = await Promise.race([
-				new Promise<number>((resolve, reject) => {
-					proc.on("close", (code) => resolve(code ?? 1));
-					proc.on("error", reject);
-				}),
-				new Promise<number>((_, reject) =>
-					setTimeout(() => {
-						proc.kill();
-						reject(new Error("timed out"));
-					}, 15000),
-				),
-			]);
-			if (exitCode === 0) return { ok: true };
-			return { ok: false, error: `exit code ${exitCode}` };
-		} catch (error) {
-			return {
-				ok: false,
-				error: error instanceof Error ? error.message : "Failed to run abort",
-			};
-		}
+		return stopOpencodeSession({
+			sessionId: session.id,
+			directory: session.directory?.trim() || projectDir,
+		});
 	};
 
 	const confirmKillChildren = async () => {

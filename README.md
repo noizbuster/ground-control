@@ -75,10 +75,13 @@ Press `K` (Shift+K) from the main grid, detail, or sideview to stop stuck or sti
 
 Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Session-stop is supported for OpenCode, Codex, and Mission Control sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mc --session <session-id>` (`mctrl` is honored as a legacy alias/fallback).
 
-OpenCode keeps its source-native two-stage flow:
+OpenCode uses a three-stage stop flow per target:
 
-1. **Graceful stop**: sends a "stop" message to each target session via `opencode run --session <id> stop`, which triggers normal completion (`finish: "stop"`).
-2. **Delete fallback**: if graceful stop fails for any target, a per-item confirmation dialog appears where you can choose to delete (`y`), skip (`n`), or cancel all (`Esc`/`q`).
+1. **Abort API**: `POST /session/<id>/abort` against discovered local OpenCode HTTP servers, then (if needed) a short-lived `opencode serve`.
+2. **Stop message**: if abort is unavailable or fails, send `opencode run --session <id> stop` (user "stop" turn).
+3. **Delete fallback**: if both fail, a per-item confirmation dialog appears where you can choose to delete (`y`), skip (`n`), or cancel all (`Esc`/`q`).
+
+There is no separate OpenCode HTTP "stop" endpoint in current CLI builds — only abort.
 
 Mission Control uses one awaited `mc session stop <parent> --child-only` command with `MCTRL_DATA_DIR` set to the selected database's parent. `mctrl` is used only when `mc` is unavailable. Exit `0` completes without a fallback. Exit `2`, a launch failure, a refresh failure, or an unstable hierarchy never opens a fallback. Only exit `1` triggers a fresh snapshot of still-abortable descendants: missing or expired leases may enter confirmation; a live lease shows `Owner still active; retry stop`; unknown lease authority is no-delete. Before deletion, Ground Control takes a second snapshot and requires the same eligible members, raw statuses, lease safety, and tree tokens. Each confirmed minimal subtree root is deleted once with a non-force guarded command and its refreshed token. `K` never stops its selected Mission Control parent and never routes a Mission Control fallback through OpenCode.
 
