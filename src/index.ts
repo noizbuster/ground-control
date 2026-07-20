@@ -43,15 +43,12 @@ import {
 	type RefreshResponse,
 	type RefreshSnapshotPayload,
 } from "./db/refresh-worker-protocol";
+import { formatAbortTargetSummary, getAbortTargets } from "./lib/abortTargets";
 import {
 	getExternalAttachedDirectoryKey,
 	isSessionProcessComm,
 	parseAttachedSessionIdsFromProcessList,
 } from "./lib/attachedSessionSignals";
-import {
-	formatAbortTargetSummary,
-	getAbortTargets,
-} from "./lib/abortTargets";
 import { handleDetailMouseDown as handleDetailMouseDownEvent } from "./lib/detailMouse";
 import {
 	clampGridScrollTop,
@@ -81,6 +78,7 @@ import {
 	normalizeDirectoryPath,
 	type SessionFilterMode,
 	type SessionSortMode,
+	selectDirectoryPinnedSessionIds,
 } from "./lib/sessionList";
 import type { SessionStatusById } from "./lib/sessionSnapshot";
 import {
@@ -97,13 +95,13 @@ import {
 	isTextSelectionInProgress,
 } from "./lib/textSelection";
 import { which } from "./lib/which";
-import {
-	type HierarchyFilterMode,
-	type HierarchyInfoMode,
-	type HierarchyViewMode,
-	type Session,
+import type {
+	HierarchyFilterMode,
+	HierarchyInfoMode,
+	HierarchyViewMode,
+	Session,
 	SessionStatus,
-	type SubagentSession,
+	SubagentSession,
 } from "./types";
 import {
 	createDetailPanelContent,
@@ -2376,54 +2374,19 @@ const main = async () => {
 			.sort((left, right) => right.time_updated - left.time_updated);
 		const latestCompletedSessionId = orderedSettledSessions[0]?.id ?? null;
 
-		const externalDirectoryPinnedSessionIds = new Set<string>();
-		if (state.externalAttachedSessionDirectoryCounts.size > 0) {
-			const nonSettledCountByDirectory = new Map<string, number>();
-			for (const session of snapshot.sessions) {
-				if (isSettledSession(session)) {
-					continue;
-				}
+		const getAttachedDirectoryKey = (
+			session: (typeof snapshot.sessions)[number],
+		) =>
+			getExternalAttachedDirectoryKey(
+				session.sessionSource,
+				normalizeDirectoryPath(session.directory),
+			);
 
-				const directoryKey = getExternalAttachedDirectoryKey(
-					session.sessionSource,
-					normalizeDirectoryPath(session.directory),
-				);
-				const existingCount =
-					nonSettledCountByDirectory.get(directoryKey) ?? 0;
-				nonSettledCountByDirectory.set(directoryKey, existingCount + 1);
-			}
-
-			const remainingDirectorySlots = new Map<string, number>();
-			for (const [
-				directoryKey,
-				totalSlots,
-			] of state.externalAttachedSessionDirectoryCounts) {
-				const consumedByNonSettled =
-					nonSettledCountByDirectory.get(directoryKey) ?? 0;
-				const remainingSlots = totalSlots - consumedByNonSettled;
-				if (remainingSlots > 0) {
-					remainingDirectorySlots.set(directoryKey, remainingSlots);
-				}
-			}
-
-			for (const session of orderedSettledSessions) {
-				const directoryKey = getExternalAttachedDirectoryKey(
-					session.sessionSource,
-					normalizeDirectoryPath(session.directory),
-				);
-				const remainingSlots = remainingDirectorySlots.get(directoryKey) ?? 0;
-				if (remainingSlots <= 0) {
-					continue;
-				}
-
-				externalDirectoryPinnedSessionIds.add(session.id);
-				if (remainingSlots === 1) {
-					remainingDirectorySlots.delete(directoryKey);
-				} else {
-					remainingDirectorySlots.set(directoryKey, remainingSlots - 1);
-				}
-			}
-		}
+		const externalDirectoryPinnedSessionIds = selectDirectoryPinnedSessionIds({
+			sessions: snapshot.sessions,
+			directoryProcessCounts: state.externalAttachedSessionDirectoryCounts,
+			getDirectoryKey: getAttachedDirectoryKey,
+		});
 
 		const pinnedSessionIds = new Set([
 			...state.externalAttachedSessionIds,

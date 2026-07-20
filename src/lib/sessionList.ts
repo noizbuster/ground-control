@@ -22,8 +22,66 @@ export const isInterruptedSession = (session: Session): boolean =>
 export const isSettledSession = (session: Session): boolean =>
 	session.status === SessionStatus.completed || isInterruptedSession(session);
 
+export const isAttachedPinCandidateSession = (session: Session): boolean =>
+	isSettledSession(session) || session.status === SessionStatus.idle;
+
 const isActiveWorkSession = (session: Session): boolean =>
-	!isSettledSession(session) && session.status !== SessionStatus.idle;
+	!isAttachedPinCandidateSession(session);
+
+export const selectDirectoryPinnedSessionIds = (params: {
+	readonly sessions: readonly Session[];
+	readonly directoryProcessCounts: ReadonlyMap<string, number>;
+	readonly getDirectoryKey: (session: Session) => string;
+}): ReadonlySet<string> => {
+	const { sessions, directoryProcessCounts, getDirectoryKey } = params;
+	if (directoryProcessCounts.size === 0) {
+		return new Set();
+	}
+
+	const activeWorkCountByDirectory = new Map<string, number>();
+	for (const session of sessions) {
+		if (isAttachedPinCandidateSession(session)) {
+			continue;
+		}
+
+		const directoryKey = getDirectoryKey(session);
+		activeWorkCountByDirectory.set(
+			directoryKey,
+			(activeWorkCountByDirectory.get(directoryKey) ?? 0) + 1,
+		);
+	}
+
+	const remainingDirectorySlots = new Map<string, number>();
+	for (const [directoryKey, totalSlots] of directoryProcessCounts) {
+		const remainingSlots =
+			totalSlots - (activeWorkCountByDirectory.get(directoryKey) ?? 0);
+		if (remainingSlots > 0) {
+			remainingDirectorySlots.set(directoryKey, remainingSlots);
+		}
+	}
+
+	const orderedPinCandidates = [...sessions]
+		.filter((session) => isAttachedPinCandidateSession(session))
+		.sort((left, right) => right.time_updated - left.time_updated);
+
+	const pinnedSessionIds = new Set<string>();
+	for (const session of orderedPinCandidates) {
+		const directoryKey = getDirectoryKey(session);
+		const remainingSlots = remainingDirectorySlots.get(directoryKey) ?? 0;
+		if (remainingSlots <= 0) {
+			continue;
+		}
+
+		pinnedSessionIds.add(session.id);
+		if (remainingSlots === 1) {
+			remainingDirectorySlots.delete(directoryKey);
+		} else {
+			remainingDirectorySlots.set(directoryKey, remainingSlots - 1);
+		}
+	}
+
+	return pinnedSessionIds;
+};
 
 const getSessionStatusSortRank = (session: Session): number => {
 	if (isInterruptedSession(session)) {
