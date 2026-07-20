@@ -29,6 +29,26 @@ const MAX_EVENTS_PER_SESSION = 100;
 const isJsonObject = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
+const RUN_COMMAND_LIFECYCLE_TITLE = /^run command:\s*\S+/iu;
+
+export const isMissionControlPromptTitleMessage = (
+	message: string,
+	event: Readonly<Record<string, unknown>>,
+): boolean => {
+	const trimmed = message.trim();
+	if (trimmed.length === 0) {
+		return false;
+	}
+	if (RUN_COMMAND_LIFECYCLE_TITLE.test(trimmed)) {
+		return false;
+	}
+	const run = event.run;
+	if (isJsonObject(run) && run.command === "run") {
+		return false;
+	}
+	return true;
+};
+
 const parsePayloadEvent = (
 	payloadJson: string | null,
 ): Record<string, unknown> | undefined => {
@@ -135,9 +155,9 @@ export const fetchEventMetadataFallbacks = (
 			!promptTitleDone.has(row.session_id) &&
 			row.type === "run.command.received" &&
 			typeof event.message === "string" &&
-			event.message.length > 0
+			isMissionControlPromptTitleMessage(event.message, event)
 		) {
-			promptTitleBySession.set(row.session_id, event.message);
+			promptTitleBySession.set(row.session_id, event.message.trim());
 			promptTitleDone.add(row.session_id);
 		}
 

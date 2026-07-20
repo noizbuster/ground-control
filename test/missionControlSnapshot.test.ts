@@ -209,7 +209,9 @@ describe("getMissionControlSnapshotFromSqlite", () => {
 		}
 		expect(result.value.sessions[0].status).toBe(SessionStatus.idle);
 		expect(result.value.sessions[0].statusDetail).toBe("Idle between prompts");
-		expect(result.value.statusBySessionId["sess_idle"]).toBe(SessionStatus.idle);
+		expect(result.value.statusBySessionId["sess_idle"]).toBe(
+			SessionStatus.idle,
+		);
 	});
 
 	it("maps stopped to completed with no statusDetail", () => {
@@ -758,6 +760,55 @@ describe("getMissionControlSnapshotFromSqlite — hierarchy + metadata enrichmen
 		expect(session.directory).toBe("/latest/dir");
 		expect(session.title).toBe("Refactor the parser");
 		expect(session.project_label).toBe("dir");
+	});
+
+	it("skips run.command lifecycle receipts when falling back title from events", () => {
+		const events: McSessionEventRow[] = [
+			{
+				session_id: "sess_run_title",
+				seq: 1,
+				event_id: "evt-steer",
+				type: "run.command.received",
+				payload_json: mcEventPayload(1, "run.command.received", {
+					message: "Use drizzle ORM for all non-test queries",
+					run: { command: "steer", state: "idle" },
+				}),
+			},
+			{
+				session_id: "sess_run_title",
+				seq: 2,
+				event_id: "evt-run",
+				type: "run.command.received",
+				payload_json: mcEventPayload(2, "run.command.received", {
+					message: "run command: run",
+					run: { command: "run", state: "idle", runId: "run_5" },
+				}),
+			},
+		];
+		const fixture = createMcSqliteFixture({
+			sessions: [
+				{
+					session_id: "sess_run_title",
+					status: "running",
+					workspace_path: null,
+					title: null,
+					created_at: "2025-01-01T00:00:00Z",
+				},
+			],
+			events,
+		});
+
+		const result = getMissionControlSnapshotFromSqlite({
+			databasePath: fixture.dbPath,
+		});
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) {
+			return;
+		}
+		expect(result.value.sessions[0].title).toBe(
+			"Use drizzle ORM for all non-test queries",
+		);
 	});
 
 	it("falls back provider_id and model_id from session_events modelProviderSelection when sessions columns are null", () => {
