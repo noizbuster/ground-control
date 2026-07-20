@@ -159,6 +159,75 @@ describe("session stall edge", () => {
 	});
 });
 
+describe("idle session card display", () => {
+	const extractStatusLine = (lines: string[]): string | undefined =>
+		lines.find((line) => line.startsWith("status  "));
+
+	it("renders Mission Control idle as COMPLETED (not IDLE/unknown gray)", () => {
+		const idleLines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					sessionSource: "mission-control",
+					status: SessionStatus.idle,
+					time_updated: Date.now() - 60 * 60 * 1000,
+				}),
+				width: 38,
+			}),
+		);
+		const completedLines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					sessionSource: "mission-control",
+					status: SessionStatus.completed,
+					time_updated: Date.now() - 60 * 60 * 1000,
+				}),
+				width: 38,
+			}),
+		);
+
+		expect(extractStatusLine(idleLines)).toBe("status  COMPLETED");
+		expect(extractStatusLine(idleLines)).toBe(extractStatusLine(completedLines));
+		expect(idleLines.some((line) => line.includes("IDLE"))).toBe(false);
+		expect(idleLines.some((line) => line.includes("UNKNOWN"))).toBe(false);
+	});
+
+	it("renders end_turn idle-waiting as COMPLETED on the card", () => {
+		const lines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					status: SessionStatus.waiting,
+					finishReason: "end_turn",
+					time_updated: Date.now() - 60 * 60 * 1000,
+				}),
+				isWaiting: true,
+				width: 38,
+			}),
+		);
+
+		expect(extractStatusLine(lines)).toBe("status  COMPLETED");
+		expect(lines.some((line) => line.startsWith("[awaiting user]"))).toBe(
+			false,
+		);
+	});
+
+	it("shows recently-completed edge for freshly idle sessions", () => {
+		const lines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					sessionSource: "mission-control",
+					status: SessionStatus.idle,
+					time_updated: Date.now() - 30_000,
+				}),
+				width: 38,
+			}),
+		);
+
+		expect(lines.some((line) => line.startsWith("[recently completed]"))).toBe(
+			true,
+		);
+	});
+});
+
 describe("session agent display", () => {
 	it("uses Default for root session card agents that would otherwise show Unknown", () => {
 		const lines = getRenderedTextLines(

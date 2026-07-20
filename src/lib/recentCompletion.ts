@@ -18,6 +18,7 @@ export const isRecentlyCompleted = (
 ): boolean => {
 	const isSettledStatus =
 		status === SessionStatus.completed ||
+		status === SessionStatus.idle ||
 		finishReason === "interrupted" ||
 		finishReason === "turn_aborted";
 	if (!isSettledStatus) {

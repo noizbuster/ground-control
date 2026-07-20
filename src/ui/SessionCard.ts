@@ -46,7 +46,7 @@ const STATUS_COLORS: Record<SessionStatus, string> = {
 	[SessionStatus.pending]: "#94A3B8",
 	[SessionStatus.running]: "#60A5FA",
 	[SessionStatus.waiting]: "#FBBF24",
-	[SessionStatus.idle]: "#94A3B8",
+	[SessionStatus.idle]: CARD_COLORS.title,
 	[SessionStatus.completed]: CARD_COLORS.title,
 	[SessionStatus.failed]: "#F87171",
 	[SessionStatus.unknown]: "#94A3B8",
@@ -200,7 +200,7 @@ const formatStatus = (
 ): string => {
 	const baseLabel = getStatusLabel(status, { runningSubagents, finishReason });
 	if (status === SessionStatus.idle || baseLabel === "Idle") {
-		return "IDLE";
+		return "COMPLETED";
 	}
 	if (status !== SessionStatus.waiting) {
 		return baseLabel.toUpperCase();
