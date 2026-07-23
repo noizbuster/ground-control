@@ -230,8 +230,8 @@ export const applySessionSort = (
 					return leftRank - rightRank;
 				}
 
-				if (left.time_updated !== right.time_updated) {
-					return right.time_updated - left.time_updated;
+				if (left.time_created !== right.time_created) {
+					return right.time_created - left.time_created;
 				}
 				break;
 			}

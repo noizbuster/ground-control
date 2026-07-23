@@ -13,6 +13,7 @@ const createSession = (params: {
 	id: string;
 	status: SessionStatus;
 	timeUpdated: number;
+	timeCreated?: number;
 	directory?: string;
 	finishReason?: string;
 	sessionSource?: Session["sessionSource"];
@@ -23,7 +24,7 @@ const createSession = (params: {
 	project_id: params.directory ?? "/repo/app",
 	project_label: "app",
 	parent_id: null,
-	time_created: params.timeUpdated - 1,
+	time_created: params.timeCreated ?? params.timeUpdated - 1,
 	time_updated: params.timeUpdated,
 	sessionSource: params.sessionSource ?? "omp",
 	status: params.status,
@@ -236,5 +237,51 @@ describe("session list filtering", () => {
 		const filtered = applySessionFilter([running, interrupted], "busy");
 
 		expect(filtered.sessions.map((session) => session.id)).toEqual(["running"]);
+	});
+});
+
+describe("session list sorting", () => {
+	it("orders status groups by creation date before update date", () => {
+		const oldestRunning = createSession({
+			id: "running-oldest-created",
+			status: SessionStatus.running,
+			timeCreated: 10,
+			timeUpdated: 300,
+		});
+		const middleRunning = createSession({
+			id: "running-middle-created",
+			status: SessionStatus.running,
+			timeCreated: 20,
+			timeUpdated: 200,
+		});
+		const newestRunning = createSession({
+			id: "running-newest-created",
+			status: SessionStatus.running,
+			timeCreated: 30,
+			timeUpdated: 100,
+		});
+		const newestCompleted = createSession({
+			id: "completed-newest-created",
+			status: SessionStatus.completed,
+			timeCreated: 40,
+			timeUpdated: 400,
+		});
+
+		const sorted = applySessionSort(
+			[
+				middleRunning,
+				newestCompleted,
+				oldestRunning,
+				newestRunning,
+			],
+			"status",
+		);
+
+		expect(sorted.map((session) => session.id)).toEqual([
+			"running-newest-created",
+			"running-middle-created",
+			"running-oldest-created",
+			"completed-newest-created",
+		]);
 	});
 });
