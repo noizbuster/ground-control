@@ -25,17 +25,17 @@ jobs:
           MC_REF: ${{ inputs.mc_ref }}
           GC_REF: ${{ inputs.gc_ref }}
         run: node -e "for (const value of [process.env.MC_REF,process.env.GC_REF]) if (!/^[0-9a-f]{40}$/.test(value ?? '')) process.exit(2)"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: noizbuster/mission-control
           ref: ${{ inputs.mc_ref }}
           path: mission-control
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: noizbuster/ground-control
           ref: ${{ inputs.gc_ref }}
           path: ground-control
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 26.3.0
       - uses: dtolnay/rust-toolchain@stable
@@ -49,6 +49,6 @@ jobs:
         run: cargo build --manifest-path native/sidecar/Cargo.toml
       - name: Install and build Ground Control
         working-directory: ground-control
-        run: corepack pnpm@11.5.1 install --frozen-lockfile && corepack pnpm@11.5.1 build
+        run: corepack pnpm@11.17.0 install --frozen-lockfile && corepack pnpm@11.17.0 build
       - name: Run shared cross-repository E2E
         run: node "${{ github.workspace }}/ground-control/scripts/run-mc-child-abort-e2e.mjs" --mc-worktree "${{ github.workspace }}/mission-control" --gc-worktree "${{ github.workspace }}/ground-control"
