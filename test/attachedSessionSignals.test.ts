@@ -43,12 +43,12 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		);
 
 		expect(result.sessionIds.size).toBe(0);
-		expect(
-			getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
-		).toBe(getExternalAttachedDirectoryKey("codex", "/repo/shared"));
-		expect(
-			getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
-		).toBe(getExternalAttachedDirectoryKey("claude", "/repo/shared"));
+		expect(getExternalAttachedDirectoryKey("opencode", "/repo/shared")).toBe(
+			getExternalAttachedDirectoryKey("codex", "/repo/shared"),
+		);
+		expect(getExternalAttachedDirectoryKey("opencode", "/repo/shared")).toBe(
+			getExternalAttachedDirectoryKey("claude", "/repo/shared"),
+		);
 		expect(
 			result.directoryProcessCounts.get(
 				getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
@@ -76,9 +76,9 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		expect(
 			getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
 		).not.toBe(getExternalAttachedDirectoryKey("omp", "/repo/shared"));
-		expect(
-			getExternalAttachedDirectoryKey("pi", "/repo/shared"),
-		).not.toBe(getExternalAttachedDirectoryKey("omp", "/repo/shared"));
+		expect(getExternalAttachedDirectoryKey("pi", "/repo/shared")).not.toBe(
+			getExternalAttachedDirectoryKey("omp", "/repo/shared"),
+		);
 		expect(
 			result.directoryProcessCounts.get(
 				getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
@@ -311,6 +311,31 @@ describe("mission-control process detection", () => {
 		expect(result.directoryProcessCounts.size).toBe(1);
 	});
 
+	it("counts only session-bearing runtime Mission Control CLI processes by directory", () => {
+		const processList = [
+			"607 node node --experimental-ffi /workspace/mission-control/apps/cli/dist/index.js",
+			"608 node node --experimental-ffi /workspace/mission-control/apps/cli/dist/index.js",
+			"609 node node --require /opt/hooks/register.cjs --experimental-ffi /workspace/mission-control/apps/cli/dist/index.js",
+			"610 node node --experimental-loader /opt/hooks/loader.mjs /workspace/mission-control/apps/cli/dist/index.js",
+			"611 node node --experimental-ffi /workspace/mission-control/apps/cli/dist/index.js session list --session stale",
+			"612 node node /workspace/report.js --config /workspace/mission-control",
+			"613 node node --require /workspace/mission-control/apps/cli/dist/index.js /workspace/report.js",
+			"614 node node /workspace/mission-control/scripts/build.js",
+		].join("\n");
+
+		const result = parseAttachedSessionIdsFromProcessList(
+			processList,
+			() => "/repo/mc",
+		);
+
+		expect(result.sessionIds.size).toBe(0);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("mission-control", "/repo/mc"),
+			),
+		).toBe(4);
+	});
+
 	it("isolates mission-control directory keys from opencode, pi, and omp", () => {
 		expect(getExternalAttachedDirectoryKey("mission-control", "/dir")).toBe(
 			"mission-control:/dir",
@@ -318,9 +343,9 @@ describe("mission-control process detection", () => {
 		expect(getExternalAttachedDirectoryKey("opencode", "/dir")).toBe("/dir");
 		expect(getExternalAttachedDirectoryKey("pi", "/dir")).toBe("pi:/dir");
 		expect(getExternalAttachedDirectoryKey("omp", "/dir")).toBe("omp:/dir");
-		expect(
-			getExternalAttachedDirectoryKey("mission-control", "/dir"),
-		).not.toBe(getExternalAttachedDirectoryKey("opencode", "/dir"));
+		expect(getExternalAttachedDirectoryKey("mission-control", "/dir")).not.toBe(
+			getExternalAttachedDirectoryKey("opencode", "/dir"),
+		);
 	});
 });
 

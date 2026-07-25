@@ -128,6 +128,64 @@ const isRuntimeWrapperCommand = (commandBasename: string): boolean => {
 		commandBasename === "deno"
 	);
 };
+const RUNTIME_FLAGS_WITH_VALUE: Record<string, true> = {
+	"--conditions": true,
+	"--config": true,
+	"--env-file": true,
+	"--env-file-if-exists": true,
+	"--experimental-config-file": true,
+	"--experimental-loader": true,
+	"--experimental-package-map": true,
+	"--experimental-sea-config": true,
+	"--import": true,
+	"--input-type": true,
+	"--inspect-port": true,
+	"--loader": true,
+	"--require": true,
+	"--watch-path": true,
+	"-r": true,
+};
+const getRuntimeScriptToken = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): string | undefined => {
+	if (!isRuntimeWrapperCommand(commandBasename)) {
+		return undefined;
+	}
+
+	const executableTokenIndex = argumentTokens.findIndex(
+		(token) => getBasename(normalizeCommandToken(token)) === commandBasename,
+	);
+	if (executableTokenIndex < 0) {
+		return undefined;
+	}
+
+	let skipsNextToken = false;
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken) {
+			continue;
+		}
+		if (skipsNextToken) {
+			skipsNextToken = false;
+			continue;
+		}
+		if (RUNTIME_FLAGS_WITH_VALUE[normalizedToken]) {
+			skipsNextToken = true;
+			continue;
+		}
+		if (normalizedToken.startsWith("-")) {
+			continue;
+		}
+		return normalizedToken;
+	}
+
+	return undefined;
+};
 
 // /proc/<pid>/comm values that could possibly be a session launcher (direct
 // binary or a runtime wrapper running one). Everything else can be skipped
@@ -895,6 +953,19 @@ const getMctrlExecutableTokenIndex = (
 	commandBasename: string,
 	argumentTokens: readonly string[],
 ): number => {
+	const runtimeScriptToken = getRuntimeScriptToken(
+		commandBasename,
+		argumentTokens,
+	);
+	if (runtimeScriptToken && isMcPathToken(runtimeScriptToken)) {
+		const runtimeScriptTokenIndex = argumentTokens.findIndex(
+			(token) => normalizeCommandToken(token) === runtimeScriptToken,
+		);
+		if (runtimeScriptTokenIndex >= 0) {
+			return runtimeScriptTokenIndex;
+		}
+	}
+
 	const tokenIndex = argumentTokens.findIndex((token) => isMctrlToken(token));
 	if (tokenIndex >= 0) {
 		return tokenIndex;
@@ -1017,19 +1088,39 @@ const isMctrlSessionBearingInvocation = (
 	return true;
 };
 
-// `mc` collides with Midnight Commander, so it is kept out of
-// MISSION_CONTROL_COMMAND_NAMES and only counts as Mission Control when the
-// command line carries an explicit --session signal (enforced in the parse
-// branch). Do NOT fold these helpers into the mctrl set — that would drop the
-// collision guard and let bare `mc` inflate Mission Control directory counts.
+// `mc` collides with Midnight Commander, so bare direct `mc` remains excluded.
+// Generic `mc` paths preserve explicit-session detection; only the canonical
+// Mission Control CLI entrypoint may provide a directory fallback.
 const isMcPathToken = (token: string): boolean => {
 	const normalizedToken = normalizeCommandToken(token);
 	if (normalizedToken.length === 0) {
 		return false;
 	}
-	// Basename "mc"/"mc.js" or a path with an "mc" segment (/opt/mc/cli.js).
+	// Basename "mc"/"mc.js" or a Mission Control CLI path.
 	const segments = normalizedToken.toLowerCase().split(/[\\/]/u);
-	return segments.includes(MC_COMMAND_NAME) || segments.includes("mc.js");
+	return (
+		segments.includes(MC_COMMAND_NAME) ||
+		segments.includes("mc.js") ||
+		segments.includes("mission-control")
+	);
+};
+
+const isMissionControlCliScriptToken = (token: string): boolean => {
+	const normalizedToken = normalizeCommandToken(token);
+	if (normalizedToken.length === 0) {
+		return false;
+	}
+
+	const segments = normalizedToken.toLowerCase().split(/[\\/]/u);
+	const fileName = segments.at(-1);
+	return (
+		segments.includes("mission-control") &&
+		segments.includes("apps") &&
+		segments.includes("cli") &&
+		(fileName === "index.js" ||
+			fileName === "index.mjs" ||
+			fileName === "index.ts")
+	);
 };
 
 const isDirectMcCommand = (
@@ -1038,14 +1129,6 @@ const isDirectMcCommand = (
 ): boolean =>
 	commandBasename === MC_COMMAND_NAME ||
 	firstArgumentBasename === MC_COMMAND_NAME;
-
-const isRuntimeWrappedMcCommand = (
-	commandBasename: string,
-	argumentTokens: readonly string[],
-): boolean =>
-	isRuntimeWrapperCommand(commandBasename) &&
-	argumentTokens.length >= 2 &&
-	isMcPathToken(argumentTokens[1]);
 
 export const getExternalAttachedDirectoryKey = (
 	source: SessionSource,
@@ -1253,19 +1336,53 @@ export const parseAttachedSessionIdsFromProcessList = (
 			continue;
 		}
 
-		// `mc` (Mission Control short alias) collides with Midnight Commander.
-		// Only an explicit --session signal qualifies it; bare `mc` never
-		// yields a session id and never adds a directory-count fallback.
+		// Generic `mc` paths accept explicit session IDs. Directory fallback is
+		// reserved for the canonical Mission Control CLI entrypoint.
+		const runtimeScriptToken = getRuntimeScriptToken(
+			commandBasename,
+			argumentTokens,
+		);
+		const isRuntimeWrappedMc =
+			!!runtimeScriptToken && isMcPathToken(runtimeScriptToken);
+		const isRuntimeMissionControlCli =
+			!!runtimeScriptToken &&
+			isMissionControlCliScriptToken(runtimeScriptToken);
 		const isMcInvocation =
 			isDirectMcCommand(commandBasename, firstArgumentBasename) ||
-			isRuntimeWrappedMcCommand(commandBasename, argumentTokens);
+			isRuntimeWrappedMc;
 		if (isMcInvocation) {
+			if (isNonSessionMctrlInvocation(commandBasename, argumentTokens)) {
+				continue;
+			}
+
 			const attachedSessionIdMatch = commandLine.match(
 				ATTACHED_SESSION_ID_PATTERN,
 			);
 			if (attachedSessionIdMatch) {
 				externalAttachedSignals.sessionIds.add(attachedSessionIdMatch[2]);
+				continue;
 			}
+
+			if (
+				!isRuntimeMissionControlCli ||
+				!isMctrlSessionBearingInvocation(commandBasename, argumentTokens)
+			) {
+				continue;
+			}
+
+			const processCwd = readProcessCwd(pid);
+			if (!processCwd) {
+				continue;
+			}
+
+			const directoryKey = getExternalAttachedDirectoryKey(
+				"mission-control",
+				processCwd,
+			);
+			incrementDirectoryProcessCount(
+				externalAttachedSignals.directoryProcessCounts,
+				directoryKey,
+			);
 			continue;
 		}
 

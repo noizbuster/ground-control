@@ -102,6 +102,46 @@ describe("attached directory pin candidates", () => {
 		]);
 	});
 
+	it("pins one settled Mission Control session per live process slot", () => {
+		const sessions = [
+			createSession({
+				id: "idle-old",
+				status: SessionStatus.idle,
+				timeUpdated: 10,
+				sessionSource: "mission-control",
+				directory: "/repo/mc",
+			}),
+			createSession({
+				id: "completed-newer",
+				status: SessionStatus.completed,
+				timeUpdated: 20,
+				sessionSource: "mission-control",
+				directory: "/repo/mc",
+			}),
+			createSession({
+				id: "idle-latest",
+				status: SessionStatus.idle,
+				timeUpdated: 30,
+				sessionSource: "mission-control",
+				directory: "/repo/mc",
+			}),
+		];
+		const directoryKey = getDirectoryKey(sessions[0]);
+
+		const pinned = selectDirectoryPinnedSessionIds({
+			sessions,
+			directoryProcessCounts: new Map([[directoryKey, 2]]),
+			getDirectoryKey,
+		});
+
+		expect([...pinned]).toEqual(["idle-latest", "completed-newer"]);
+		expect(
+			applySessionFilter(sessions, "active", pinned).sessions.map(
+				(session) => session.id,
+			),
+		).toEqual(["idle-latest", "completed-newer"]);
+	});
+
 	it("does not let idle sessions consume process slots meant for pins", () => {
 		const idle = createSession({
 			id: "idle",
@@ -268,12 +308,7 @@ describe("session list sorting", () => {
 		});
 
 		const sorted = applySessionSort(
-			[
-				middleRunning,
-				newestCompleted,
-				oldestRunning,
-				newestRunning,
-			],
+			[middleRunning, newestCompleted, oldestRunning, newestRunning],
 			"status",
 		);
 
