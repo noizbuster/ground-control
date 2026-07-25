@@ -426,6 +426,7 @@ const TOOL_CALL_CONTENT_TYPES = new Set([
 	"tool_use",
 ]);
 const IDLE_TOOL_CALL_NAMES = new Set(["yield"]);
+const AWAITING_USER_RESPONSE_TOOL_NAME = "ask";
 
 const isToolUseFinishReason = (finishReason: string | undefined): boolean =>
 	finishReason === "toolUse" || finishReason === "tool_use";
@@ -1031,6 +1032,9 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 		isToolUseFinish &&
 		lastAssistantToolCallNames.length > 0 &&
 		!hasPendingAssistantToolCall;
+	const isAwaitingUserResponse =
+		isToolUseFinish &&
+		lastAssistantToolCallNames.includes(AWAITING_USER_RESPONSE_TOOL_NAME);
 	const hasSuccessfulYieldTail = isSuccessfulYieldToolResultTail({
 		lastRole,
 		lastAssistantFinish,
@@ -1044,6 +1048,7 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 		activeToolNames.length > 0 &&
 		!isIdleEndTurn &&
 		!isIdleToolUseHandoff &&
+		!isAwaitingUserResponse &&
 		!hasSuccessfulYieldTail &&
 		!isTerminalAssistantFinish;
 
@@ -1065,6 +1070,9 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 		}
 		if (hasSuccessfulYieldTail) {
 			return SessionStatus.completed;
+		}
+		if (isAwaitingUserResponse) {
+			return SessionStatus.waiting;
 		}
 		if (isIdleEndTurn) {
 			return SessionStatus.waiting;
@@ -1112,6 +1120,9 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 		}
 		if (hasSuccessfulYieldTail) {
 			return undefined;
+		}
+		if (isAwaitingUserResponse) {
+			return "Awaiting user input";
 		}
 		if (isIdleEndTurn) {
 			return "Idle between prompts";
@@ -1174,7 +1185,11 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 		startedAtMs,
 		lastTimestampMs: Math.max(lastTimestampMs, log.mtimeMs),
 		status,
-		finishReason: hasSuccessfulYieldTail ? undefined : lastAssistantFinish,
+		finishReason: hasSuccessfulYieldTail
+			? undefined
+			: isAwaitingUserResponse
+				? "awaiting_user"
+				: lastAssistantFinish,
 		statusDetail,
 	};
 };

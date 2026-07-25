@@ -141,6 +141,21 @@ describe("session stall edge", () => {
 		expect(lines.some((line) => line.startsWith("[blocked]"))).toBe(false);
 	});
 
+	it("renders awaiting_user sessions as awaiting user", () => {
+		const lines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					status: SessionStatus.waiting,
+					finishReason: "awaiting_user",
+				}),
+				width: 38,
+			}),
+		);
+
+		expect(lines).toContain("status  AWAITING USER");
+		expect(lines.some((line) => line.startsWith("[awaiting user]"))).toBe(true);
+	});
+
 	it("does not render stall edges for idle sessions", () => {
 		const lines = getRenderedTextLines(
 			SessionCard({
@@ -186,7 +201,9 @@ describe("idle session card display", () => {
 		);
 
 		expect(extractStatusLine(idleLines)).toBe("status  COMPLETED");
-		expect(extractStatusLine(idleLines)).toBe(extractStatusLine(completedLines));
+		expect(extractStatusLine(idleLines)).toBe(
+			extractStatusLine(completedLines),
+		);
 		expect(idleLines.some((line) => line.includes("IDLE"))).toBe(false);
 		expect(idleLines.some((line) => line.includes("UNKNOWN"))).toBe(false);
 	});
@@ -210,13 +227,13 @@ describe("idle session card display", () => {
 		);
 	});
 
-	it("shows recently-completed edge for freshly idle sessions", () => {
+	it("shows recently-completed edge for idle sessions completed within ten minutes", () => {
 		const lines = getRenderedTextLines(
 			SessionCard({
 				session: createSession({
 					sessionSource: "mission-control",
 					status: SessionStatus.idle,
-					time_updated: Date.now() - 30_000,
+					time_updated: Date.now() - 6 * 60 * 1000,
 				}),
 				width: 38,
 			}),
@@ -224,6 +241,23 @@ describe("idle session card display", () => {
 
 		expect(lines.some((line) => line.startsWith("[recently completed]"))).toBe(
 			true,
+		);
+	});
+
+	it("does not show recently-completed edge after ten minutes", () => {
+		const lines = getRenderedTextLines(
+			SessionCard({
+				session: createSession({
+					sessionSource: "mission-control",
+					status: SessionStatus.idle,
+					time_updated: Date.now() - (10 * 60 * 1000 + 1),
+				}),
+				width: 38,
+			}),
+		);
+
+		expect(lines.some((line) => line.startsWith("[recently completed]"))).toBe(
+			false,
 		);
 	});
 });

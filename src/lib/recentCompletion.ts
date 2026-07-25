@@ -1,6 +1,6 @@
 import { SessionStatus } from "../types";
 
-export const RECENT_COMPLETION_WINDOW_MS = 5 * 60 * 1000;
+export const RECENT_COMPLETION_WINDOW_MS = 10 * 60 * 1000;
 
 export const normalizeTimestamp = (value: number): number | null => {
 	if (!Number.isFinite(value) || value <= 0) {

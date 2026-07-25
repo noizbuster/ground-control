@@ -422,6 +422,56 @@ describe("scrollable section borders", () => {
 		expect(panel.props).not.toHaveProperty("padding");
 	});
 
+	it("renders the selected model only in the detail header when available", () => {
+		const session = sampleSession({
+			currentModelID: "gpt-5.5",
+			currentReasoningEffort: "xhigh",
+		});
+		const contentWithModel = createDetailPanelContent({
+			session,
+			sessions: [session],
+			messageCount: 1,
+			messageCountBySessionId: { [session.id]: 1 },
+			status: SessionStatus.running,
+			width: 80,
+		});
+		const headerBadgeTexts = childNodes(childNodes(contentWithModel)[2]).map(
+			(badge) => {
+				const textNode = childNodes(badge)[0];
+				const props =
+					isRecord(textNode) && isRecord(textNode.props) ? textNode.props : {};
+				return textFromContent(props.content);
+			},
+		);
+
+		expect(headerBadgeTexts).toContain("Model gpt-5.5");
+		expect(headerBadgeTexts.indexOf("Model gpt-5.5")).toBeLessThan(
+			headerBadgeTexts.indexOf("Reasoning xhigh"),
+		);
+
+		const sessionWithoutModel = sampleSession();
+		const contentWithoutModel = createDetailPanelContent({
+			session: sessionWithoutModel,
+			sessions: [sessionWithoutModel],
+			messageCount: 1,
+			messageCountBySessionId: { [sessionWithoutModel.id]: 1 },
+			status: SessionStatus.running,
+			width: 80,
+		});
+		const missingModelBadgeTexts = childNodes(
+			childNodes(contentWithoutModel)[2],
+		).map((badge) => {
+			const textNode = childNodes(badge)[0];
+			const props =
+				isRecord(textNode) && isRecord(textNode.props) ? textNode.props : {};
+			return textFromContent(props.content);
+		});
+
+		expect(
+			missingModelBadgeTexts.some((text) => text.startsWith("Model")),
+		).toBe(false);
+	});
+
 	it("closes the runtime detail metadata top border at 120 columns", async () => {
 		const contentWidth = getDetailPanelContentWidth(
 			RUNTIME_DETAIL_SCROLLBOX_WIDTH,

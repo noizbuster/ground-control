@@ -803,6 +803,7 @@ const IDLE_WAITING_FINISH_REASONS = new Set([
 	"toolUse",
 	"tool_use",
 ]);
+const AWAITING_USER_FINISH_REASON = "awaiting_user";
 
 export interface StatusDisplayOptions {
 	runningSubagents?: number;
@@ -858,6 +859,12 @@ export const getStatusLabel = (
 		IDLE_WAITING_FINISH_REASONS.has(options.finishReason)
 	) {
 		return IDLE_STATUS_LABEL;
+	}
+	if (
+		status === SessionStatus.waiting &&
+		options.finishReason === AWAITING_USER_FINISH_REASON
+	) {
+		return STATUS_LABEL_MAP[SessionStatus.waiting];
 	}
 
 	const finishReason = options.finishReason;

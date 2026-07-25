@@ -1090,6 +1090,9 @@ export const createDetailPanelContent = ({
 			...(session?.sourceMetadata?.sourceCategory
 				? [Badge(session.sourceMetadata.sourceCategory, PANEL_COLORS.info)]
 				: []),
+			...(session?.currentModelID
+				? [Badge(`Model ${session.currentModelID}`, PANEL_COLORS.info)]
+				: []),
 			...(session?.currentReasoningEffort
 				? [
 						Badge(

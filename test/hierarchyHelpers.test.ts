@@ -34,6 +34,11 @@ describe("hierarchy status helpers", () => {
 			}),
 		).toBe("Waiting");
 		expect(getStatusLabel(SessionStatus.waiting)).toBe("Waiting");
+		expect(
+			getStatusLabel(SessionStatus.waiting, {
+				finishReason: "awaiting_user",
+			}),
+		).toBe("Waiting");
 	});
 
 	it("renders idle waiting sessions with idle visuals", () => {
@@ -60,6 +65,11 @@ describe("hierarchy status helpers", () => {
 		expect(
 			getDisplayStatus(SessionStatus.waiting, {
 				finishReason: "tool-calls",
+			}),
+		).toBe(SessionStatus.waiting);
+		expect(
+			getDisplayStatus(SessionStatus.waiting, {
+				finishReason: "awaiting_user",
 			}),
 		).toBe(SessionStatus.waiting);
 		expect(getDisplayStatus(SessionStatus.idle)).toBe(SessionStatus.idle);

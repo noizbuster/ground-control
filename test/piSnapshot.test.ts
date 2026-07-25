@@ -354,6 +354,68 @@ describe("buildPiSessionSnapshot", () => {
 		expect(snapshot.sessions[0]?.statusDetail).toBe("Awaiting tool result");
 	});
 
+	it("maps OMP ask tool-use stops to awaiting user input", () => {
+		const snapshot = buildPiSessionSnapshot({
+			source: "omp",
+			logs: [
+				{
+					source: "omp",
+					root: "/tmp/omp-sessions",
+					path: "/tmp/omp-sessions/-repo-app/awaiting-user.jsonl",
+					mtimeMs: 1_700_000_050_100,
+					header: {
+						type: "session",
+						version: 3,
+						id: "omp-awaiting-user",
+						timestamp: "2026-05-29T09:00:00.000Z",
+						cwd: "/repo/app",
+					},
+					entries: [
+						{
+							type: "message",
+							id: "user",
+							parentId: null,
+							timestamp: "2026-05-29T09:00:01.000Z",
+							message: { role: "user", content: "continue safely" },
+						},
+						{
+							type: "active_tools_change",
+							id: "tools",
+							parentId: "user",
+							timestamp: "2026-05-29T09:00:01.500Z",
+							activeToolNames: ["bash"],
+						},
+						{
+							type: "message",
+							id: "assistant",
+							parentId: "tools",
+							timestamp: "2026-05-29T09:00:02.000Z",
+							message: {
+								role: "assistant",
+								content: [
+									{
+										type: "toolCall",
+										id: "ask-1",
+										name: "ask",
+										arguments: { questions: [] },
+									},
+								],
+								stopReason: "toolUse",
+							},
+						},
+					],
+				},
+			],
+		});
+
+		expect(snapshot.sessions[0]?.status).toBe(SessionStatus.waiting);
+		expect(snapshot.sessions[0]?.finishReason).toBe("awaiting_user");
+		expect(snapshot.sessions[0]?.statusDetail).toBe("Awaiting user input");
+		expect(snapshot.statusBySessionId["omp-awaiting-user"]).toBe(
+			SessionStatus.waiting,
+		);
+	});
+
 	it("maps idle yield tool-use handoffs to waiting without opening child counts", () => {
 		const parentPath = "/tmp/omp-sessions/-repo-app/idle-yield-parent.jsonl";
 		const childPath = "/tmp/omp-sessions/-repo-app/idle-yield-child.jsonl";
