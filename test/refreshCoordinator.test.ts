@@ -29,3 +29,29 @@ describe("refresh coordinator request tickets", () => {
 		expect(completed).toBe(true);
 	});
 });
+
+describe("refresh coordinator cancellation", () => {
+	it("rejects active and queued waiters before allowing a fresh request", async () => {
+		const coordinator = createRefreshCoordinator();
+		const active = coordinator.requestRefresh();
+		const queued = coordinator.requestRefresh();
+		const activeWaiter = coordinator.waitForRefresh(active.requestId);
+		const queuedWaiter = coordinator.waitForRefresh(queued.requestId);
+		const cancellation = new Error("worker reset");
+
+		coordinator.cancel(cancellation);
+
+		await expect(activeWaiter).rejects.toBe(cancellation);
+		await expect(queuedWaiter).rejects.toBe(cancellation);
+		expect(coordinator.getSnapshot()).toEqual({
+			phase: "idle",
+			activeRequestId: null,
+			latestRequestId: null,
+			hasQueuedRefresh: false,
+		});
+		expect(coordinator.requestRefresh()).toEqual({
+			requestId: 2,
+			shouldDispatch: true,
+		});
+	});
+});

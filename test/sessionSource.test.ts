@@ -40,7 +40,7 @@ describe("sessionSource helpers", () => {
 		expect(getDefaultSessionCapabilities("omp")).toEqual({
 			attach: true,
 			delete: true,
-			abortChildren: false,
+			abortChildren: true,
 			hierarchy: true,
 		});
 	});

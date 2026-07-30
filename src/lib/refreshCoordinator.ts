@@ -33,6 +33,7 @@ export interface RefreshCoordinator {
 		result: RefreshCompletionResult,
 	): void;
 	completeRefresh(requestId: RefreshRequestId): RefreshRequestId | null;
+	cancel(error: Error): void;
 	shouldApplyResponse(requestId: RefreshRequestId): boolean;
 	getSnapshot(): RefreshCoordinatorSnapshot;
 }
@@ -118,6 +119,15 @@ export const createRefreshCoordinator = (): RefreshCoordinator => {
 
 			state.activeRequestId = null;
 			return null;
+		},
+
+		cancel: (error) => {
+			state.activeRequestId = null;
+			state.latestRequestId = null;
+			state.hasQueuedRefresh = false;
+			for (const waiter of waiters.splice(0)) {
+				waiter.reject(error);
+			}
 		},
 
 		shouldApplyResponse: (requestId) => {

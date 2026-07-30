@@ -184,6 +184,40 @@ describe("getAbortTargets", () => {
 		expect(plan.targets.map((t) => t.id)).toEqual(["mc-child"]);
 	});
 
+	test("OMP targets every non-terminal flattened descendant but not its root", () => {
+		const session = baseSession({
+			id: "omp-root",
+			sessionSource: "omp",
+			status: SessionStatus.running,
+			subagentSessions: [
+				child({
+					id: "omp-child",
+					sessionSource: "omp",
+					status: SessionStatus.running,
+				}),
+				child({
+					id: "omp-grandchild",
+					sessionSource: "omp",
+					parent_id: "omp-child",
+					status: SessionStatus.waiting,
+				}),
+				child({
+					id: "omp-stopped",
+					sessionSource: "omp",
+					status: SessionStatus.completed,
+				}),
+			],
+		});
+
+		const plan = getAbortTargets(session);
+		expect(plan.childCount).toBe(2);
+		expect(plan.includesSelected).toBe(false);
+		expect(plan.targets.map((target) => target.id)).toEqual([
+			"omp-child",
+			"omp-grandchild",
+		]);
+	});
+
 	test("codex includes selected when non-terminal", () => {
 		const session = baseSession({
 			id: "codex-root",

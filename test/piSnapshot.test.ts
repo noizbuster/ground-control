@@ -241,6 +241,123 @@ describe("buildPiSessionSnapshot", () => {
 		expect(child.sourceMetadata?.agentRole).toBe("subagent");
 	});
 
+	it("marks interrupted OMP children stopped and closes their parent", () => {
+		const rootPath = "/tmp/omp-sessions/-repo-app/stopped-root.jsonl";
+		const childPath = "/tmp/omp-sessions/-repo-app/stopped-child.jsonl";
+		const snapshot = buildPiSessionSnapshot({
+			source: "omp",
+			logs: [
+				{
+					source: "omp",
+					root: "/tmp/omp-sessions",
+					path: rootPath,
+					mtimeMs: 1_700_000_040_000,
+					header: {
+						type: "session",
+						version: 3,
+						id: "omp-stopped-root",
+						timestamp: "2026-05-29T09:00:00.000Z",
+						cwd: "/repo/app",
+					},
+					entries: [
+						{
+							type: "message",
+							timestamp: "2026-05-29T09:00:01.000Z",
+							message: {
+								role: "assistant",
+								content: "delegated",
+								stopReason: "stop",
+							},
+						},
+					],
+				},
+				{
+					source: "omp",
+					root: "/tmp/omp-sessions",
+					path: childPath,
+					mtimeMs: 1_700_000_041_000,
+					header: {
+						type: "session",
+						version: 3,
+						id: "omp-stopped-child",
+						timestamp: "2026-05-29T09:01:00.000Z",
+						cwd: "/repo/app",
+						parentSession: rootPath,
+					},
+					entries: [
+						{
+							type: "message",
+							timestamp: "2026-05-29T09:01:01.000Z",
+							message: { role: "user", content: "continue" },
+						},
+						{
+							type: "custom",
+							customType: "session_exit",
+							timestamp: "2026-05-29T09:01:02.000Z",
+							data: { kind: "signal", reason: "sigint" },
+						},
+					],
+				},
+			],
+		});
+
+		const [root] = snapshot.sessions;
+		const [child] = root.subagentSessions ?? [];
+		expect(child.status).toBe(SessionStatus.completed);
+		expect(child.statusDetail).toBe("Stopped");
+		expect(child.finishReason).toBe("interrupted");
+		expect(root.status).toBe(SessionStatus.completed);
+		expect(root.sourceMetadata?.openChildCount).toBe(0);
+	});
+
+	it("clears a prior OMP exit when the same JSONL is resumed", () => {
+		const snapshot = buildPiSessionSnapshot({
+			source: "omp",
+			logs: [
+				{
+					source: "omp",
+					root: "/tmp/omp-sessions",
+					path: "/tmp/omp-sessions/-repo-app/resumed.jsonl",
+					mtimeMs: 1_700_000_050_000,
+					header: {
+						type: "session",
+						version: 3,
+						id: "omp-resumed",
+						timestamp: "2026-05-29T09:00:00.000Z",
+						cwd: "/repo/app",
+					},
+					entries: [
+						{
+							type: "message",
+							timestamp: "2026-05-29T09:00:01.000Z",
+							message: {
+								role: "assistant",
+								content: "previous turn",
+								stopReason: "stop",
+							},
+						},
+						{
+							type: "custom",
+							customType: "session_exit",
+							timestamp: "2026-05-29T09:00:02.000Z",
+							data: { kind: "signal", reason: "sigint" },
+						},
+						{
+							type: "message",
+							timestamp: "2026-05-29T09:01:00.000Z",
+							message: { role: "user", content: "resumed task" },
+						},
+					],
+				},
+			],
+		});
+
+		const [session] = snapshot.sessions;
+		expect(session.status).toBe(SessionStatus.running);
+		expect(session.statusDetail).toBe("Awaiting assistant response");
+		expect(session.finishReason).not.toBe("interrupted");
+	});
+
 	it("uses the current Pi entry tree branch for counts and status", () => {
 		const snapshot = buildPiSessionSnapshot({
 			source: "pi",

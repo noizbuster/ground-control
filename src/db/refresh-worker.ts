@@ -6,24 +6,22 @@ import {
 } from "../lib/sessionSnapshot";
 import { getClaudeSnapshot } from "./claude";
 import { getCodexSnapshot } from "./codex";
-import {
-	createQueryFailedDatabaseError,
-	type DatabaseError,
-} from "./index";
+import { createQueryFailedDatabaseError, type DatabaseError } from "./index";
 import { getMissionControlSnapshot } from "./missionControl";
 import {
 	getOpenCodeSnapshot,
-	type OpenCodeCacheState,
 	mergeOpenCodeCacheState,
+	type OpenCodeCacheState,
 	seedOpenCodeCacheState,
 } from "./opencode";
-import { getOmpSnapshot, getPiSnapshot } from "./pi";
+import { getPiOmpSnapshots, invalidatePiSessionCaches } from "./pi";
 import {
 	createErrorResponse,
 	createSuccessResponse,
-	isRefreshRequest,
+	isRefreshWorkerRequest,
 	type RefreshRequest,
 	type RefreshResponse,
+	type RefreshWorkerRequest,
 } from "./refresh-worker-protocol";
 import { getWaitingSignalCandidateIds } from "./waitingSignalCandidates";
 
@@ -33,7 +31,7 @@ if (!parentPort) {
 
 const port = parentPort;
 
-const pendingRequests: RefreshRequest[] = [];
+const pendingRequests: RefreshWorkerRequest[] = [];
 let isProcessing = false;
 
 const formatSourceIssue = (source: string, error: DatabaseError): string => {
@@ -92,11 +90,12 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 		sourceIssues.push(formatSourceIssue("OpenCode", openCodeResult.error));
 	}
 
+	const piOmpResults = getPiOmpSnapshots();
 	const otherResults = [
 		{ source: "Codex", result: getCodexSnapshot() },
 		{ source: "Claude Code", result: getClaudeSnapshot() },
-		{ source: "Pi", result: getPiSnapshot() },
-		{ source: "omp", result: getOmpSnapshot() },
+		{ source: "Pi", result: piOmpResults.pi },
+		{ source: "omp", result: piOmpResults.omp },
 		{ source: "Mission Control", result: getMissionControlSnapshot() },
 	] as const;
 
@@ -112,6 +111,7 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 	if (snapshots.length === 0) {
 		return createErrorResponse(
 			request.requestId,
+			request.generation,
 			createQueryFailedDatabaseError(
 				new Error(sourceIssues.join(" | ")),
 				"No session sources are currently readable.",
@@ -121,6 +121,7 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 
 	return createSuccessResponse(
 		request.requestId,
+		request.generation,
 		mergeSessionSnapshots(snapshots, sourceIssues),
 	);
 };
@@ -136,10 +137,26 @@ const processNextRequest = (): void => {
 	}
 
 	isProcessing = true;
-
 	try {
-		const response = buildResponse(request);
-		port.postMessage(response);
+		if (request.kind === "refresh-reset") {
+			resetOpenCodeCache();
+			invalidatePiSessionCaches();
+			port.postMessage({
+				kind: "refresh-reset-ack",
+				generation: request.generation,
+			});
+			return;
+		}
+
+		if (request.kind === "refresh-worker-ready") {
+			port.postMessage({
+				kind: "refresh-worker-ready-ack",
+				generation: request.generation,
+			});
+			return;
+		}
+
+		port.postMessage(buildResponse(request));
 	} finally {
 		isProcessing = false;
 		if (pendingRequests.length > 0) {
@@ -149,7 +166,7 @@ const processNextRequest = (): void => {
 };
 
 port.on("message", (data: unknown) => {
-	if (!isRefreshRequest(data)) {
+	if (!isRefreshWorkerRequest(data)) {
 		return;
 	}
 

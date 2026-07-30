@@ -31,6 +31,13 @@ const PI_FAMILY_CAPABILITIES: SessionCapabilities = {
 	hierarchy: true,
 };
 
+const OMP_CAPABILITIES: SessionCapabilities = {
+	attach: true,
+	delete: true,
+	abortChildren: true,
+	hierarchy: true,
+};
+
 const MISSION_CONTROL_CAPABILITIES: SessionCapabilities = {
 	attach: true,
 	delete: true,
@@ -67,8 +74,9 @@ export const getDefaultSessionCapabilities = (
 		case "claude":
 			return { ...CLAUDE_CAPABILITIES };
 		case "pi":
-		case "omp":
 			return { ...PI_FAMILY_CAPABILITIES };
+		case "omp":
+			return { ...OMP_CAPABILITIES };
 		case "mission-control":
 			return { ...MISSION_CONTROL_CAPABILITIES };
 	}

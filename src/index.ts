@@ -26,6 +26,7 @@ import {
 	type Renderable,
 	ScrollBox,
 	type ScrollBoxRenderable,
+	StyledText,
 	Text,
 	type TextRenderable,
 	t,
@@ -34,14 +35,22 @@ import { deleteClaudeSession } from "./db/claude";
 import { deleteCodexSession } from "./db/codex";
 import { abortCodexChildSession } from "./db/codex-child-abort";
 import { deleteMissionControlSession } from "./db/missionControl";
+import { stopOmpSession } from "./db/omp-session-stop";
 import { stopOpencodeSession } from "./db/opencode-session-stop";
 import { deleteOmpSession, deletePiSession } from "./db/pi";
 import {
-	createErrorResponse,
+	createRefreshResetRequest,
+	createRefreshWorkerReadyRequest,
 	createRequest,
 	isRefreshResponse,
+	isRefreshWorkerControlAcknowledgement,
+	type RefreshRequest,
+	type RefreshResetRequest,
 	type RefreshResponse,
 	type RefreshSnapshotPayload,
+	type RefreshWorkerControlAcknowledgement,
+	type RefreshWorkerReadyRequest,
+	type RefreshWorkerRequest,
 } from "./db/refresh-worker-protocol";
 import { formatAbortTargetSummary, getAbortTargets } from "./lib/abortTargets";
 import {
@@ -90,6 +99,7 @@ import {
 	getAttachLaunchSpec,
 	getSessionSourceLabel,
 } from "./lib/sessionSource";
+import { isSessionStopShortcut } from "./lib/sessionStopShortcut";
 import {
 	getTextSelectionText,
 	isTextSelectionInProgress,
@@ -152,7 +162,7 @@ const FILTER_SHORTCUT_LABEL = "f";
 const ATTACH_SHORTCUT_LABEL = "a";
 const COPY_ID_SHORTCUT_LABEL = "i";
 const DELETE_SHORTCUT_LABEL = "d";
-const KILL_CHILDREN_SHORTCUT_LABEL = "K";
+const KILL_CHILDREN_SHORTCUT_LABEL = "Ctrl+K";
 const SORT_SHORTCUT_LABEL = "s";
 const TIMELINE_SHORTCUT_LABEL = "t";
 const HIERARCHY_NARROW_THRESHOLD = 56;
@@ -165,6 +175,8 @@ const ROOT_PADDING_TOP = 1;
 const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
 const FOOTER_INLINE_GAP = 1;
+const FRESHNESS_DISCLOSURE =
+	"agent values update independently | known Pi/omp files: 2s | new/removed-path discovery: 10s";
 // Emitted synchronously to fd 1 right before process.exit on shutdown.
 // opentui 0.3.x wrapped every render frame in Synchronized Updates
 // (?2026h...?2026l) but never emitted a closing ?2026l on teardown, so Kitty
@@ -243,6 +255,35 @@ const sanitizeText = (
 ): string => {
 	const trimmed = value?.trim();
 	return trimmed && trimmed.length > 0 ? trimmed : fallback;
+};
+
+const getConservativeTerminalCellWidth = (value: string): number => {
+	let width = 0;
+	for (const character of value) {
+		const codePoint = character.codePointAt(0);
+		width += codePoint !== undefined && codePoint <= 0x7f ? 1 : 2;
+	}
+	return width;
+};
+
+const getWrappedTerminalLineCount = (
+	value: string,
+	availableWidth: number,
+): number => {
+	const width = Math.max(availableWidth, 1);
+	return value.split(/\r?\n/).reduce((lineCount, line) => {
+		let wrappedLineCount = 1;
+		let occupiedWidth = 0;
+		for (const character of line) {
+			const characterWidth = getConservativeTerminalCellWidth(character);
+			if (occupiedWidth > 0 && occupiedWidth + characterWidth > width) {
+				wrappedLineCount += 1;
+				occupiedWidth = 0;
+			}
+			occupiedWidth += Math.min(characterWidth, width);
+		}
+		return lineCount + wrappedLineCount;
+	}, 0);
 };
 
 const getGridWidth = (
@@ -365,8 +406,7 @@ interface AppState {
 	selectedSessionId: string | null;
 	externalAttachedSessionIds: Set<string>;
 	externalAttachedSessionDirectoryCounts: Map<string, number>;
-	pendingDeleteSessionId: string | null;
-	pendingDeleteSessionTitle: string | null;
+	pendingDeleteTarget: PendingDeleteTarget | null;
 	deleteConfirmationError: string | null;
 	pendingKillSessionId: string | null;
 	pendingKillChildrenCount: number;
@@ -411,6 +451,38 @@ interface AppState {
 	hierarchyOrigin: FocusPane;
 	timelineScrollLeft: number;
 	timelineScrollLeftBySessionId: Partial<Record<string, number>>;
+}
+
+interface PendingDeleteTarget {
+	readonly id: string;
+	readonly title: string;
+	readonly source: Session["sessionSource"];
+	readonly sessionPath: string | undefined;
+	readonly missionControlDatabasePath: string | undefined;
+}
+
+type RefreshWorkerStatus =
+	| "starting"
+	| "usable"
+	| "resetting"
+	| "retiring"
+	| "failed";
+
+type RefreshWorkerControlKind = "ready" | "reset";
+
+interface RefreshWorkerControlWaiter {
+	kind: RefreshWorkerControlKind;
+	generation: number;
+	resolve: () => void;
+	reject: (error: Error) => void;
+}
+
+interface RefreshWorkerLifecycle {
+	worker: Worker;
+	status: RefreshWorkerStatus;
+	resetWaiter: RefreshWorkerControlWaiter | null;
+	retirementPromise: Promise<void> | null;
+	recoveryPromise: Promise<void> | null;
 }
 
 const isScrollBoxRenderable = (
@@ -1028,8 +1100,7 @@ const main = async () => {
 		selectedSessionId: null,
 		externalAttachedSessionIds: new Set(),
 		externalAttachedSessionDirectoryCounts: new Map(),
-		pendingDeleteSessionId: null,
-		pendingDeleteSessionTitle: null,
+		pendingDeleteTarget: null,
 		deleteConfirmationError: null,
 		pendingKillSessionId: null,
 		pendingKillChildrenCount: 0,
@@ -1079,11 +1150,17 @@ const main = async () => {
 	const refreshCoordinator = createRefreshCoordinator();
 	// node v24 rejects new Worker(fileUrl.href string) with ERR_WORKER_PATH;
 	// it requires the URL object (or a ./ relative path), not the .href string.
-	const refreshWorker = new Worker(
-		new URL(`./db/refresh-worker`, import.meta.url),
-		{ execArgv: ["--experimental-sqlite", "--no-warnings"] },
-	);
-	refreshWorker.unref();
+	const createRefreshWorker = (): Worker => {
+		const worker = new Worker(new URL(`./db/refresh-worker`, import.meta.url), {
+			execArgv: ["--experimental-sqlite", "--no-warnings"],
+		});
+		worker.unref();
+		return worker;
+	};
+	let currentRefreshWorker: RefreshWorkerLifecycle | null = null;
+	let refreshDispatchGateOpen = false;
+	let refreshGeneration = 0;
+	let isShuttingDown = false;
 	const isResizeDebouncing: { value: ReturnType<typeof setTimeout> | null } = {
 		value: null,
 	};
@@ -1334,6 +1411,10 @@ const main = async () => {
 	};
 
 	const startPolling = () => {
+		if (!refreshDispatchGateOpen || isShuttingDown) {
+			return;
+		}
+
 		if (!interval) {
 			interval = setInterval(() => {
 				refreshSessions();
@@ -1844,7 +1925,7 @@ const main = async () => {
 		);
 		const canSwitchFocus = showGrid && showDetail;
 		const deletePromptActive = Boolean(
-			state.pendingDeleteSessionId || state.pendingKillSessionId,
+			state.pendingDeleteTarget || state.pendingKillSessionId,
 		);
 		state.focusedPane = getFocusedPane(showGrid, showDetail, state.focusedPane);
 		const hierarchyNarrowMode =
@@ -1886,7 +1967,7 @@ const main = async () => {
 		const canAbortChildrenSelected =
 			(selectedAbortPlan?.targets.length ?? 0) > 0;
 		const shortcutGuide = deletePromptActive
-			? state.pendingDeleteSessionId
+			? state.pendingDeleteTarget
 				? state.isDeletingSession
 					? "Deleting selected session..."
 					: "Delete selected session? y: confirm | Esc/n: cancel"
@@ -1901,7 +1982,7 @@ const main = async () => {
 					? `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}${TIMELINE_SHORTCUT_LABEL}: timeline | ↑/↓/PgUp/PgDn: scroll detail | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: stop stuck` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`
 					: `${FILTER_SHORTCUT_LABEL}/click: filter(${sessionFilterLabel}) | ${SORT_SHORTCUT_LABEL}: sort(${state.sessionSortMode}) | ${shortcutPrefix}arrows/PgUp/PgDn: move grid | Enter: detail | ${TIMELINE_SHORTCUT_LABEL}: timeline | ${HIERARCHY_SHORTCUT_LABEL}: hierarchy${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: stop stuck` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""} | ${COPY_ID_SHORTCUT_LABEL}: copy id${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""} | ${SIDEVIEW_SHORTCUT_LABEL}: sideview | Ctrl+S: stats | q/Esc: quit`;
 		const styledShortcutGuide = deletePromptActive
-			? state.pendingDeleteSessionId
+			? state.pendingDeleteTarget
 				? state.isDeletingSession
 					? t`${fg(APP_PALETTE.warning)("Deleting selected session...")}`
 					: t`${fg(APP_PALETTE.danger)("Delete selected session? ")}${footerShortcut("y")}${dim(": confirm | ")}${footerShortcut("Esc/n")}${dim(": cancel")}`
@@ -1918,10 +1999,44 @@ const main = async () => {
 					? t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut("↑/↓/PgUp/PgDn")}${dim(": scroll detail | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: stop stuck` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`
 					: t`${footerShortcut(FILTER_SHORTCUT_LABEL)}${dim("/click: filter(")}${footerState(sessionFilterLabel)}${dim(") | ")}${footerShortcut(SORT_SHORTCUT_LABEL)}${dim(": sort(")}${footerState(state.sessionSortMode)}${dim(") | ")}${canSwitchFocus ? footerShortcut("Tab") : ""}${canSwitchFocus ? dim(": switch pane | ") : ""}${footerShortcut("arrows/PgUp/PgDn")}${dim(": move grid | ")}${footerShortcut("Enter")}${dim(": detail | ")}${footerShortcut(TIMELINE_SHORTCUT_LABEL)}${dim(": timeline | ")}${footerShortcut(HIERARCHY_SHORTCUT_LABEL)}${dim(": hierarchy")}${canAbortChildrenSelected ? ` | ${KILL_CHILDREN_SHORTCUT_LABEL}: stop stuck` : ""}${canAttachSelected ? ` | ${ATTACH_SHORTCUT_LABEL}: attach` : ""}${dim(" | ")}${footerShortcut(COPY_ID_SHORTCUT_LABEL)}${dim(": copy id")}${canDeleteSelected ? ` | ${DELETE_SHORTCUT_LABEL}: delete` : ""}${dim(" | ")}${footerShortcut(SIDEVIEW_SHORTCUT_LABEL)}${dim(": sideview | ")}${footerShortcut("q/Esc")}${dim(": quit")}`;
 		const footerAvailableWidth = innerWidth;
+		const operationalFooterText =
+			state.dbError ??
+			(state.pendingKillSessionId
+				? state.isKillingChildren
+					? "deleting sessions..."
+					: state.killFallbackRemaining.length > 0
+						? `delete confirm: ${state.killFallbackCurrentIndex + 1}/${state.killFallbackRemaining.length}`
+						: `stop armed: ${state.pendingKillSummary ?? `${state.pendingKillChildrenCount} targets`}`
+				: deletePromptActive
+					? state.isDeletingSession
+						? "delete in progress"
+						: `delete armed: ${state.pendingDeleteTarget?.title ?? "selected session"}`
+					: `${focusSummary}${hiddenCompletedSummary}`);
+		const rightFooterText = `${operationalFooterText} | ${FRESHNESS_DISCLOSURE}`;
+		const rightFooterLineCount = getWrappedTerminalLineCount(
+			rightFooterText,
+			footerAvailableWidth,
+		);
+		const controlFooterLineCount = getWrappedTerminalLineCount(
+			shortcutGuide,
+			footerAvailableWidth,
+		);
 		const footerWraps =
-			shortcutGuide.length + focusSummary.length + FOOTER_INLINE_GAP >
+			getConservativeTerminalCellWidth(shortcutGuide) +
+				getConservativeTerminalCellWidth(rightFooterText) +
+				FOOTER_INLINE_GAP >
 			footerAvailableWidth;
-		const footerHeight = footerWraps ? 2 : 1;
+		const footerHeight = footerWraps
+			? controlFooterLineCount + rightFooterLineCount
+			: 1;
+		const rightFooterWidth = Math.min(
+			getConservativeTerminalCellWidth(rightFooterText),
+			footerAvailableWidth,
+		);
+		const leftFooterWidth = Math.max(
+			footerAvailableWidth - rightFooterWidth - FOOTER_INLINE_GAP,
+			1,
+		);
 		const contentHeight = Math.max(
 			height - ROOT_PADDING_TOP - ROOT_CONTENT_GAP - footerHeight,
 			1,
@@ -1975,27 +2090,7 @@ const main = async () => {
 		existingRoot.gap = 1;
 		existingRoot.backgroundColor = APP_PALETTE.bg;
 
-		const rightFooterText =
-			state.dbError ??
-			(state.pendingKillSessionId
-				? state.isKillingChildren
-					? "deleting sessions..."
-					: state.killFallbackRemaining.length > 0
-						? `delete confirm: ${state.killFallbackCurrentIndex + 1}/${state.killFallbackRemaining.length}`
-						: `stop armed: ${state.pendingKillSummary ?? `${state.pendingKillChildrenCount} targets`}`
-				: deletePromptActive
-					? state.isDeletingSession
-						? "delete in progress"
-						: `delete armed: ${sanitizeText(state.pendingDeleteSessionTitle, "selected session")}`
-					: `${focusSummary}${hiddenCompletedSummary}`);
-		const rightFooterWidth = rightFooterText.length;
-		const leftFooterWidth = Math.max(
-			footerAvailableWidth - rightFooterWidth - FOOTER_INLINE_GAP,
-			1,
-		);
-
-		statusText.width = footerWraps ? footerAvailableWidth : rightFooterWidth;
-		statusText.content = state.dbError
+		const styledOperationalFooter = state.dbError
 			? t`${fg(APP_PALETTE.warning)(state.dbError)}`
 			: state.pendingKillSessionId
 				? state.isKillingChildren
@@ -2006,11 +2101,21 @@ const main = async () => {
 				: deletePromptActive
 					? state.isDeletingSession
 						? t`${fg(APP_PALETTE.warning)("delete in progress")}`
-						: t`${fg(APP_PALETTE.danger)("delete armed")}${dim(": ")}${footerState(sanitizeText(state.pendingDeleteSessionTitle, "selected session"))}`
+						: t`${fg(APP_PALETTE.danger)("delete armed")}${dim(": ")}${footerState(state.pendingDeleteTarget?.title ?? "selected session")}`
 					: t`${dim(headerText)}${canSwitchFocus ? dim(" | sort: ") : ""}${canSwitchFocus ? footerState(state.sessionSortMode) : ""}${canSwitchFocus ? dim(" | focus: ") : ""}${canSwitchFocus ? footerState(focusLabel) : ""}${shouldShowHiddenCompleted && state.hiddenCompletedCount > 0 ? dim(" | hidden completed: ") : ""}${shouldShowHiddenCompleted && state.hiddenCompletedCount > 0 ? footerState(state.hiddenCompletedCount.toLocaleString("en-US")) : ""}`;
-		statusText.truncate = true;
+
+		statusText.width = footerWraps ? footerAvailableWidth : rightFooterWidth;
+		statusText.height = footerWraps ? rightFooterLineCount : 1;
+		statusText.wrapMode = footerWraps ? "char" : "none";
+		statusText.content = new StyledText([
+			...styledOperationalFooter.chunks,
+			dim(` | ${FRESHNESS_DISCLOSURE}`),
+		]);
+		statusText.truncate = !footerWraps;
 
 		controlText.width = footerWraps ? footerAvailableWidth : leftFooterWidth;
+		controlText.height = footerWraps ? controlFooterLineCount : 1;
+		controlText.wrapMode = footerWraps ? "char" : "none";
 		controlText.content = styledShortcutGuide;
 		controlText.truncate = !footerWraps;
 
@@ -2172,21 +2277,16 @@ const main = async () => {
 		deleteConfirmationOverlay.height = height;
 		replaceChildren(
 			deleteConfirmationOverlay,
-			deletePromptActive && state.pendingDeleteSessionId
+			deletePromptActive && state.pendingDeleteTarget
 				? [
 						createDeleteConfirmationDialog({
-							title: sanitizeText(
-								state.pendingDeleteSessionTitle,
-								"Untitled session",
-							),
-							sessionId: state.pendingDeleteSessionId,
+							title: state.pendingDeleteTarget.title,
+							sessionId: state.pendingDeleteTarget.id,
 							width: Math.min(Math.max(width - 8, 36), 72),
 							isDeleting: state.isDeletingSession,
 							errorMessage: state.deleteConfirmationError,
 							sourceLabel: getSessionSourceLabel(
-								state.sessions.find(
-									(session) => session.id === state.pendingDeleteSessionId,
-								)?.sessionSource ?? "opencode",
+								state.pendingDeleteTarget.source,
 							),
 						}),
 					]
@@ -2439,14 +2539,19 @@ const main = async () => {
 		render();
 	};
 
-	const dispatchRefreshRequest = (requestId: RefreshRequestId) => {
-		refreshWorker.postMessage(createRequest(requestId));
+	const dispatchRefreshRequest = (requestId: RefreshRequestId): boolean => {
+		const worker = currentRefreshWorker;
+		if (!worker) {
+			return false;
+		}
+
+		return postRefresh(worker, createRequest(requestId, refreshGeneration));
 	};
 
 	const completeRefreshRequest = (requestId: RefreshRequestId) => {
 		const nextRequestId = refreshCoordinator.completeRefresh(requestId);
 
-		if (nextRequestId !== null) {
+		if (nextRequestId !== null && refreshDispatchGateOpen) {
 			dispatchRefreshRequest(nextRequestId);
 		}
 	};
@@ -2485,6 +2590,14 @@ const main = async () => {
 
 		const response = pendingSelectionRefreshResponse;
 		pendingSelectionRefreshResponse = null;
+		if (
+			response.generation !== refreshGeneration ||
+			!refreshCoordinator.shouldApplyResponse(response.requestId)
+		) {
+			settleRefreshWaiters(response);
+			return true;
+		}
+
 		applyRefreshResponseState(response);
 		settleRefreshWaiters(response);
 		return true;
@@ -2532,7 +2645,17 @@ const main = async () => {
 		return true;
 	};
 
-	const handleRefreshResponse = (response: RefreshResponse) => {
+	const handleRefreshResponse = (
+		instance: RefreshWorkerLifecycle,
+		response: RefreshResponse,
+	) => {
+		if (
+			instance !== currentRefreshWorker ||
+			response.generation !== refreshGeneration
+		) {
+			return;
+		}
+
 		try {
 			if (!refreshCoordinator.shouldApplyResponse(response.requestId)) {
 				return;
@@ -2550,90 +2673,365 @@ const main = async () => {
 		}
 	};
 
-	const failActiveRefreshRequest = (errorMessage: string) => {
-		const activeRequestId = refreshCoordinator.getSnapshot().activeRequestId;
-		if (activeRequestId === null) {
-			if (hasActiveTextSelection()) {
+	const rejectControlWaiter = (
+		instance: RefreshWorkerLifecycle,
+		error: Error,
+	) => {
+		const waiter = instance.resetWaiter;
+		instance.resetWaiter = null;
+		waiter?.reject(error);
+	};
+
+	const createPromiseResolvers = <T>() => {
+		let resolve!: (value: T | PromiseLike<T>) => void;
+		let reject!: (reason?: unknown) => void;
+		const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+			resolve = resolvePromise;
+			reject = rejectPromise;
+		});
+		return { promise, resolve, reject };
+	};
+
+	const waitForControlAcknowledgement = (
+		instance: RefreshWorkerLifecycle,
+		kind: RefreshWorkerControlKind,
+		generation: number,
+	): Promise<void> => {
+		const { promise, resolve, reject } = createPromiseResolvers<void>();
+		instance.resetWaiter = { kind, generation, resolve, reject };
+		return promise;
+	};
+
+	const handleControlAcknowledgement = (
+		instance: RefreshWorkerLifecycle,
+		acknowledgement: RefreshWorkerControlAcknowledgement,
+	) => {
+		if (
+			instance !== currentRefreshWorker ||
+			acknowledgement.generation !== refreshGeneration
+		) {
+			return;
+		}
+
+		const waiter = instance.resetWaiter;
+		const expectedKind =
+			waiter?.kind === "ready"
+				? "refresh-worker-ready-ack"
+				: "refresh-reset-ack";
+		if (
+			!waiter ||
+			waiter.generation !== acknowledgement.generation ||
+			acknowledgement.kind !== expectedKind ||
+			(instance.status !== "starting" && instance.status !== "resetting")
+		) {
+			return;
+		}
+
+		instance.resetWaiter = null;
+		instance.status = "usable";
+		waiter.resolve();
+	};
+
+	function failCurrentWorker(
+		instance: RefreshWorkerLifecycle,
+		reason: string,
+		fromExit = false,
+	): Promise<void> {
+		if (instance !== currentRefreshWorker) {
+			return instance.retirementPromise ?? Promise.resolve();
+		}
+		if (instance.retirementPromise) {
+			return instance.retirementPromise;
+		}
+
+		refreshDispatchGateOpen = false;
+		instance.status = "retiring";
+		refreshGeneration += 1;
+		stopPolling();
+		pendingSelectionRefreshResponse = null;
+		pendingSelectionRender = false;
+		const failure = new RefreshCompletionError(reason);
+		refreshCoordinator.cancel(failure);
+		rejectControlWaiter(instance, failure);
+		state.dbError = reason;
+		render();
+
+		const { promise: retirementPromise, resolve: resolveRetirement } =
+			createPromiseResolvers<void>();
+		instance.retirementPromise = retirementPromise;
+
+		void (async () => {
+			try {
+				if (!fromExit) {
+					instance.worker.removeAllListeners();
+					await instance.worker.terminate();
+				}
+			} catch (error) {
+				instance.status = "failed";
+				state.dbError = `Refresh worker recovery stopped: ${error instanceof Error ? error.message : "worker termination failed."}`;
+				render();
 				return;
 			}
 
-			state.dbError = errorMessage;
+			if (isShuttingDown || instance !== currentRefreshWorker) {
+				return;
+			}
+
+			instance.status = "failed";
+			await recoverWorker(instance, reason);
+		})().finally(() => {
+			resolveRetirement();
+		});
+
+		return retirementPromise;
+	}
+
+	const postToCurrentWorker = (
+		instance: RefreshWorkerLifecycle,
+		message: RefreshWorkerRequest,
+		purpose: "refresh" | "control",
+	): boolean => {
+		if (instance !== currentRefreshWorker) {
+			return false;
+		}
+
+		const canPost =
+			purpose === "refresh"
+				? instance.status === "usable" && refreshDispatchGateOpen
+				: instance.status === "starting" || instance.status === "resetting";
+		if (!canPost) {
+			void failCurrentWorker(
+				instance,
+				`Refresh worker rejected an invalid ${purpose} dispatch.`,
+			);
+			return false;
+		}
+
+		try {
+			instance.worker.postMessage(message);
+			return true;
+		} catch (error) {
+			void failCurrentWorker(
+				instance,
+				error instanceof Error
+					? error.message
+					: `Failed to post ${purpose} request to refresh worker.`,
+			);
+			return false;
+		}
+	};
+
+	const postRefresh = (
+		instance: RefreshWorkerLifecycle,
+		request: RefreshRequest,
+	): boolean => postToCurrentWorker(instance, request, "refresh");
+
+	const postControl = (
+		instance: RefreshWorkerLifecycle,
+		request: RefreshResetRequest | RefreshWorkerReadyRequest,
+	): boolean => postToCurrentWorker(instance, request, "control");
+
+	const sendControlAndWait = (
+		instance: RefreshWorkerLifecycle,
+		kind: RefreshWorkerControlKind,
+		generation: number,
+	): Promise<void> => {
+		const acknowledgement = waitForControlAcknowledgement(
+			instance,
+			kind,
+			generation,
+		);
+		const request =
+			kind === "ready"
+				? createRefreshWorkerReadyRequest(generation)
+				: createRefreshResetRequest(generation);
+		if (!postControl(instance, request)) {
+			rejectControlWaiter(
+				instance,
+				new RefreshCompletionError(
+					`Failed to dispatch refresh worker ${kind} control request.`,
+				),
+			);
+		}
+		return acknowledgement;
+	};
+
+	const handleCurrentWorkerMessage = (
+		instance: RefreshWorkerLifecycle,
+		message: unknown,
+	) => {
+		if (instance !== currentRefreshWorker) {
+			return;
+		}
+
+		if (isRefreshWorkerControlAcknowledgement(message)) {
+			handleControlAcknowledgement(instance, message);
+			return;
+		}
+
+		if (isRefreshResponse(message)) {
+			handleRefreshResponse(instance, message);
+		}
+	};
+
+	const attachWorkerHandlers = (instance: RefreshWorkerLifecycle) => {
+		instance.worker.on("message", (message: unknown) => {
+			handleCurrentWorkerMessage(instance, message);
+		});
+		instance.worker.on("messageerror", () => {
+			void failCurrentWorker(
+				instance,
+				"Failed to deserialize refresh worker response payload.",
+			);
+		});
+		instance.worker.on("error", (error: Error) => {
+			void failCurrentWorker(
+				instance,
+				error.message || "Refresh worker encountered an unexpected error.",
+			);
+		});
+		instance.worker.on("exit", (code) => {
+			if (!isShuttingDown) {
+				void failCurrentWorker(
+					instance,
+					`Refresh worker exited unexpectedly${code === 0 ? "." : ` with code ${code}.`}`,
+					true,
+				);
+			}
+		});
+	};
+
+	const installAndReadyWorker = async (): Promise<void> => {
+		let instance: RefreshWorkerLifecycle;
+		try {
+			instance = {
+				worker: createRefreshWorker(),
+				status: "starting",
+				resetWaiter: null,
+				retirementPromise: null,
+				recoveryPromise: null,
+			};
+		} catch (error) {
+			state.dbError = `Refresh worker startup failed: ${error instanceof Error ? error.message : "worker construction failed."}`;
 			render();
 			return;
 		}
 
+		currentRefreshWorker = instance;
+		attachWorkerHandlers(instance);
 		try {
-			if (refreshCoordinator.shouldApplyResponse(activeRequestId)) {
-				const response = createErrorResponse(activeRequestId, {
-					code: "query_failed",
-					message: errorMessage,
-				});
-				if (hasActiveTextSelection()) {
-					pendingSelectionRefreshResponse = response;
-					return;
-				}
-
-				applyRefreshResponseState(response);
-				settleRefreshWaiters(response);
+			await sendControlAndWait(instance, "ready", refreshGeneration);
+			if (
+				isShuttingDown ||
+				instance !== currentRefreshWorker ||
+				instance.status !== "usable"
+			) {
+				return;
 			}
-		} finally {
-			completeRefreshRequest(activeRequestId);
+
+			refreshDispatchGateOpen = true;
+			state.dbError = null;
+			lastRefreshRenderSignature = null;
+			render();
+			pendingSelectionRender = false;
+			startPolling();
+			refreshSessions();
+		} catch (error) {
+			if (instance === currentRefreshWorker && instance.status !== "retiring") {
+				void failCurrentWorker(
+					instance,
+					error instanceof Error
+						? error.message
+						: "Refresh worker readiness check failed.",
+				);
+			}
 		}
 	};
 
-	refreshWorker.on("message", (response) => {
-		if (!isRefreshResponse(response)) {
-			return;
+	function recoverWorker(
+		failedInstance: RefreshWorkerLifecycle,
+		_reason: string,
+	): Promise<void> {
+		if (failedInstance.recoveryPromise) {
+			return failedInstance.recoveryPromise;
 		}
 
-		handleRefreshResponse(response);
-	});
+		const { promise: recoveryPromise, resolve: resolveRecovery } =
+			createPromiseResolvers<void>();
+		failedInstance.recoveryPromise = recoveryPromise;
 
-	refreshWorker.on("messageerror", () => {
-		failActiveRefreshRequest(
-			"Failed to deserialize refresh worker response payload.",
-		);
-	});
+		void installAndReadyWorker().finally(() => {
+			resolveRecovery();
+		});
+		return recoveryPromise;
+	}
 
-	refreshWorker.on("error", (err: Error) => {
-		failActiveRefreshRequest(
-			err.message || "Refresh worker encountered an unexpected error.",
+	const resetWorkerForPiOmpDelete = async (): Promise<void> => {
+		const instance = currentRefreshWorker;
+		if (instance?.status !== "usable") {
+			throw new Error(
+				"Refresh worker is not available for the Pi/omp delete reset.",
+			);
+		}
+
+		refreshDispatchGateOpen = false;
+		refreshGeneration += 1;
+		stopPolling();
+		pendingSelectionRefreshResponse = null;
+		pendingSelectionRender = false;
+		refreshCoordinator.cancel(
+			new RefreshCompletionError(
+				"Refresh canceled for Pi/omp session deletion.",
+			),
 		);
-	});
+		instance.status = "resetting";
+		await sendControlAndWait(instance, "reset", refreshGeneration);
+		const resetStatus = instance.status as RefreshWorkerStatus;
+		if (
+			instance !== currentRefreshWorker ||
+			resetStatus !== "usable" ||
+			isShuttingDown
+		) {
+			throw new Error("Refresh worker reset did not complete.");
+		}
+	};
 
 	const refreshSessions = () => {
-		if (applyPendingSelectionWork()) {
+		if (!refreshDispatchGateOpen) {
+			return;
+		}
+		if (applyPendingSelectionWork() || !refreshDispatchGateOpen) {
 			return;
 		}
 
 		const ticket = refreshCoordinator.requestRefresh();
-		if (!ticket.shouldDispatch) return;
-
-		try {
+		if (ticket.shouldDispatch) {
 			dispatchRefreshRequest(ticket.requestId);
-		} catch (error) {
-			failActiveRefreshRequest(
-				error instanceof Error
-					? error.message
-					: "Failed to dispatch refresh request to worker.",
-			);
 		}
 	};
 
 	const refreshSessionsAndWait = (): Promise<void> => {
+		if (!refreshDispatchGateOpen) {
+			return Promise.reject(
+				new RefreshCompletionError(
+					"Refresh dispatch is temporarily unavailable.",
+				),
+			);
+		}
+
 		applyPendingSelectionWork();
+		if (!refreshDispatchGateOpen) {
+			return Promise.reject(
+				new RefreshCompletionError(
+					"Refresh dispatch is temporarily unavailable.",
+				),
+			);
+		}
+
 		const ticket = refreshCoordinator.requestRefresh();
 		const completion = refreshCoordinator.waitForRefresh(ticket.requestId);
 		if (ticket.shouldDispatch) {
-			try {
-				dispatchRefreshRequest(ticket.requestId);
-			} catch (error) {
-				failActiveRefreshRequest(
-					error instanceof Error
-						? error.message
-						: "Failed to dispatch refresh request to worker.",
-				);
-			}
+			dispatchRefreshRequest(ticket.requestId);
 		}
 		return completion;
 	};
@@ -3038,9 +3436,7 @@ const main = async () => {
 			return;
 		}
 
-		const selectedSession = state.sessions.find(
-			(session) => session.id === state.selectedSessionId,
-		);
+		const selectedSession = state.sessions[state.selectedIndex] ?? null;
 		if (!selectedSession) {
 			return;
 		}
@@ -3052,36 +3448,46 @@ const main = async () => {
 			return;
 		}
 
-		state.pendingDeleteSessionId = selectedSession.id;
-		state.pendingDeleteSessionTitle = sanitizeText(
-			selectedSession.title,
-			"Untitled session",
-		);
+		const source = selectedSession.sessionSource;
+		const sessionPath = selectedSession.sourceMetadata?.sessionPath;
+		if ((source === "pi" || source === "omp") && !sessionPath) {
+			showToast(`${getSessionSourceLabel(source)} session path is unavailable`);
+			return;
+		}
+
+		state.pendingDeleteTarget = {
+			id: selectedSession.id,
+			title: sanitizeText(selectedSession.title, "Untitled session"),
+			source,
+			sessionPath,
+			missionControlDatabasePath:
+				selectedSession.sourceMetadata?.missionControl?.canonicalDatabasePath,
+		};
 		state.deleteConfirmationError = null;
 		render();
 	};
 
 	const cancelDeleteConfirmation = () => {
-		if (!state.pendingDeleteSessionId && !state.deleteConfirmationError) {
+		if (!state.pendingDeleteTarget && !state.deleteConfirmationError) {
 			return;
 		}
 
-		state.pendingDeleteSessionId = null;
-		state.pendingDeleteSessionTitle = null;
+		state.pendingDeleteTarget = null;
 		state.deleteConfirmationError = null;
 		state.isDeletingSession = false;
 		render();
 	};
 
 	const confirmDeleteSession = async () => {
-		if (!state.pendingDeleteSessionId || state.isDeletingSession) {
+		if (!state.pendingDeleteTarget || state.isDeletingSession) {
 			return;
 		}
 
-		const sessionId = state.pendingDeleteSessionId;
-		const selectedSession = state.sessions.find(
-			(session) => session.id === sessionId,
-		);
+		const target = state.pendingDeleteTarget;
+		const sessionId = target.id;
+		const requiresPiOmpReset =
+			target.source === "pi" || target.source === "omp";
+		let piOmpResetComplete = false;
 		state.isDeletingSession = true;
 		state.deleteConfirmationError = null;
 		stopPolling();
@@ -3089,7 +3495,12 @@ const main = async () => {
 		renderer.intermediateRender();
 
 		try {
-			if (selectedSession?.sessionSource === "codex") {
+			if (requiresPiOmpReset) {
+				await resetWorkerForPiOmpDelete();
+				piOmpResetComplete = true;
+			}
+
+			if (target.source === "codex") {
 				const deleteResult = await deleteCodexSession(sessionId);
 				if (!deleteResult.ok) {
 					state.isDeletingSession = false;
@@ -3100,7 +3511,7 @@ const main = async () => {
 					render();
 					return;
 				}
-			} else if (selectedSession?.sessionSource === "claude") {
+			} else if (target.source === "claude") {
 				const deleteResult = await deleteClaudeSession(sessionId);
 				if (!deleteResult.ok) {
 					state.isDeletingSession = false;
@@ -3111,37 +3522,41 @@ const main = async () => {
 					render();
 					return;
 				}
-			} else if (selectedSession?.sessionSource === "pi") {
+			} else if (target.source === "pi") {
 				const deleteResult = await deletePiSession(sessionId, {
-					sessionPath: selectedSession.sourceMetadata?.sessionPath,
+					sessionPath: target.sessionPath,
 				});
 				if (!deleteResult.ok) {
 					state.isDeletingSession = false;
 					state.deleteConfirmationError = sanitizeText(
-						deleteResult.error.message,
+						deleteResult.error.cause
+							? `${deleteResult.error.message}: ${deleteResult.error.cause}`
+							: deleteResult.error.message,
 						"Pi session delete failed.",
 					);
 					render();
 					return;
 				}
-			} else if (selectedSession?.sessionSource === "omp") {
+			} else if (target.source === "omp") {
 				const deleteResult = await deleteOmpSession(sessionId, {
-					sessionPath: selectedSession.sourceMetadata?.sessionPath,
+					sessionPath: target.sessionPath,
 				});
 				if (!deleteResult.ok) {
 					state.isDeletingSession = false;
 					state.deleteConfirmationError = sanitizeText(
-						deleteResult.error.message,
+						deleteResult.error.cause
+							? `${deleteResult.error.message}: ${deleteResult.error.cause}`
+							: deleteResult.error.message,
 						"omp session delete failed.",
 					);
 					render();
 					return;
 				}
-			} else if (selectedSession?.sessionSource === "mission-control") {
-				const databasePath =
-					selectedSession.sourceMetadata?.missionControl?.canonicalDatabasePath;
+			} else if (target.source === "mission-control") {
 				const deleteResult = await deleteMissionControlSession(sessionId, {
-					...(databasePath ? { databasePath } : {}),
+					...(target.missionControlDatabasePath
+						? { databasePath: target.missionControlDatabasePath }
+						: {}),
 				});
 				if (!deleteResult.ok) {
 					state.isDeletingSession = false;
@@ -3186,20 +3601,33 @@ const main = async () => {
 			}
 
 			state.isDeletingSession = false;
-			state.pendingDeleteSessionId = null;
-			state.pendingDeleteSessionTitle = null;
+			state.pendingDeleteTarget = null;
 			state.deleteConfirmationError = null;
 			state.gridFollowSelectionOnRender = true;
-			refreshSessions();
+			if (!requiresPiOmpReset) {
+				refreshSessions();
+			}
 		} catch (error) {
 			state.isDeletingSession = false;
 			state.deleteConfirmationError =
 				error instanceof Error
 					? error.message
-					: `Failed to start ${getSessionSourceLabel(selectedSession?.sessionSource ?? "opencode")} session delete.`;
+					: `Failed to start ${getSessionSourceLabel(target.source)} session delete.`;
 			render();
 		} finally {
-			startPolling();
+			if (
+				requiresPiOmpReset &&
+				piOmpResetComplete &&
+				currentRefreshWorker?.status === "usable" &&
+				!isShuttingDown
+			) {
+				pendingSelectionRender = false;
+				refreshDispatchGateOpen = true;
+				refreshSessions();
+				startPolling();
+			} else if (!requiresPiOmpReset) {
+				startPolling();
+			}
 		}
 	};
 
@@ -3271,6 +3699,12 @@ const main = async () => {
 	): Promise<{ ok: boolean; error?: string }> => {
 		if (session.sessionSource === "codex") {
 			return abortCodexChildSession(session);
+		}
+
+		if (session.sessionSource === "omp") {
+			return stopOmpSession({
+				sessionPath: session.sourceMetadata?.sessionPath,
+			});
 		}
 
 		return stopOpencodeSession({
@@ -3367,6 +3801,14 @@ const main = async () => {
 				})
 				.map((target) => target.id);
 			const successCount = targets.length - failedIds.length;
+
+			if (selectedSession.sessionSource === "omp" && failedIds.length > 0) {
+				state.isKillingChildren = false;
+				state.killChildrenError = `Could not stop OMP session${failedIds.length === 1 ? "" : "s"}: ${failedIds.join(", ")}. Session history was not deleted.`;
+				startPolling();
+				render();
+				return;
+			}
 
 			if (failedIds.length > 0) {
 				state.isKillingChildren = false;
@@ -3743,10 +4185,27 @@ const main = async () => {
 		}
 	};
 
-	const shutdown = () => {
+	const retireRefreshWorkerOnShutdown = () => {
+		isShuttingDown = true;
+		refreshDispatchGateOpen = false;
+		const instance = currentRefreshWorker;
+		if (!instance) {
+			return;
+		}
+
+		instance.status = "retiring";
+		rejectControlWaiter(
+			instance,
+			new RefreshCompletionError("Refresh worker stopped during shutdown."),
+		);
+		instance.worker.removeAllListeners();
 		try {
-			refreshWorker.terminate();
+			void instance.worker.terminate();
 		} catch {}
+	};
+
+	const shutdown = () => {
+		retireRefreshWorkerOnShutdown();
 
 		if (isResizeDebouncing.value) {
 			clearTimeout(isResizeDebouncing.value);
@@ -3798,7 +4257,7 @@ const main = async () => {
 
 		copyCompletedTextSelection();
 
-		if (state.pendingDeleteSessionId) {
+		if (state.pendingDeleteTarget) {
 			if (state.isDeletingSession) {
 				return;
 			}
@@ -4031,7 +4490,7 @@ const main = async () => {
 			return;
 		}
 
-		if (key.name === "k" && key.shift) {
+		if (isSessionStopShortcut(key)) {
 			openKillChildrenConfirmation();
 			return;
 		}
@@ -4136,15 +4595,11 @@ const main = async () => {
 
 	renderer.start();
 	void refreshExternalAttachedSessionSignals();
-	refreshSessions();
-	startPolling();
-
 	render();
+	void installAndReadyWorker();
 
 	process.on("exit", () => {
-		try {
-			refreshWorker.terminate();
-		} catch {}
+		retireRefreshWorkerOnShutdown();
 
 		stopPolling();
 		flushRenderStats();

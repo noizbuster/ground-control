@@ -1,9 +1,14 @@
+import { randomUUID } from "node:crypto";
 import {
 	type Dirent,
 	existsSync,
+	linkSync,
 	lstatSync,
+	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	unlinkSync,
@@ -16,12 +21,10 @@ import {
 	extname,
 	isAbsolute,
 	join,
+	relative,
 	resolve,
+	sep,
 } from "node:path";
-import {
-	evictOldestCacheEntries,
-	refreshCacheEntryLru,
-} from "../lib/boundedCache";
 import { getDisplayStatus, isActiveStatus } from "../lib/hierarchyHelpers";
 import type { SessionSnapshot } from "../lib/sessionSnapshot";
 import {
@@ -51,13 +54,30 @@ interface PiSessionHeader extends JsonObject {
 	titleSource?: string;
 }
 
+const MAX_PI_SESSION_ID_LENGTH = 256;
+const MAX_PI_COMPACT_TIMESTAMP_LENGTH = 64;
+const MAX_PI_COMPACT_CWD_LENGTH = 4_096;
+const MAX_PI_COMPACT_PARENT_SESSION_LENGTH = 4_096;
+const MAX_PI_COMPACT_TITLE_LENGTH = 1_024;
+const MAX_PI_COMPACT_TITLE_SOURCE_LENGTH = 256;
+
 export interface PiSessionLogRecord {
 	source: PiDialect;
 	path: string;
 	root: string;
 	header: PiSessionHeader;
-	entries: JsonObject[];
+	entries?: JsonObject[];
 	mtimeMs: number;
+	size?: number;
+	summary?: PiSessionSummary;
+}
+
+interface PiLoadedSessionLogRecord extends PiSessionLogRecord {
+	readonly fileVersion: PiFileVersion;
+}
+
+interface PiSessionRawLogRecord extends PiLoadedSessionLogRecord {
+	entries: JsonObject[];
 }
 
 interface PiTaskChildReference {
@@ -296,48 +316,169 @@ const parseJsonLine = (line: string): JsonObject | undefined => {
 	}
 };
 
-// Bounds memory: without eviction this cache grew once per log file ever read.
-const PI_LOG_CACHE_MAX_ENTRIES = 256;
-const piLogCache = new Map<
-	string,
-	{ mtimeMs: number; size: number; record: PiSessionLogRecord }
->();
+interface PiFileVersion {
+	readonly canonicalPath: string;
+	readonly dev: number;
+	readonly ino: number;
+	readonly mtimeMs: number;
+	readonly size: number;
+}
 
-export const invalidatePiSessionCaches = (): void => {
-	piLogCache.clear();
+interface PiParsedSessionContent {
+	readonly header: PiSessionHeader;
+	readonly entries: JsonObject[];
+}
+
+interface PiRawParseCacheEntry {
+	readonly parsed: PiParsedSessionContent | null;
+	readonly sourceBytes: number;
+}
+
+interface PiRefreshOccurrence {
+	readonly key: string;
+	readonly source: PiDialect;
+	readonly root: string;
+	readonly path: string;
+	version?: PiFileVersion;
+	record?: PiSessionLogRecord;
+	issue?: string;
+	issueVersion?: PiFileVersion;
+}
+
+interface PiSourceRefreshState {
+	rootSignature: string | null;
+	lastReconciledAt: number | null;
+	occurrences: Map<string, PiRefreshOccurrence>;
+}
+
+interface PiSnapshotCycleOptions {
+	readonly nowMs?: number;
+	readonly pi?: PiSnapshotOptions;
+	readonly omp?: PiSnapshotOptions;
+}
+
+const PI_RECONCILE_INTERVAL_MS = 10_000;
+const PI_RAW_PARSE_CACHE_LIMIT = 256;
+const PI_RAW_PARSE_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
+const piRawParseCache = new Map<string, PiRawParseCacheEntry>();
+let piRawParseCacheSourceBytes = 0;
+
+const piSourceRefreshStates: Record<PiDialect, PiSourceRefreshState> = {
+	pi: {
+		rootSignature: null,
+		lastReconciledAt: null,
+		occurrences: new Map(),
+	},
+	omp: {
+		rootSignature: null,
+		lastReconciledAt: null,
+		occurrences: new Map(),
+	},
 };
 
-export const parsePiSessionLogFile = (
-	path: string,
-	root: string,
+const createPiOccurrenceKey = (
 	source: PiDialect,
-): PiSessionLogRecord | undefined => {
-	let stats: { mtimeMs: number; size: number };
+	root: string,
+	path: string,
+): string => `${source}\0${root}\0${path}`;
+
+const getPiFileVersion = (path: string): PiFileVersion | undefined => {
 	try {
-		stats = statSync(path);
+		const stats = statSync(path);
+		let canonicalPath: string;
+		try {
+			canonicalPath = realpathSync(path);
+		} catch {
+			canonicalPath = resolve(path);
+		}
+		return {
+			canonicalPath,
+			dev: stats.dev,
+			ino: stats.ino,
+			mtimeMs: stats.mtimeMs,
+			size: stats.size,
+		};
 	} catch {
 		return undefined;
 	}
+};
 
-	const cached = piLogCache.get(path);
-	if (
-		cached &&
-		cached.mtimeMs === stats.mtimeMs &&
-		cached.size === stats.size
+const arePiFileVersionsEqual = (
+	left: PiFileVersion | undefined,
+	right: PiFileVersion | undefined,
+): boolean =>
+	left !== undefined &&
+	right !== undefined &&
+	left.canonicalPath === right.canonicalPath &&
+	left.dev === right.dev &&
+	left.ino === right.ino &&
+	left.mtimeMs === right.mtimeMs &&
+	left.size === right.size;
+
+const createPiFileVersionKeyPrefix = (version: PiFileVersion): string =>
+	`${version.canonicalPath}\0`;
+
+const createPiFileVersionKey = (version: PiFileVersion): string =>
+	`${createPiFileVersionKeyPrefix(version)}${version.dev}\0${version.ino}\0${version.mtimeMs}\0${version.size}`;
+
+const removeCachedPiRawParse = (key: string): void => {
+	const cached = piRawParseCache.get(key);
+	if (!cached) {
+		return;
+	}
+
+	piRawParseCache.delete(key);
+	piRawParseCacheSourceBytes -= cached.sourceBytes;
+};
+
+const getCachedPiRawParse = (
+	version: PiFileVersion,
+): PiParsedSessionContent | null | undefined => {
+	const key = createPiFileVersionKey(version);
+	const cached = piRawParseCache.get(key);
+	if (!cached) {
+		return undefined;
+	}
+
+	piRawParseCache.delete(key);
+	piRawParseCache.set(key, cached);
+	return cached.parsed;
+};
+
+const cachePiRawParse = (
+	version: PiFileVersion,
+	parsed: PiParsedSessionContent | null,
+): void => {
+	const key = createPiFileVersionKey(version);
+	const keyPrefix = createPiFileVersionKeyPrefix(version);
+	for (const cachedKey of piRawParseCache.keys()) {
+		if (cachedKey.startsWith(keyPrefix)) {
+			removeCachedPiRawParse(cachedKey);
+		}
+	}
+
+	if (version.size > PI_RAW_PARSE_CACHE_BYTE_LIMIT) {
+		return;
+	}
+
+	piRawParseCache.set(key, { parsed, sourceBytes: version.size });
+	piRawParseCacheSourceBytes += version.size;
+
+	while (
+		piRawParseCache.size > PI_RAW_PARSE_CACHE_LIMIT ||
+		piRawParseCacheSourceBytes > PI_RAW_PARSE_CACHE_BYTE_LIMIT
 	) {
-		// Re-insert moves live entries newest; stale ones drift oldest.
-		refreshCacheEntryLru(piLogCache, path, cached);
-		return cached.record;
+		const oldestKey = piRawParseCache.keys().next().value;
+		if (oldestKey === undefined) {
+			return;
+		}
+		removeCachedPiRawParse(oldestKey);
 	}
+};
 
-	let content: string;
-	try {
-		content = readFileSync(path, "utf8");
-	} catch {
-		return undefined;
-	}
-
-	const mtimeMs = stats.mtimeMs;
+const parsePiSessionContent = (
+	content: string,
+): PiParsedSessionContent | undefined => {
 	const entries: JsonObject[] = [];
 	let header: PiSessionHeader | undefined;
 	for (const line of content.split(/\r?\n/u)) {
@@ -351,7 +492,12 @@ export const parsePiSessionLogFile = (
 			continue;
 		}
 
-		if (!header && parsed.type === "session" && typeof parsed.id === "string") {
+		if (
+			!header &&
+			parsed.type === "session" &&
+			typeof parsed.id === "string" &&
+			parsed.id.length <= MAX_PI_SESSION_ID_LENGTH
+		) {
 			header = parsed as PiSessionHeader;
 			continue;
 		}
@@ -363,17 +509,152 @@ export const parsePiSessionLogFile = (
 		return undefined;
 	}
 
-	const record: PiSessionLogRecord = {
-		source,
-		path,
-		root,
-		header,
-		entries,
-		mtimeMs,
+	return { header, entries };
+};
+
+const getBoundedCompactHeaderString = (
+	value: unknown,
+	maxLength: number,
+): string | undefined =>
+	typeof value === "string" && value.length <= maxLength ? value : undefined;
+
+const createCompactPiSessionHeader = (
+	header: PiSessionHeader,
+): PiSessionHeader => {
+	const timestamp =
+		typeof header.timestamp === "number" && Number.isFinite(header.timestamp)
+			? header.timestamp
+			: getBoundedCompactHeaderString(
+					header.timestamp,
+					MAX_PI_COMPACT_TIMESTAMP_LENGTH,
+				);
+	const cwd = getBoundedCompactHeaderString(
+		header.cwd,
+		MAX_PI_COMPACT_CWD_LENGTH,
+	);
+	const parentSession = getBoundedCompactHeaderString(
+		header.parentSession,
+		MAX_PI_COMPACT_PARENT_SESSION_LENGTH,
+	);
+	const title = getBoundedCompactHeaderString(
+		header.title,
+		MAX_PI_COMPACT_TITLE_LENGTH,
+	);
+	const titleSource = getBoundedCompactHeaderString(
+		header.titleSource,
+		MAX_PI_COMPACT_TITLE_SOURCE_LENGTH,
+	);
+
+	return {
+		type: "session",
+		id: header.id,
+		...(timestamp === undefined ? {} : { timestamp }),
+		...(cwd === undefined ? {} : { cwd }),
+		...(parentSession === undefined ? {} : { parentSession }),
+		...(title === undefined ? {} : { title }),
+		...(titleSource === undefined ? {} : { titleSource }),
 	};
-	evictOldestCacheEntries(piLogCache, PI_LOG_CACHE_MAX_ENTRIES);
-	piLogCache.set(path, { mtimeMs, size: stats.size, record });
-	return record;
+};
+
+const createPiSessionRawLogRecord = (
+	parsed: PiParsedSessionContent,
+	path: string,
+	root: string,
+	source: PiDialect,
+	version: PiFileVersion,
+): PiSessionRawLogRecord => ({
+	source,
+	path,
+	root,
+	header: parsed.header,
+	entries: parsed.entries,
+	mtimeMs: version.mtimeMs,
+	size: version.size,
+	fileVersion: version,
+});
+
+const createPiCompactSessionLogRecord = (
+	parsed: PiParsedSessionContent,
+	occurrence: PiRefreshOccurrence,
+	version: PiFileVersion,
+): PiSessionLogRecord => {
+	const rawLog = createPiSessionRawLogRecord(
+		parsed,
+		occurrence.path,
+		occurrence.root,
+		occurrence.source,
+		version,
+	);
+	const header = createCompactPiSessionHeader(rawLog.header);
+	return {
+		source: rawLog.source,
+		path: rawLog.path,
+		root: rawLog.root,
+		header,
+		mtimeMs: rawLog.mtimeMs,
+		size: rawLog.size,
+		summary: summarizePiSession({ ...rawLog, header }),
+	};
+};
+
+export const invalidatePiSessionCaches = (): void => {
+	piRawParseCache.clear();
+	piRawParseCacheSourceBytes = 0;
+	for (const state of Object.values(piSourceRefreshStates)) {
+		state.rootSignature = null;
+		state.lastReconciledAt = null;
+		state.occurrences.clear();
+	}
+};
+
+export const getPiRawParseCacheKeysForTesting = (): readonly string[] =>
+	Array.from(piRawParseCache.keys());
+
+export const getPiRawParseCacheStateForTesting = (): Readonly<{
+	readonly byteLimit: number;
+	readonly sourceBytes: number;
+}> => ({
+	byteLimit: PI_RAW_PARSE_CACHE_BYTE_LIMIT,
+	sourceBytes: piRawParseCacheSourceBytes,
+});
+
+export const parsePiSessionLogFile = (
+	path: string,
+	root: string,
+	source: PiDialect,
+): PiSessionRawLogRecord | undefined => {
+	const version = getPiFileVersion(path);
+	if (!version) {
+		return undefined;
+	}
+
+	const cached = getCachedPiRawParse(version);
+	if (cached !== undefined) {
+		return cached
+			? createPiSessionRawLogRecord(cached, path, root, source, version)
+			: undefined;
+	}
+
+	let content: string | undefined;
+	try {
+		content = readFileSync(path, "utf8");
+	} catch {
+		return undefined;
+	}
+	const after = getPiFileVersion(path);
+	if (
+		content === undefined ||
+		!after ||
+		!arePiFileVersionsEqual(version, after)
+	) {
+		return undefined;
+	}
+
+	const parsed = parsePiSessionContent(content);
+	cachePiRawParse(after, parsed ?? null);
+	return parsed
+		? createPiSessionRawLogRecord(parsed, path, root, source, after)
+		: undefined;
 };
 
 const extractMessage = (entry: JsonObject): JsonObject | undefined => {
@@ -430,6 +711,28 @@ const AWAITING_USER_RESPONSE_TOOL_NAME = "ask";
 
 const isToolUseFinishReason = (finishReason: string | undefined): boolean =>
 	finishReason === "toolUse" || finishReason === "tool_use";
+
+type OmpSessionExitKind = "normal" | "process_exit" | "signal" | "fatal";
+
+const getOmpSessionExitKind = (
+	entry: JsonObject,
+): OmpSessionExitKind | undefined => {
+	if (
+		entry.type !== "custom" ||
+		entry.customType !== "session_exit" ||
+		!isJsonObject(entry.data)
+	) {
+		return undefined;
+	}
+
+	const kind = trimToUndefined(entry.data.kind);
+	return kind === "normal" ||
+		kind === "process_exit" ||
+		kind === "signal" ||
+		kind === "fatal"
+		? kind
+		: undefined;
+};
 
 const normalizeComparableText = (
 	value: string | undefined,
@@ -853,7 +1156,7 @@ const getActiveBranchEntries = (entries: JsonObject[]): JsonObject[] => {
 	});
 };
 
-const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
+const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 	const sourceLabel = getSessionSourceLabel(log.source);
 	const id = log.header.id;
 	const directory = trimToUndefined(log.header.cwd) ?? dirname(log.path);
@@ -879,10 +1182,23 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 	let childReferences: PiTaskChildReference[] = [];
 	let latestToolResultEntry: JsonObject | undefined;
 	let latestToolResultMessage: JsonObject | undefined;
+	let sessionExitKind: OmpSessionExitKind | undefined;
 
 	for (const entry of getActiveBranchEntries(log.entries)) {
 		lastEntryType = trimToUndefined(entry.type) ?? lastEntryType;
 		lastTimestampMs = normalizeTimestampMs(entry.timestamp) ?? lastTimestampMs;
+
+		if (log.source === "omp") {
+			const exitKind = getOmpSessionExitKind(entry);
+			if (exitKind) {
+				sessionExitKind = exitKind;
+				continue;
+			}
+
+			// OMP can append a resumed turn to the same JSONL file. Activity
+			// after an exit record belongs to that newer session lifecycle.
+			sessionExitKind = undefined;
+		}
 
 		if (entry.type === "model_change") {
 			if (log.source === "omp") {
@@ -1053,6 +1369,12 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 		!isTerminalAssistantFinish;
 
 	const status = (() => {
+		if (sessionExitKind === "fatal") {
+			return SessionStatus.failed;
+		}
+		if (sessionExitKind) {
+			return SessionStatus.completed;
+		}
 		if (hasRunningActiveTools) {
 			return SessionStatus.running;
 		}
@@ -1103,6 +1425,12 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 	})();
 
 	const statusDetail = (() => {
+		if (sessionExitKind === "signal") {
+			return "Stopped";
+		}
+		if (sessionExitKind === "fatal") {
+			return "Session failed";
+		}
 		if (hasRunningActiveTools) {
 			return `Running ${activeToolNames.length === 1 ? activeToolNames[0] : `${activeToolNames.length} tools`}`;
 		}
@@ -1185,11 +1513,16 @@ const summarizePiSession = (log: PiSessionLogRecord): PiSessionSummary => {
 		startedAtMs,
 		lastTimestampMs: Math.max(lastTimestampMs, log.mtimeMs),
 		status,
-		finishReason: hasSuccessfulYieldTail
-			? undefined
-			: isAwaitingUserResponse
-				? "awaiting_user"
-				: lastAssistantFinish,
+		finishReason:
+			sessionExitKind === "signal"
+				? "interrupted"
+				: sessionExitKind === "fatal"
+					? "error"
+					: hasSuccessfulYieldTail
+						? undefined
+						: isAwaitingUserResponse
+							? "awaiting_user"
+							: lastAssistantFinish,
 		statusDetail,
 	};
 };
@@ -1428,9 +1761,21 @@ export const buildPiSessionSnapshot = (params: {
 				`${sourceLabel} session id appears in multiple JSONL files.`;
 			continue;
 		}
+
+		const summary =
+			log.summary ??
+			(log.entries
+				? summarizePiSession(log as PiSessionRawLogRecord)
+				: undefined);
+		if (!summary) {
+			sessionIssues[log.header.id] =
+				`${sourceLabel} session summary is unavailable.`;
+			continue;
+		}
+
 		logsById.set(log.header.id, log);
 		addPathAliases(pathAliases, log);
-		summariesById.set(log.header.id, summarizePiSession(log));
+		summariesById.set(log.header.id, summary);
 	}
 	const childHintsByPath = new Map<string, PiChildParentHint>();
 	const childHintsById = new Map<string, PiChildParentHint>();
@@ -1570,10 +1915,10 @@ const loadPiLogs = (
 	source: PiDialect,
 	roots: string[],
 ): {
-	logs: PiSessionLogRecord[];
+	logs: PiLoadedSessionLogRecord[];
 	logIssues: Partial<Record<string, string>>;
 } => {
-	const logs: PiSessionLogRecord[] = [];
+	const logs: PiLoadedSessionLogRecord[] = [];
 	const logIssues: Partial<Record<string, string>> = {};
 	for (const root of roots) {
 		for (const path of collectJsonlFiles(root)) {
@@ -1589,125 +1934,848 @@ const loadPiLogs = (
 	return { logs, logIssues };
 };
 
-const getPiFamilySnapshot = (
-	source: PiDialect,
-	options: PiSnapshotOptions = {},
-): DatabaseResult<SessionSnapshot> => {
+export const getPiOmpSnapshots = (
+	options: PiSnapshotCycleOptions = {},
+): {
+	pi: DatabaseResult<SessionSnapshot>;
+	omp: DatabaseResult<SessionSnapshot>;
+} => {
+	const nowMs = options.nowMs ?? Date.now();
+	const results: Partial<Record<PiDialect, DatabaseResult<SessionSnapshot>>> =
+		{};
+	const availableSources: Array<{
+		source: PiDialect;
+		roots: string[];
+		state: PiSourceRefreshState;
+	}> = [];
+
 	try {
-		const configuredRoots =
-			options.sessionRoots ?? resolvePiSessionRoots(source);
-		const roots = getReadableExistingRoots(configuredRoots);
-		if (roots.length === 0) {
-			return {
+		for (const source of ["pi", "omp"] as const) {
+			const sourceOptions = options[source];
+			const configuredRoots =
+				sourceOptions?.sessionRoots ?? resolvePiSessionRoots(source);
+			const roots = getReadableExistingRoots(configuredRoots);
+			if (roots.length === 0) {
+				const state = piSourceRefreshStates[source];
+				state.rootSignature = null;
+				state.lastReconciledAt = null;
+				state.occurrences.clear();
+				results[source] = {
+					ok: false,
+					error: {
+						code: "missing_database",
+						message: `${getSessionSourceLabel(source)} sessions not found at ${configuredRoots.join(", ")}.`,
+					},
+				};
+				continue;
+			}
+
+			const state = piSourceRefreshStates[source];
+			const rootSignature = roots.join("\0");
+			const shouldReconcile =
+				state.rootSignature !== rootSignature ||
+				state.lastReconciledAt === null ||
+				nowMs - state.lastReconciledAt >= PI_RECONCILE_INTERVAL_MS;
+			if (shouldReconcile) {
+				const nextOccurrences = new Map<string, PiRefreshOccurrence>();
+				for (const root of roots) {
+					for (const path of collectJsonlFiles(root)) {
+						const key = createPiOccurrenceKey(source, root, path);
+						const previous = state.occurrences.get(key);
+						nextOccurrences.set(
+							key,
+							previous ?? {
+								key,
+								source,
+								root,
+								path,
+							},
+						);
+					}
+				}
+				state.occurrences = nextOccurrences;
+				state.rootSignature = rootSignature;
+				state.lastReconciledAt = nowMs;
+			}
+
+			availableSources.push({ source, roots, state });
+		}
+
+		const changedGroups = new Map<string, PiRefreshOccurrence[]>();
+		for (const { state } of availableSources) {
+			for (const occurrence of state.occurrences.values()) {
+				const version = getPiFileVersion(occurrence.path);
+				if (!version) {
+					if (!occurrence.record) {
+						occurrence.issue = "Unable to read JSONL session.";
+						occurrence.issueVersion = undefined;
+						occurrence.version = undefined;
+					}
+					continue;
+				}
+
+				const hasStableCachedValue =
+					occurrence.record !== undefined ||
+					(occurrence.issueVersion !== undefined &&
+						arePiFileVersionsEqual(occurrence.issueVersion, version));
+				if (
+					arePiFileVersionsEqual(occurrence.version, version) &&
+					hasStableCachedValue
+				) {
+					continue;
+				}
+
+				const physicalKey = createPiFileVersionKey(version);
+				const group = changedGroups.get(physicalKey);
+				if (group) {
+					group.push(occurrence);
+				} else {
+					changedGroups.set(physicalKey, [occurrence]);
+				}
+			}
+		}
+
+		for (const occurrences of changedGroups.values()) {
+			const representative = occurrences[0];
+			const before = getPiFileVersion(representative.path);
+			const cached = before ? getCachedPiRawParse(before) : undefined;
+			let content = "";
+			let readSucceeded = false;
+			if (cached === undefined && before) {
+				try {
+					content = readFileSync(representative.path, "utf8");
+					readSucceeded = true;
+				} catch {}
+			}
+			const after = getPiFileVersion(representative.path);
+			if (
+				!before ||
+				!after ||
+				!arePiFileVersionsEqual(before, after) ||
+				(cached === undefined && !readSucceeded)
+			) {
+				for (const occurrence of occurrences) {
+					if (!occurrence.record) {
+						occurrence.issue = "JSONL session changed while being read.";
+					}
+				}
+				continue;
+			}
+
+			let parsed: PiParsedSessionContent | null;
+			if (cached === undefined) {
+				parsed = parsePiSessionContent(content) ?? null;
+				cachePiRawParse(after, parsed);
+			} else {
+				parsed = cached;
+			}
+			for (const occurrence of occurrences) {
+				if (!parsed) {
+					occurrence.record = undefined;
+					occurrence.issue = `Unable to parse ${getSessionSourceLabel(occurrence.source)} JSONL session.`;
+					occurrence.issueVersion = after;
+					occurrence.version = after;
+					continue;
+				}
+
+				occurrence.record = createPiCompactSessionLogRecord(
+					parsed,
+					occurrence,
+					after,
+				);
+				occurrence.issue = undefined;
+				occurrence.issueVersion = undefined;
+				occurrence.version = after;
+			}
+		}
+
+		for (const { source, state } of availableSources) {
+			const logs: PiSessionLogRecord[] = [];
+			const logIssues: Partial<Record<string, string>> = {};
+			for (const occurrence of state.occurrences.values()) {
+				if (occurrence.record) {
+					logs.push(occurrence.record);
+				} else if (occurrence.issue) {
+					logIssues[occurrence.path] = occurrence.issue;
+				}
+			}
+
+			results[source] =
+				logs.length === 0 && Object.keys(logIssues).length === 0
+					? { ok: true, value: { ...EMPTY_SNAPSHOT } }
+					: {
+							ok: true,
+							value: buildPiSessionSnapshot({ source, logs, logIssues }),
+						};
+		}
+	} catch (error) {
+		for (const source of ["pi", "omp"] as const) {
+			results[source] = {
 				ok: false,
-				error: {
-					code: "missing_database",
-					message: `${getSessionSourceLabel(source)} sessions not found at ${configuredRoots.join(", ")}.`,
-				},
+				error: createQueryFailedDatabaseError(
+					error,
+					`Failed to read ${getSessionSourceLabel(source)} sessions.`,
+				),
 			};
 		}
+	}
 
-		const { logs, logIssues } = loadPiLogs(source, roots);
-		if (logs.length === 0 && Object.keys(logIssues).length === 0) {
-			return { ok: true, value: { ...EMPTY_SNAPSHOT } };
-		}
-
-		return {
-			ok: true,
-			value: buildPiSessionSnapshot({ source, logs, logIssues }),
-		};
-	} catch (error) {
-		return {
+	return {
+		pi: results.pi ?? {
 			ok: false,
 			error: createQueryFailedDatabaseError(
-				error,
-				`Failed to read ${getSessionSourceLabel(source)} sessions.`,
+				new Error("Pi snapshot was not produced."),
+				"Failed to read Pi sessions.",
 			),
-		};
-	}
+		},
+		omp: results.omp ?? {
+			ok: false,
+			error: createQueryFailedDatabaseError(
+				new Error("omp snapshot was not produced."),
+				"Failed to read omp sessions.",
+			),
+		},
+	};
 };
 
 export const getPiSnapshot = (
 	options: PiSnapshotOptions = {},
-): DatabaseResult<SessionSnapshot> => getPiFamilySnapshot("pi", options);
+): DatabaseResult<SessionSnapshot> => getPiOmpSnapshots({ pi: options }).pi;
 
 export const getOmpSnapshot = (
 	options: PiSnapshotOptions = {},
-): DatabaseResult<SessionSnapshot> => getPiFamilySnapshot("omp", options);
+): DatabaseResult<SessionSnapshot> => getPiOmpSnapshots({ omp: options }).omp;
 
-const collectDescendantIds = (
-	targetId: string,
-	logs: PiSessionLogRecord[],
-): Set<string> => {
-	const logsById = new Map(logs.map((log) => [log.header.id, log]));
-	const pathAliases = new Map<string, string>();
+const collectDescendantLogs = <T extends PiSessionLogRecord>(
+	source: PiDialect,
+	targetLog: T,
+	logs: T[],
+): T[] => {
+	const logsByPath = new Map<string, T>();
 	for (const log of logs) {
-		addPathAliases(pathAliases, log);
+		const path = normalizePath(log.path);
+		if (!logsByPath.has(path)) {
+			logsByPath.set(path, log);
+		}
+	}
+	logsByPath.set(normalizePath(targetLog.path), targetLog);
+
+	const uniqueLogs = [...logsByPath.values()];
+	const logsById = new Map<string, T[]>();
+	const aliases = new Map<string, T[]>();
+	const addToIndex = (index: Map<string, T[]>, key: string, log: T): void => {
+		const values = index.get(key) ?? [];
+		if (
+			!values.some(
+				(value) => normalizePath(value.path) === normalizePath(log.path),
+			)
+		) {
+			values.push(log);
+			index.set(key, values);
+		}
+	};
+
+	for (const log of uniqueLogs) {
+		addToIndex(logsById, log.header.id, log);
+		addToIndex(aliases, basename(log.path), log);
+		addToIndex(aliases, basename(log.path, ".jsonl"), log);
 	}
 
-	const childrenByParentId = new Map<string, string[]>();
-	for (const log of logs) {
-		const parentId = resolveParentId(log, pathAliases, logsById);
-		if (!parentId) {
+	const resolveDeletionParent = (log: T): T | undefined => {
+		const parent = trimToUndefined(log.header.parentSession);
+		if (!parent) {
+			return undefined;
+		}
+
+		const parentByIdCandidates = logsById.get(parent);
+		const parentById =
+			parentByIdCandidates?.length === 1 ? parentByIdCandidates[0] : undefined;
+		if (parentById) {
+			return parentById;
+		}
+
+		const parentPath = resolveParentPath(log.path, parent);
+		if (parentPath) {
+			return logsByPath.get(normalizePath(parentPath));
+		}
+
+		const parentAliasCandidates = aliases.get(parent);
+		const parentAlias =
+			parentAliasCandidates?.length === 1
+				? parentAliasCandidates[0]
+				: undefined;
+		if (parentAlias) {
+			return parentAlias;
+		}
+
+		const parentJsonlAliasCandidates = aliases.get(`${parent}.jsonl`);
+		return parentJsonlAliasCandidates?.length === 1
+			? parentJsonlAliasCandidates[0]
+			: undefined;
+	};
+
+	const childrenByParentPath = new Map<string, T[]>();
+	for (const log of uniqueLogs) {
+		const parent = resolveDeletionParent(log);
+		if (!parent) {
 			continue;
 		}
-		childrenByParentId.set(parentId, [
-			...(childrenByParentId.get(parentId) ?? []),
-			log.header.id,
-		]);
+		const parentPath = normalizePath(parent.path);
+		const children = childrenByParentPath.get(parentPath);
+		if (children) {
+			children.push(log);
+		} else {
+			childrenByParentPath.set(parentPath, [log]);
+		}
 	}
 
-	const ids = new Set<string>([targetId]);
-	const stack = [targetId];
+	const paths = new Set<string>([normalizePath(targetLog.path)]);
+	const stack = [normalizePath(targetLog.path)];
 	while (stack.length > 0) {
-		const current = stack.pop();
-		if (!current) {
+		const currentPath = stack.pop();
+		if (!currentPath) {
 			continue;
 		}
-		for (const childId of childrenByParentId.get(current) ?? []) {
-			if (ids.has(childId)) {
+		for (const child of childrenByParentPath.get(currentPath) ?? []) {
+			const childPath = normalizePath(child.path);
+			if (paths.has(childPath)) {
 				continue;
 			}
-			ids.add(childId);
-			stack.push(childId);
+			paths.add(childPath);
+			stack.push(childPath);
+		}
+
+		if (source !== "omp") {
+			continue;
+		}
+		const artifactPath = getOmpArtifactPath(currentPath);
+		for (const log of uniqueLogs) {
+			const childPath = normalizePath(log.path);
+			const relativeChildPath = relative(artifactPath, childPath);
+			if (
+				relativeChildPath.length === 0 ||
+				relativeChildPath === ".." ||
+				relativeChildPath.startsWith(`..${sep}`) ||
+				isAbsolute(relativeChildPath) ||
+				paths.has(childPath)
+			) {
+				continue;
+			}
+			paths.add(childPath);
+			stack.push(childPath);
 		}
 	}
-	return ids;
+	return uniqueLogs.filter((log) => paths.has(normalizePath(log.path)));
 };
 
-const findTargetLog = (
+const findTargetLog = <T extends PiSessionLogRecord>(
 	sessionId: string,
-	logs: PiSessionLogRecord[],
+	logs: T[],
 	sessionPath?: string,
-): PiSessionLogRecord | undefined => {
+): T | undefined => {
 	const normalizedSessionPath = sessionPath
 		? normalizePath(sessionPath)
 		: undefined;
-	return logs.find((log) => {
-		if (
-			normalizedSessionPath &&
-			normalizePath(log.path) === normalizedSessionPath
-		) {
-			return true;
-		}
-		return log.header.id === sessionId || log.header.id.startsWith(sessionId);
-	});
+	const exactIdLogs = logs.filter((log) => log.header.id === sessionId);
+	if (normalizedSessionPath) {
+		return exactIdLogs.find(
+			(log) => normalizePath(log.path) === normalizedSessionPath,
+		);
+	}
+
+	const targetLog = exactIdLogs[0];
+	if (
+		!targetLog ||
+		exactIdLogs.some(
+			(log) => normalizePath(log.path) !== normalizePath(targetLog.path),
+		)
+	) {
+		return undefined;
+	}
+	return targetLog;
 };
 
-const removeIfExists = (path: string): boolean => {
+const pathExistsWithoutFollowing = (path: string): boolean => {
 	try {
-		if (!existsSync(path)) {
-			return false;
-		}
-		if (lstatSync(path).isDirectory()) {
-			rmSync(path, { recursive: true, force: true });
-		} else {
-			unlinkSync(path);
-		}
+		lstatSync(path);
 		return true;
 	} catch {
 		return false;
 	}
+};
+
+const removeQuarantinedOmpArtifact = (path: string): void => {
+	const identity = getOmpArtifactIdentity(path);
+	if (!identity) {
+		throw new Error(`OMP artifact quarantine entry ${path} was not found.`);
+	}
+
+	if (identity.kind === "directory") {
+		rmSync(path, { recursive: true, force: false });
+	} else {
+		unlinkSync(path);
+	}
+
+	if (pathExistsWithoutFollowing(path)) {
+		throw new Error(`OMP artifact quarantine entry ${path} still exists.`);
+	}
+};
+
+let piSessionDeletionBeforeQuarantineForTesting:
+	| ((path: string) => void)
+	| undefined;
+
+let piSessionDeletionBeforeUnlinkForTesting:
+	| ((path: string) => void)
+	| undefined;
+
+let ompArtifactDeletionAfterQuarantineForTesting:
+	| ((sessionPath: string, artifactPath: string) => void)
+	| undefined;
+
+let ompArtifactDeletionBeforeCleanupForTesting:
+	| ((artifactPath: string, quarantinePath: string) => void)
+	| undefined;
+
+export const setPiSessionDeletionBeforeQuarantineForTesting = (
+	hook: ((path: string) => void) | undefined,
+): void => {
+	piSessionDeletionBeforeQuarantineForTesting = hook;
+};
+
+export const setPiSessionDeletionBeforeUnlinkForTesting = (
+	hook: ((path: string) => void) | undefined,
+): void => {
+	piSessionDeletionBeforeUnlinkForTesting = hook;
+};
+
+export const setOmpArtifactDeletionAfterQuarantineForTesting = (
+	hook: ((sessionPath: string, artifactPath: string) => void) | undefined,
+): void => {
+	ompArtifactDeletionAfterQuarantineForTesting = hook;
+};
+
+export const setOmpArtifactDeletionBeforeCleanupForTesting = (
+	hook: ((artifactPath: string, quarantinePath: string) => void) | undefined,
+): void => {
+	ompArtifactDeletionBeforeCleanupForTesting = hook;
+};
+
+const arePiFileIdentitiesEqual = (
+	left: PiFileVersion | undefined,
+	right: PiFileVersion | undefined,
+): boolean =>
+	left !== undefined &&
+	right !== undefined &&
+	left.dev === right.dev &&
+	left.ino === right.ino &&
+	left.mtimeMs === right.mtimeMs &&
+	left.size === right.size;
+
+type OmpArtifactKind = "directory" | "file" | "symlink" | "other";
+
+interface OmpArtifactIdentity {
+	readonly dev: number;
+	readonly ino: number;
+	readonly mtimeMs: number;
+	readonly size: number;
+	readonly kind: OmpArtifactKind;
+}
+
+interface OmpArtifactDeletionCandidate {
+	readonly artifactPath: string;
+	readonly identity?: OmpArtifactIdentity;
+}
+
+const getOmpArtifactIdentity = (
+	path: string,
+): OmpArtifactIdentity | undefined => {
+	try {
+		const stats = lstatSync(path);
+		const kind: OmpArtifactKind = stats.isDirectory()
+			? "directory"
+			: stats.isFile()
+				? "file"
+				: stats.isSymbolicLink()
+					? "symlink"
+					: "other";
+		return {
+			dev: stats.dev,
+			ino: stats.ino,
+			mtimeMs: stats.mtimeMs,
+			size: stats.size,
+			kind,
+		};
+	} catch {
+		return undefined;
+	}
+};
+
+const areOmpArtifactIdentitiesEqual = (
+	left: OmpArtifactIdentity | undefined,
+	right: OmpArtifactIdentity | undefined,
+): boolean => {
+	if (
+		left === undefined ||
+		right === undefined ||
+		left.dev !== right.dev ||
+		left.ino !== right.ino ||
+		left.kind !== right.kind
+	) {
+		return false;
+	}
+
+	return (
+		left.kind === "directory" ||
+		(left.mtimeMs === right.mtimeMs && left.size === right.size)
+	);
+};
+
+const getOmpArtifactPath = (sessionPath: string): string =>
+	sessionPath.endsWith(".jsonl")
+		? sessionPath.slice(0, -".jsonl".length)
+		: sessionPath;
+
+const getPiDeletionQuarantineDirectory = (
+	path: string,
+	artifactPaths: readonly string[],
+): string => {
+	let enclosingArtifactPath: string | undefined;
+	for (const artifactPath of artifactPaths) {
+		const relativePath = relative(artifactPath, path);
+		if (
+			relativePath.length === 0 ||
+			relativePath === ".." ||
+			relativePath.startsWith(`..${sep}`) ||
+			isAbsolute(relativePath)
+		) {
+			continue;
+		}
+		if (
+			!enclosingArtifactPath ||
+			artifactPath.length < enclosingArtifactPath.length
+		) {
+			enclosingArtifactPath = artifactPath;
+		}
+	}
+	return enclosingArtifactPath ? dirname(enclosingArtifactPath) : dirname(path);
+};
+
+const snapshotOmpArtifactForDeletion = (
+	sessionPath: string,
+): OmpArtifactDeletionCandidate => {
+	const artifactPath = getOmpArtifactPath(sessionPath);
+	return { artifactPath, identity: getOmpArtifactIdentity(artifactPath) };
+};
+
+const doesOmpArtifactMatchDeletionCandidate = (
+	candidate: OmpArtifactDeletionCandidate,
+	path = candidate.artifactPath,
+): boolean =>
+	candidate.identity
+		? areOmpArtifactIdentitiesEqual(
+				candidate.identity,
+				getOmpArtifactIdentity(path),
+			)
+		: getOmpArtifactIdentity(path) === undefined;
+
+const movePathToPiDeletionQuarantine = (
+	path: string,
+	quarantineDirectory = dirname(path),
+): string => {
+	const quarantinePath = join(
+		quarantineDirectory,
+		`.${basename(path)}.deleting-${randomUUID()}`,
+	);
+	renameSync(path, quarantinePath);
+	return quarantinePath;
+};
+
+interface PiQuarantineRecovery {
+	readonly path: string;
+	readonly restoredToCanonicalPath: boolean;
+}
+
+const moveQuarantinedPathToPiRecovery = (
+	quarantinePath: string,
+	canonicalPath: string,
+): string => {
+	while (true) {
+		const recoveryDirectory = join(
+			dirname(canonicalPath),
+			`${basename(canonicalPath)}.recovery-${randomUUID()}`,
+		);
+		try {
+			mkdirSync(recoveryDirectory);
+			const recoveryPath = join(recoveryDirectory, basename(canonicalPath));
+			renameSync(quarantinePath, recoveryPath);
+			return recoveryPath;
+		} catch (error) {
+			const errorCode =
+				error instanceof Error &&
+				"code" in error &&
+				typeof error.code === "string"
+					? error.code
+					: undefined;
+			if (errorCode === "EEXIST") {
+				continue;
+			}
+			throw error;
+		}
+	}
+};
+
+const restoreQuarantinedPiSession = (
+	quarantinePath: string,
+	sessionPath: string,
+): PiQuarantineRecovery => {
+	try {
+		linkSync(quarantinePath, sessionPath);
+		unlinkSync(quarantinePath);
+		return { path: sessionPath, restoredToCanonicalPath: true };
+	} catch {
+		return {
+			path: moveQuarantinedPathToPiRecovery(quarantinePath, sessionPath),
+			restoredToCanonicalPath: false,
+		};
+	}
+};
+
+const restoreQuarantinedOmpArtifact = (
+	quarantinePath: string,
+	artifactPath: string,
+): PiQuarantineRecovery => {
+	if (getOmpArtifactIdentity(quarantinePath)?.kind === "directory") {
+		return {
+			path: moveQuarantinedPathToPiRecovery(quarantinePath, artifactPath),
+			restoredToCanonicalPath: false,
+		};
+	}
+
+	try {
+		linkSync(quarantinePath, artifactPath);
+		unlinkSync(quarantinePath);
+		return { path: artifactPath, restoredToCanonicalPath: true };
+	} catch {
+		return {
+			path: moveQuarantinedPathToPiRecovery(quarantinePath, artifactPath),
+			restoredToCanonicalPath: false,
+		};
+	}
+};
+
+interface QuarantinedOmpArtifact {
+	readonly artifactPath: string;
+	readonly quarantinePath: string;
+}
+
+interface RecoveredOmpArtifact {
+	readonly artifactPath: string;
+	readonly recovery: PiQuarantineRecovery;
+}
+
+const moveOmpArtifactToDeletionQuarantine = (
+	sessionPath: string,
+	candidate: OmpArtifactDeletionCandidate,
+	quarantineDirectory: string,
+): QuarantinedOmpArtifact | RecoveredOmpArtifact | undefined => {
+	if (
+		!candidate.identity ||
+		pathExistsWithoutFollowing(sessionPath) ||
+		!doesOmpArtifactMatchDeletionCandidate(candidate)
+	) {
+		return undefined;
+	}
+
+	try {
+		const quarantinePath = movePathToPiDeletionQuarantine(
+			candidate.artifactPath,
+			quarantineDirectory,
+		);
+		if (
+			pathExistsWithoutFollowing(sessionPath) ||
+			!areOmpArtifactIdentitiesEqual(
+				candidate.identity,
+				getOmpArtifactIdentity(quarantinePath),
+			)
+		) {
+			return {
+				artifactPath: candidate.artifactPath,
+				recovery: restoreQuarantinedOmpArtifact(
+					quarantinePath,
+					candidate.artifactPath,
+				),
+			};
+		}
+		return { artifactPath: candidate.artifactPath, quarantinePath };
+	} catch (error) {
+		const errorCode =
+			error instanceof Error &&
+			"code" in error &&
+			typeof error.code === "string"
+				? error.code
+				: undefined;
+		if (errorCode === "ENOENT") {
+			return undefined;
+		}
+		throw error;
+	}
+};
+
+const isLoadedPiSessionLogCurrentAtPath = (
+	log: PiLoadedSessionLogRecord,
+	path: string,
+): boolean => {
+	const before = getPiFileVersion(path);
+	if (!arePiFileIdentitiesEqual(log.fileVersion, before)) {
+		return false;
+	}
+
+	let content: string;
+	try {
+		content = readFileSync(path, "utf8");
+	} catch {
+		return false;
+	}
+
+	const parsed = parsePiSessionContent(content);
+	if (parsed?.header.id !== log.header.id) {
+		return false;
+	}
+
+	const after = getPiFileVersion(path);
+	return arePiFileIdentitiesEqual(log.fileVersion, after);
+};
+
+interface StagedPiDeletion {
+	readonly log: PiLoadedSessionLogRecord;
+	readonly sessionQuarantinePath: string;
+	readonly artifactCandidate?: OmpArtifactDeletionCandidate;
+	artifact?: QuarantinedOmpArtifact;
+}
+
+const assertStagedOmpDeletionManifestCurrent = (
+	staged: readonly StagedPiDeletion[],
+): void => {
+	for (const entry of staged) {
+		const candidate = entry.artifactCandidate;
+		if (!candidate) {
+			continue;
+		}
+		if (pathExistsWithoutFollowing(entry.log.path)) {
+			throw new Error(
+				`OMP session ${entry.log.path} reappeared while deleting its artifact.`,
+			);
+		}
+		if (entry.artifact) {
+			if (pathExistsWithoutFollowing(candidate.artifactPath)) {
+				throw new Error(
+					`OMP artifact ${candidate.artifactPath} reappeared while deleting its session.`,
+				);
+			}
+			if (
+				!candidate.identity ||
+				!areOmpArtifactIdentitiesEqual(
+					candidate.identity,
+					getOmpArtifactIdentity(entry.artifact.quarantinePath),
+				)
+			) {
+				throw new Error(
+					`OMP artifact ${candidate.artifactPath} changed while quarantined.`,
+				);
+			}
+			continue;
+		}
+		if (!doesOmpArtifactMatchDeletionCandidate(candidate)) {
+			throw new Error(
+				candidate.identity
+					? `OMP artifact ${candidate.artifactPath} changed before deletion.`
+					: `OMP artifact ${candidate.artifactPath} appeared before deletion.`,
+			);
+		}
+	}
+};
+
+const describeRecovery = (
+	kind: "session" | "artifact",
+	canonicalPath: string,
+	recovery: PiQuarantineRecovery,
+): string =>
+	`${kind} ${canonicalPath} ${recovery.restoredToCanonicalPath ? `was restored to ${recovery.path}` : `was preserved at ${recovery.path}`}`;
+
+const recoverStagedPiDeletions = (
+	staged: readonly StagedPiDeletion[],
+): string[] => {
+	const recoveries: string[] = [];
+
+	for (const entry of [...staged].reverse()) {
+		if (
+			entry.artifact &&
+			pathExistsWithoutFollowing(entry.artifact.quarantinePath)
+		) {
+			try {
+				const recovery = restoreQuarantinedOmpArtifact(
+					entry.artifact.quarantinePath,
+					entry.artifact.artifactPath,
+				);
+				recoveries.push(
+					describeRecovery("artifact", entry.artifact.artifactPath, recovery),
+				);
+			} catch (error) {
+				recoveries.push(
+					`artifact ${entry.artifact.artifactPath} could not be recovered from ${entry.artifact.quarantinePath}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+
+		if (!pathExistsWithoutFollowing(entry.sessionQuarantinePath)) {
+			continue;
+		}
+
+		try {
+			const recovery = restoreQuarantinedPiSession(
+				entry.sessionQuarantinePath,
+				entry.log.path,
+			);
+			recoveries.push(describeRecovery("session", entry.log.path, recovery));
+		} catch (error) {
+			recoveries.push(
+				`session ${entry.log.path} could not be recovered from ${entry.sessionQuarantinePath}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	return recoveries;
+};
+
+const createPiDeleteFailure = (
+	source: PiDialect,
+	sessionId: string,
+	error: unknown,
+	recoveries: readonly string[],
+	deletedSessionPaths: readonly string[],
+	deletedArtifactPaths: readonly string[],
+): DatabaseResult<PiDeleteResult> => {
+	const details = [
+		error instanceof Error ? error.message : String(error),
+		...recoveries,
+		deletedSessionPaths.length > 0
+			? `Permanently deleted session paths: ${deletedSessionPaths.join(", ")}.`
+			: undefined,
+		deletedArtifactPaths.length > 0
+			? `Permanently deleted artifact paths: ${deletedArtifactPaths.join(", ")}.`
+			: undefined,
+	]
+		.filter((detail): detail is string => detail !== undefined)
+		.join(" ");
+
+	return {
+		ok: false,
+		error: createQueryFailedDatabaseError(
+			new Error(details),
+			`Failed to delete ${getSessionSourceLabel(source)} session ${sessionId}.`,
+		),
+	};
 };
 
 const deletePiFamilySession = async (
@@ -1715,6 +2783,10 @@ const deletePiFamilySession = async (
 	sessionId: string,
 	options: DeletePiSessionOptions = {},
 ): Promise<DatabaseResult<PiDeleteResult>> => {
+	const staged: StagedPiDeletion[] = [];
+	const deletedSessionPaths: string[] = [];
+	const deletedArtifactPaths: string[] = [];
+
 	try {
 		const configuredRoots =
 			options.sessionRoots ?? resolvePiSessionRoots(source);
@@ -1731,44 +2803,116 @@ const deletePiFamilySession = async (
 			};
 		}
 
-		const idsToDelete = collectDescendantIds(targetLog.header.id, logs);
-		const pathsToDelete = logs
-			.filter((log) => idsToDelete.has(log.header.id))
-			.map((log) => log.path);
-		const deletedSessionPaths: string[] = [];
-		const deletedArtifactPaths: string[] = [];
+		const logsToDelete = collectDescendantLogs(source, targetLog, logs);
+		const artifactPaths =
+			source === "omp"
+				? logsToDelete.map((log) => getOmpArtifactPath(log.path))
+				: [];
+		for (const log of logsToDelete) {
+			piSessionDeletionBeforeQuarantineForTesting?.(log.path);
+			const artifactCandidate =
+				source === "omp" ? snapshotOmpArtifactForDeletion(log.path) : undefined;
+			const sessionQuarantinePath = movePathToPiDeletionQuarantine(
+				log.path,
+				getPiDeletionQuarantineDirectory(log.path, artifactPaths),
+			);
+			const entry: StagedPiDeletion = artifactCandidate
+				? { log, sessionQuarantinePath, artifactCandidate }
+				: { log, sessionQuarantinePath };
+			staged.push(entry);
 
-		for (const path of pathsToDelete) {
-			if (removeIfExists(path)) {
-				deletedSessionPaths.push(path);
+			if (!isLoadedPiSessionLogCurrentAtPath(log, sessionQuarantinePath)) {
+				throw new Error(
+					`${getSessionSourceLabel(source)} session file ${log.path} changed before deletion.`,
+				);
 			}
 
-			if (source === "omp") {
-				const artifactPath = path.endsWith(".jsonl")
-					? path.slice(0, -".jsonl".length)
-					: path;
-				if (removeIfExists(artifactPath)) {
-					deletedArtifactPaths.push(artifactPath);
-				}
-			}
+			piSessionDeletionBeforeUnlinkForTesting?.(log.path);
 		}
 
-		// Drop parsed-log cache entries so deleted session files cannot be
-		// re-served from memory in the same process (matches Codex/Claude).
-		invalidatePiSessionCaches();
+		if (source === "omp") {
+			assertStagedOmpDeletionManifestCurrent(staged);
+			const artifactEntries = staged
+				.filter((entry) => entry.artifactCandidate?.identity)
+				.sort(
+					(left, right) =>
+						(right.artifactCandidate?.artifactPath.length ?? 0) -
+						(left.artifactCandidate?.artifactPath.length ?? 0),
+				);
+			for (const entry of artifactEntries) {
+				const candidate = entry.artifactCandidate;
+				if (!candidate?.identity) {
+					continue;
+				}
+				const artifact = moveOmpArtifactToDeletionQuarantine(
+					entry.log.path,
+					candidate,
+					getPiDeletionQuarantineDirectory(
+						candidate.artifactPath,
+						artifactPaths,
+					),
+				);
+				if (!artifact) {
+					throw new Error(
+						`OMP artifact ${candidate.artifactPath} changed before deletion.`,
+					);
+				}
+				if (!("quarantinePath" in artifact)) {
+					throw new Error(
+						`OMP artifact ${artifact.artifactPath} changed before deletion. ${describeRecovery("artifact", artifact.artifactPath, artifact.recovery)}.`,
+					);
+				}
 
+				entry.artifact = artifact;
+				ompArtifactDeletionAfterQuarantineForTesting?.(
+					entry.log.path,
+					artifact.artifactPath,
+				);
+			}
+
+			assertStagedOmpDeletionManifestCurrent(staged);
+			for (const entry of staged) {
+				if (!entry.artifact) {
+					continue;
+				}
+				ompArtifactDeletionBeforeCleanupForTesting?.(
+					entry.artifact.artifactPath,
+					entry.artifact.quarantinePath,
+				);
+			}
+			assertStagedOmpDeletionManifestCurrent(staged);
+		}
+
+		for (const entry of staged) {
+			unlinkSync(entry.sessionQuarantinePath);
+			deletedSessionPaths.push(entry.log.path);
+		}
+
+		for (const entry of staged) {
+			if (!entry.artifact) {
+				continue;
+			}
+			removeQuarantinedOmpArtifact(entry.artifact.quarantinePath);
+			deletedArtifactPaths.push(entry.artifact.artifactPath);
+			entry.artifact = undefined;
+		}
+
+		invalidatePiSessionCaches();
 		return {
 			ok: true,
 			value: { deletedSessionPaths, deletedArtifactPaths },
 		};
 	} catch (error) {
-		return {
-			ok: false,
-			error: createQueryFailedDatabaseError(
-				error,
-				`Failed to delete ${getSessionSourceLabel(source)} session ${sessionId}.`,
-			),
-		};
+		const recoveries = recoverStagedPiDeletions(staged);
+		invalidatePiSessionCaches();
+		return createPiDeleteFailure(
+			source,
+			sessionId,
+			error,
+			recoveries,
+			deletedSessionPaths,
+			deletedArtifactPaths,
+		);
 	}
 };
 

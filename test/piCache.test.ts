@@ -1,8 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	truncateSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { invalidatePiSessionCaches, parsePiSessionLogFile } from "../src/db/pi";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DatabaseResult } from "../src/db";
+import {
+	getPiOmpSnapshots,
+	getPiRawParseCacheKeysForTesting,
+	getPiRawParseCacheStateForTesting,
+	invalidatePiSessionCaches,
+	parsePiSessionLogFile,
+} from "../src/db/pi";
+import type { SessionSnapshot } from "../src/lib/sessionSnapshot";
 
 const tempRoots: string[] = [];
 
@@ -19,16 +35,26 @@ const VALID_JSONL = [
 ].join("\n");
 
 const EXTENDED_JSONL = [
-	'{"type":"session","id":"test-session-1","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}',
-	'{"type":"message","role":"user","content":"hello"}',
-	'{"type":"message","role":"assistant","content":"hi"}',
+	VALID_JSONL,
 	'{"type":"message","role":"user","content":"another"}',
 ].join("\n");
 
-const DIFFERENT_JSONL = [
-	'{"type":"session","id":"test-session-1","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}',
-	'{"type":"message","role":"user","content":"goodbye"}',
-].join("\n");
+const readSnapshots = (root: string, nowMs: number) =>
+	getPiOmpSnapshots({
+		nowMs,
+		pi: { sessionRoots: [root] },
+		omp: { sessionRoots: [root] },
+	});
+
+const getMessageCount = (
+	result: DatabaseResult<SessionSnapshot>,
+	sessionId: string,
+): number => {
+	if (!result.ok) {
+		throw new Error(result.error.message);
+	}
+	return result.value.messageCountBySessionId[sessionId] ?? 0;
+};
 
 beforeEach(() => {
 	invalidatePiSessionCaches();
@@ -41,114 +67,238 @@ afterEach(() => {
 	invalidatePiSessionCaches();
 });
 
-describe("piLogCache", () => {
-	it("cache hit: second parse on unchanged file returns same object reference", () => {
+describe("Pi/omp compact refresh state", () => {
+	it("preserves separate Pi and omp snapshots for one shared physical log", () => {
 		const root = createTempRoot();
-		const path = join(root, "session.jsonl");
-		writeFileSync(path, VALID_JSONL);
+		writeFileSync(join(root, "session.jsonl"), VALID_JSONL);
 
-		const first = parsePiSessionLogFile(path, root, "pi");
-		expect(first).toBeDefined();
-		if (!first) return;
+		const snapshots = readSnapshots(root, 0);
+		expect(snapshots.pi.ok).toBe(true);
+		expect(snapshots.omp.ok).toBe(true);
+		if (!snapshots.pi.ok || !snapshots.omp.ok) return;
 
-		const second = parsePiSessionLogFile(path, root, "pi");
-		expect(second).toBe(first);
-		expect(second?.entries).toHaveLength(2);
+		expect(snapshots.pi.value.sessions[0]?.sourceMetadata?.sourceCategory).toBe(
+			"Pi",
+		);
+		expect(
+			snapshots.omp.value.sessions[0]?.sourceMetadata?.sourceCategory,
+		).toBe("omp");
+		expect(snapshots.pi.value.sessions[0]?.id).toBe("test-session-1");
+		expect(snapshots.omp.value.sessions[0]?.id).toBe("test-session-1");
 	});
 
-	it("mtime change forces re-parse", () => {
+	it("reparses a changed known file on the two-second cadence", () => {
 		const root = createTempRoot();
 		const path = join(root, "session.jsonl");
 		writeFileSync(path, VALID_JSONL);
 
-		const first = parsePiSessionLogFile(path, root, "pi");
-		expect(first).toBeDefined();
-		expect(first?.entries).toHaveLength(2);
+		expect(getMessageCount(readSnapshots(root, 0).pi, "test-session-1")).toBe(
+			2,
+		);
 
-		const second = parsePiSessionLogFile(path, root, "pi");
-		expect(second).toBe(first);
-
-		// Write extended content and bump mtime.
 		writeFileSync(path, EXTENDED_JSONL);
-		utimesSync(path, new Date(Date.now() / 1000), new Date(Date.now() / 1000 + 1));
-
-		const third = parsePiSessionLogFile(path, root, "pi");
-		expect(third).toBeDefined();
-		expect(third).not.toBe(first);
-		expect(third?.entries).toHaveLength(3);
+		expect(
+			getMessageCount(readSnapshots(root, 2_000).pi, "test-session-1"),
+		).toBe(3);
 	});
 
-	it("size change with same mtime forces re-parse", () => {
+	it("defers new-path discovery until the ten-second reconciliation", () => {
+		const root = createTempRoot();
+		writeFileSync(join(root, "first.jsonl"), VALID_JSONL);
+		readSnapshots(root, 0);
+
+		writeFileSync(
+			join(root, "second.jsonl"),
+			VALID_JSONL.replaceAll("test-session-1", "test-session-2"),
+		);
+		expect(readSnapshots(root, 2_000).pi.ok).toBe(true);
+		const beforeReconciliation = readSnapshots(root, 2_000).pi;
+		if (!beforeReconciliation.ok) return;
+		expect(beforeReconciliation.value.sessions).toHaveLength(1);
+
+		const reconciled = readSnapshots(root, 10_000).pi;
+		if (!reconciled.ok) return;
+		expect(reconciled.value.sessions).toHaveLength(2);
+	});
+
+	it("prunes a removed path during the ten-second reconciliation", () => {
+		const root = createTempRoot();
+		const firstPath = join(root, "first.jsonl");
+		writeFileSync(firstPath, VALID_JSONL);
+		writeFileSync(
+			join(root, "second.jsonl"),
+			VALID_JSONL.replaceAll("test-session-1", "test-session-2"),
+		);
+		readSnapshots(root, 0);
+
+		unlinkSync(firstPath);
+		const beforeReconciliation = readSnapshots(root, 2_000).pi;
+		if (!beforeReconciliation.ok) return;
+		expect(beforeReconciliation.value.sessions).toHaveLength(2);
+
+		const reconciled = readSnapshots(root, 10_000).pi;
+		if (!reconciled.ok) return;
+		expect(reconciled.value.sessions).toHaveLength(1);
+		expect(reconciled.value.sessions[0]?.id).toBe("test-session-2");
+	});
+
+	it("reuses a canonical raw parse across source-state reconciliation", () => {
+		const root = createTempRoot();
+		const alternateRoot = join(root, ".");
+		writeFileSync(join(root, "session.jsonl"), VALID_JSONL);
+
+		readSnapshots(root, 0);
+		const parseSpy = vi.spyOn(JSON, "parse");
+		try {
+			const snapshots = readSnapshots(alternateRoot, 2_000);
+
+			expect(parseSpy).not.toHaveBeenCalled();
+			expect(snapshots.pi.ok).toBe(true);
+			expect(snapshots.omp.ok).toBe(true);
+			if (!snapshots.pi.ok || !snapshots.omp.ok) return;
+
+			expect(
+				snapshots.pi.value.sessions[0]?.sourceMetadata?.sourceCategory,
+			).toBe("Pi");
+			expect(
+				snapshots.omp.value.sessions[0]?.sourceMetadata?.sourceCategory,
+			).toBe("omp");
+		} finally {
+			parseSpy.mockRestore();
+		}
+	});
+
+	it("evicts historical raw versions for one canonical log while reusing its live version", () => {
 		const root = createTempRoot();
 		const path = join(root, "session.jsonl");
 		writeFileSync(path, VALID_JSONL);
+		expect(parsePiSessionLogFile(path, root, "pi")).toBeDefined();
 
-		const first = parsePiSessionLogFile(path, root, "pi");
-		expect(first).toBeDefined();
-		expect(first?.entries).toHaveLength(2);
+		writeFileSync(path, EXTENDED_JSONL);
+		expect(parsePiSessionLogFile(path, root, "pi")).toBeDefined();
+		expect(getPiRawParseCacheStateForTesting().sourceBytes).toBe(
+			statSync(path).size,
+		);
 
-		// Write different content (different size) but preserve mtime.
-		const beforeStats = statSync(path);
-		writeFileSync(path, DIFFERENT_JSONL);
-		utimesSync(path, beforeStats.atime, beforeStats.mtime);
+		const canonicalPrefix = `${realpathSync(path)}\0`;
+		expect(
+			getPiRawParseCacheKeysForTesting().filter((key) =>
+				key.startsWith(canonicalPrefix),
+			),
+		).toHaveLength(1);
 
-		const second = parsePiSessionLogFile(path, root, "pi");
-		expect(second).toBeDefined();
-		expect(second).not.toBe(first);
-		expect(second?.entries).toHaveLength(1);
-		expect((second?.entries[0] as { role: string }).role).toBe("user");
+		const parseSpy = vi.spyOn(JSON, "parse");
+		try {
+			expect(parsePiSessionLogFile(path, root, "omp")).toBeDefined();
+			expect(parseSpy).not.toHaveBeenCalled();
+		} finally {
+			parseSpy.mockRestore();
+		}
 	});
 
-	it("invalidatePiSessionCaches forces re-read on next call", () => {
+	it("evicts raw parses by source-byte budget while reusing the live canonical version", () => {
+		const root = createTempRoot();
+		const firstPath = join(root, "first-large.jsonl");
+		const secondPath = join(root, "second-large.jsonl");
+		const { byteLimit } = getPiRawParseCacheStateForTesting();
+		const padding = "x".repeat(Math.floor(byteLimit / 2));
+		writeFileSync(
+			firstPath,
+			`{"type":"session","id":"first-large","padding":"${padding}"}\n`,
+		);
+		writeFileSync(
+			secondPath,
+			`{"type":"session","id":"second-large","padding":"${padding}"}\n`,
+		);
+
+		expect(parsePiSessionLogFile(firstPath, root, "pi")).toBeDefined();
+		expect(parsePiSessionLogFile(secondPath, root, "pi")).toBeDefined();
+
+		const cacheKeys = getPiRawParseCacheKeysForTesting();
+		const cacheState = getPiRawParseCacheStateForTesting();
+		expect(cacheState.sourceBytes).toBeGreaterThan(byteLimit / 2);
+		expect(cacheState.sourceBytes).toBeLessThanOrEqual(byteLimit);
+		expect(
+			cacheKeys.some((key) => key.startsWith(`${realpathSync(firstPath)}\0`)),
+		).toBe(false);
+		expect(
+			cacheKeys.some((key) => key.startsWith(`${realpathSync(secondPath)}\0`)),
+		).toBe(true);
+
+		const parseSpy = vi.spyOn(JSON, "parse");
+		try {
+			expect(parsePiSessionLogFile(secondPath, root, "omp")).toBeDefined();
+			expect(parseSpy).not.toHaveBeenCalled();
+		} finally {
+			parseSpy.mockRestore();
+		}
+	});
+
+	it("does not retain a raw parse larger than the source-byte budget", () => {
+		const root = createTempRoot();
+		const path = join(root, "oversized.jsonl");
+		const { byteLimit } = getPiRawParseCacheStateForTesting();
+		writeFileSync(path, '{"type":"session","id":"oversized"}\n');
+		truncateSync(path, byteLimit + 1);
+
+		expect(parsePiSessionLogFile(path, root, "pi")).toBeDefined();
+		expect(
+			getPiRawParseCacheKeysForTesting().some((key) =>
+				key.startsWith(`${realpathSync(path)}\0`),
+			),
+		).toBe(false);
+		expect(getPiRawParseCacheStateForTesting().sourceBytes).toBe(0);
+	});
+
+	it("clears raw parse source-byte accounting when invalidated", () => {
 		const root = createTempRoot();
 		const path = join(root, "session.jsonl");
 		writeFileSync(path, VALID_JSONL);
+		expect(parsePiSessionLogFile(path, root, "pi")).toBeDefined();
+		expect(getPiRawParseCacheStateForTesting().sourceBytes).toBeGreaterThan(0);
 
-		const first = parsePiSessionLogFile(path, root, "pi");
-		expect(first).toBeDefined();
-		const second = parsePiSessionLogFile(path, root, "pi");
-		expect(second).toBe(first);
-
-		// Invalidate and re-parse: should produce a new object.
 		invalidatePiSessionCaches();
-		const third = parsePiSessionLogFile(path, root, "pi");
-		expect(third).toBeDefined();
-		expect(third).not.toBe(first);
-		expect(third?.header.id).toBe(first?.header.id);
-		expect(third?.entries).toHaveLength(first!.entries.length);
+
+		expect(getPiRawParseCacheKeysForTesting()).toHaveLength(0);
+		expect(getPiRawParseCacheStateForTesting().sourceBytes).toBe(0);
 	});
 
-	it("pi and omp paths cache independently", () => {
-		const piRoot = createTempRoot();
-		const ompRoot = createTempRoot();
-		const piPath = join(piRoot, "pi-session.jsonl");
-		const ompPath = join(ompRoot, "omp-session.jsonl");
+	it("keeps malformed files stable after their raw cache entry is evicted", () => {
+		const root = createTempRoot();
+		const malformedPath = join(root, "malformed.jsonl");
+		writeFileSync(
+			malformedPath,
+			'{"type":"message","role":"user","content":"missing header"}\n',
+		);
 
-		writeFileSync(piPath, VALID_JSONL);
-		writeFileSync(ompPath, VALID_JSONL);
+		const initial = readSnapshots(root, 0);
+		expect(initial.pi.ok).toBe(true);
+		if (!initial.pi.ok) return;
+		expect(initial.pi.value.sessionIssues[malformedPath]).toBe(
+			"Unable to parse Pi JSONL session.",
+		);
 
-		const piResult = parsePiSessionLogFile(piPath, piRoot, "pi");
-		const ompResult = parsePiSessionLogFile(ompPath, ompRoot, "omp");
+		for (let index = 0; index < 256; index += 1) {
+			const path = join(root, `cache-entry-${index}.jsonl`);
+			writeFileSync(
+				path,
+				VALID_JSONL.replace("test-session-1", `cache-entry-${index}`),
+			);
+			expect(parsePiSessionLogFile(path, root, "pi")).toBeDefined();
+		}
 
-		expect(piResult).toBeDefined();
-		expect(ompResult).toBeDefined();
-		expect(piResult?.source).toBe("pi");
-		expect(ompResult?.source).toBe("omp");
-		expect(piResult?.path).toBe(piPath);
-		expect(ompResult?.path).toBe(ompPath);
+		const parseSpy = vi.spyOn(JSON, "parse");
+		try {
+			const refreshed = readSnapshots(root, 2_000);
 
-		// Re-parse: both should be cache hits (same object references).
-		const piAgain = parsePiSessionLogFile(piPath, piRoot, "pi");
-		const ompAgain = parsePiSessionLogFile(ompPath, ompRoot, "omp");
-		expect(piAgain).toBe(piResult);
-		expect(ompAgain).toBe(ompResult);
-
-		// Invalidate only clears the pi cache entry when the whole map clears.
-		// Both should get new objects after invalidation.
-		invalidatePiSessionCaches();
-		const piFresh = parsePiSessionLogFile(piPath, piRoot, "pi");
-		const ompFresh = parsePiSessionLogFile(ompPath, ompRoot, "omp");
-		expect(piFresh).not.toBe(piResult);
-		expect(ompFresh).not.toBe(ompResult);
+			expect(parseSpy).not.toHaveBeenCalled();
+			expect(refreshed.pi.ok).toBe(true);
+			if (!refreshed.pi.ok) return;
+			expect(refreshed.pi.value.sessionIssues[malformedPath]).toBe(
+				"Unable to parse Pi JSONL session.",
+			);
+		} finally {
+			parseSpy.mockRestore();
+		}
 	});
 });
