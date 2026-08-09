@@ -708,6 +708,8 @@ const TOOL_CALL_CONTENT_TYPES = new Set([
 ]);
 const IDLE_TOOL_CALL_NAMES = new Set(["yield"]);
 const AWAITING_USER_RESPONSE_TOOL_NAME = "ask";
+const OMP_SILENT_ABORT_ERROR = "__omp.silent_abort__";
+const PLAN_READY_FOR_REVIEW_TEXT = "Plan ready for review.";
 
 const isToolUseFinishReason = (finishReason: string | undefined): boolean =>
 	finishReason === "toolUse" || finishReason === "tool_use";
@@ -924,6 +926,37 @@ const isSuccessfulYieldToolResultTail = (params: {
 			params.latestToolResultMessage,
 		)
 	);
+};
+
+const isSuccessfulProposeToolResult = (
+	entry: JsonObject | undefined,
+	message: JsonObject | undefined,
+): boolean => {
+	if (!entry && !message) {
+		return false;
+	}
+	if (
+		readMetadataBoolean(message?.isError) === true ||
+		readMetadataBoolean(entry?.isError) === true
+	) {
+		return false;
+	}
+
+	const details = isJsonObject(message?.details)
+		? message.details
+		: isJsonObject(entry?.details)
+			? entry.details
+			: undefined;
+	const xdev = isJsonObject(details?.xdev) ? details.xdev : undefined;
+	if (trimToUndefined(xdev?.tool)?.toLowerCase() === "propose") {
+		return true;
+	}
+
+	const text = normalizeComparableText(
+		extractTextFromContent(message?.content) ??
+			extractTextFromContent(entry?.content),
+	);
+	return text === PLAN_READY_FOR_REVIEW_TEXT;
 };
 
 const splitProviderModel = (
@@ -1183,6 +1216,7 @@ const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 	let latestToolResultEntry: JsonObject | undefined;
 	let latestToolResultMessage: JsonObject | undefined;
 	let sessionExitKind: OmpSessionExitKind | undefined;
+	let latestMode: string | undefined;
 
 	for (const entry of getActiveBranchEntries(log.entries)) {
 		lastEntryType = trimToUndefined(entry.type) ?? lastEntryType;
@@ -1232,6 +1266,11 @@ const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 						.map((toolName) => trimToUndefined(toolName))
 						.filter((toolName): toolName is string => !!toolName)
 				: [];
+			continue;
+		}
+
+		if (entry.type === "mode_change") {
+			latestMode = trimToUndefined(entry.mode) ?? latestMode;
 			continue;
 		}
 
@@ -1348,9 +1387,23 @@ const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 		isToolUseFinish &&
 		lastAssistantToolCallNames.length > 0 &&
 		!hasPendingAssistantToolCall;
+	// OMP plan mode exits the agent turn with a silent abort after a successful
+	// xd://propose handoff. A later mode_change to "none" means the operator
+	// approved or otherwise closed that review; until then the session is waiting.
+	const hasPlanReviewHandoff =
+		lastRole === "assistant" &&
+		lastAssistantFinish === "aborted" &&
+		lastAssistantError === OMP_SILENT_ABORT_ERROR &&
+		isSuccessfulProposeToolResult(
+			latestToolResultEntry,
+			latestToolResultMessage,
+		);
+	const hasResolvedPlanReview = hasPlanReviewHandoff && latestMode === "none";
+	const isAwaitingPlanReview = hasPlanReviewHandoff && !hasResolvedPlanReview;
 	const isAwaitingUserResponse =
-		isToolUseFinish &&
-		lastAssistantToolCallNames.includes(AWAITING_USER_RESPONSE_TOOL_NAME);
+		(isToolUseFinish &&
+			lastAssistantToolCallNames.includes(AWAITING_USER_RESPONSE_TOOL_NAME)) ||
+		isAwaitingPlanReview;
 	const hasSuccessfulYieldTail = isSuccessfulYieldToolResultTail({
 		lastRole,
 		lastAssistantFinish,
@@ -1359,7 +1412,7 @@ const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 		latestToolResultMessage,
 	});
 	const isTerminalAssistantFinish =
-		lastRole === "assistant" && !isToolUseFinish;
+		lastRole === "assistant" && !isToolUseFinish && !isAwaitingPlanReview;
 	const hasRunningActiveTools =
 		activeToolNames.length > 0 &&
 		!isIdleEndTurn &&
@@ -1381,20 +1434,23 @@ const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 		if (messageCount === 0) {
 			return SessionStatus.unknown;
 		}
-		if (lastAssistantError && lastAssistantError !== "__omp.silent_abort__") {
+		if (lastAssistantError && lastAssistantError !== OMP_SILENT_ABORT_ERROR) {
 			return SessionStatus.failed;
 		}
 		if (lastAssistantFinish === "error") {
 			return SessionStatus.failed;
 		}
-		if (lastAssistantFinish === "aborted") {
-			return SessionStatus.unknown;
+		if (hasResolvedPlanReview) {
+			return SessionStatus.completed;
 		}
 		if (hasSuccessfulYieldTail) {
 			return SessionStatus.completed;
 		}
 		if (isAwaitingUserResponse) {
 			return SessionStatus.waiting;
+		}
+		if (lastAssistantFinish === "aborted") {
+			return SessionStatus.unknown;
 		}
 		if (isIdleEndTurn) {
 			return SessionStatus.waiting;
@@ -1434,10 +1490,16 @@ const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 		if (hasRunningActiveTools) {
 			return `Running ${activeToolNames.length === 1 ? activeToolNames[0] : `${activeToolNames.length} tools`}`;
 		}
-		if (lastAssistantError && lastAssistantError !== "__omp.silent_abort__") {
+		if (lastAssistantError && lastAssistantError !== OMP_SILENT_ABORT_ERROR) {
 			return lastAssistantError;
 		}
-		if (lastAssistantError === "__omp.silent_abort__") {
+		if (hasResolvedPlanReview) {
+			return undefined;
+		}
+		if (isAwaitingUserResponse) {
+			return "Awaiting user input";
+		}
+		if (lastAssistantError === OMP_SILENT_ABORT_ERROR) {
 			return "Silent internal abort";
 		}
 		if (status === SessionStatus.failed) {
@@ -1448,9 +1510,6 @@ const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 		}
 		if (hasSuccessfulYieldTail) {
 			return undefined;
-		}
-		if (isAwaitingUserResponse) {
-			return "Awaiting user input";
 		}
 		if (isIdleEndTurn) {
 			return "Idle between prompts";
@@ -1518,7 +1577,7 @@ const summarizePiSession = (log: PiSessionRawLogRecord): PiSessionSummary => {
 				? "interrupted"
 				: sessionExitKind === "fatal"
 					? "error"
-					: hasSuccessfulYieldTail
+					: hasResolvedPlanReview || hasSuccessfulYieldTail
 						? undefined
 						: isAwaitingUserResponse
 							? "awaiting_user"

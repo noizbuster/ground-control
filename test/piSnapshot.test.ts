@@ -533,6 +533,139 @@ describe("buildPiSessionSnapshot", () => {
 		);
 	});
 
+	describe("OMP plan review status", () => {
+		const planReviewLog: PiSessionLogRecord = {
+			source: "omp",
+			root: "/tmp/omp-sessions",
+			path: "/tmp/omp-sessions/-repo-app/plan-review.jsonl",
+			mtimeMs: 1_700_000_050_100,
+			header: {
+				type: "session",
+				version: 3,
+				id: "omp-plan-review",
+				timestamp: "2026-05-29T09:00:00.000Z",
+				cwd: "/repo/app",
+			},
+			entries: [
+				{
+					type: "message",
+					id: "user",
+					parentId: null,
+					timestamp: "2026-05-29T09:00:01.000Z",
+					message: { role: "user", content: "plan this" },
+				},
+				{
+					type: "message",
+					id: "assistant-propose",
+					parentId: "user",
+					timestamp: "2026-05-29T09:00:02.000Z",
+					message: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "write-1",
+								name: "write",
+								arguments: {
+									path: "xd://propose",
+									content: "feature",
+								},
+							},
+						],
+						stopReason: "toolUse",
+					},
+				},
+				{
+					type: "message",
+					id: "propose-result",
+					parentId: "assistant-propose",
+					timestamp: "2026-05-29T09:00:02.100Z",
+					message: {
+						role: "toolResult",
+						toolCallId: "write-1",
+						toolName: "write",
+						content: [{ type: "text", text: "Plan ready for review." }],
+						details: {
+							xdev: {
+								tool: "propose",
+								mode: "execute",
+								args: { title: "feature" },
+								inner: {
+									planFilePath: "local://feature-plan.md",
+									title: "feature",
+									planExists: true,
+								},
+							},
+						},
+						isError: false,
+					},
+				},
+				{
+					type: "message",
+					id: "assistant-abort",
+					parentId: "propose-result",
+					timestamp: "2026-05-29T09:00:02.200Z",
+					message: {
+						role: "assistant",
+						content: [],
+						stopReason: "aborted",
+						errorMessage: "__omp.silent_abort__",
+					},
+				},
+				{
+					type: "mode_change",
+					id: "mode-plan",
+					parentId: "assistant-abort",
+					timestamp: "2026-05-29T09:00:02.300Z",
+					mode: "plan",
+					data: { planFilePath: "local://feature-plan.md" },
+				},
+			],
+		};
+
+		it("maps unresolved propose handoffs to awaiting user input", () => {
+			const snapshot = buildPiSessionSnapshot({
+				source: "omp",
+				logs: [planReviewLog],
+			});
+
+			expect(snapshot.sessions[0]?.status).toBe(SessionStatus.waiting);
+			expect(snapshot.sessions[0]?.finishReason).toBe("awaiting_user");
+			expect(snapshot.sessions[0]?.statusDetail).toBe("Awaiting user input");
+			expect(snapshot.statusBySessionId["omp-plan-review"]).toBe(
+				SessionStatus.waiting,
+			);
+		});
+
+		it("marks the planning session completed after approval exits plan mode", () => {
+			const snapshot = buildPiSessionSnapshot({
+				source: "omp",
+				logs: [
+					{
+						...planReviewLog,
+						entries: [
+							...(planReviewLog.entries ?? []),
+							{
+								type: "mode_change",
+								id: "mode-none",
+								parentId: "mode-plan",
+								timestamp: "2026-05-29T09:00:03.000Z",
+								mode: "none",
+							},
+						],
+					},
+				],
+			});
+
+			expect(snapshot.sessions[0]?.status).toBe(SessionStatus.completed);
+			expect(snapshot.sessions[0]?.finishReason).toBeUndefined();
+			expect(snapshot.sessions[0]?.statusDetail).toBeUndefined();
+			expect(snapshot.statusBySessionId["omp-plan-review"]).toBe(
+				SessionStatus.completed,
+			);
+		});
+	});
+
 	it("maps idle yield tool-use handoffs to waiting without opening child counts", () => {
 		const parentPath = "/tmp/omp-sessions/-repo-app/idle-yield-parent.jsonl";
 		const childPath = "/tmp/omp-sessions/-repo-app/idle-yield-child.jsonl";
