@@ -23,6 +23,10 @@ import {
 	type RefreshResponse,
 	type RefreshWorkerRequest,
 } from "./refresh-worker-protocol";
+import {
+	closeSessionSummaryCache,
+	getSessionSummaryCache,
+} from "./sessionSummaryCache";
 import { getWaitingSignalCandidateIds } from "./waitingSignalCandidates";
 
 if (!parentPort) {
@@ -30,6 +34,7 @@ if (!parentPort) {
 }
 
 const port = parentPort;
+process.once("exit", closeSessionSummaryCache);
 
 const pendingRequests: RefreshWorkerRequest[] = [];
 let isProcessing = false;
@@ -107,6 +112,8 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 
 		sourceIssues.push(formatSourceIssue(source, result.error));
 	}
+
+	getSessionSummaryCache()?.maintainSize();
 
 	if (snapshots.length === 0) {
 		return createErrorResponse(

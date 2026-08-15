@@ -122,6 +122,7 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - Override Pi sessions with `GCTRL_PI_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are also honored.
 - Override omp sessions with `GCTRL_OMP_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`, and XDG omp candidates are also honored.
 - Override the Mission Control SQLite database with `GCTRL_MC_DB_PATH=/custom/path/mission-control.db` (primary); `MCTRL_DATA_DIR=/custom/path` is also honored and resolves to `<MCTRL_DATA_DIR>/mission-control.db`, and `XDG_DATA_HOME` is honored for the default `~/.local/share/mission-control/mission-control.db` location.
+- Ground Control stores compact Pi/omp/Codex summaries in `${XDG_CACHE_HOME:-~/.cache}/gctrl/session-summaries.sqlite` to accelerate later starts. The cache is pruned against live sessions, capped at 64 MiB, and recreated if corrupt. Override its location with `GCTRL_SESSION_SUMMARY_CACHE_PATH=/custom/path/session-summaries.sqlite`.
 - OpenCode attach/delete/child-abort actions use the `opencode` CLI.
 - Codex attach/delete/child-abort actions use the local `codex` CLI and app-server protocol.
 - Claude Code attach actions use the local `claude` CLI.

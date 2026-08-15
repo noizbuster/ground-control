@@ -39,6 +39,10 @@ import {
 	type SubagentSession,
 } from "../types";
 import { createQueryFailedDatabaseError, type DatabaseResult } from "./index";
+import {
+	getSessionSummaryCache,
+	type SessionSummaryCacheHit,
+} from "./sessionSummaryCache";
 
 type PiDialect = Extract<SessionSource, "pi" | "omp">;
 
@@ -360,6 +364,7 @@ interface PiSnapshotCycleOptions {
 const PI_RECONCILE_INTERVAL_MS = 10_000;
 const PI_RAW_PARSE_CACHE_LIMIT = 256;
 const PI_RAW_PARSE_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
+const PI_SUMMARY_CACHE_PARSER_VERSION = 1;
 const piRawParseCache = new Map<string, PiRawParseCacheEntry>();
 let piRawParseCacheSourceBytes = 0;
 
@@ -381,6 +386,39 @@ const createPiOccurrenceKey = (
 	root: string,
 	path: string,
 ): string => `${source}\0${root}\0${path}`;
+
+const isCachedPiSessionLogRecord = (
+	value: unknown,
+	occurrence: PiRefreshOccurrence,
+	version: PiFileVersion,
+): value is PiSessionLogRecord => {
+	if (
+		!isJsonObject(value) ||
+		value.source !== occurrence.source ||
+		value.path !== occurrence.path ||
+		value.root !== occurrence.root ||
+		value.mtimeMs !== version.mtimeMs ||
+		value.size !== version.size ||
+		!isJsonObject(value.header) ||
+		value.header.type !== "session" ||
+		typeof value.header.id !== "string" ||
+		!isJsonObject(value.summary)
+	) {
+		return false;
+	}
+	const summary = value.summary;
+	return (
+		typeof summary.id === "string" &&
+		typeof summary.directory === "string" &&
+		typeof summary.title === "string" &&
+		Array.isArray(summary.childReferences) &&
+		typeof summary.messageCount === "number" &&
+		typeof summary.startedAtMs === "number" &&
+		typeof summary.lastTimestampMs === "number" &&
+		typeof summary.status === "string" &&
+		Object.hasOwn(SessionStatus, summary.status)
+	);
+};
 
 const getPiFileVersion = (path: string): PiFileVersion | undefined => {
 	try {
@@ -2000,6 +2038,7 @@ export const getPiOmpSnapshots = (
 	omp: DatabaseResult<SessionSnapshot>;
 } => {
 	const nowMs = options.nowMs ?? Date.now();
+	const summaryCache = getSessionSummaryCache();
 	const results: Partial<Record<PiDialect, DatabaseResult<SessionSnapshot>>> =
 		{};
 	const availableSources: Array<{
@@ -2019,6 +2058,7 @@ export const getPiOmpSnapshots = (
 				state.rootSignature = null;
 				state.lastReconciledAt = null;
 				state.occurrences.clear();
+				summaryCache?.pruneSource(source, []);
 				results[source] = {
 					ok: false,
 					error: {
@@ -2055,6 +2095,7 @@ export const getPiOmpSnapshots = (
 				state.occurrences = nextOccurrences;
 				state.rootSignature = rootSignature;
 				state.lastReconciledAt = nowMs;
+				summaryCache?.pruneSource(source, state.occurrences.keys());
 			}
 
 			availableSources.push({ source, roots, state });
@@ -2097,21 +2138,68 @@ export const getPiOmpSnapshots = (
 		for (const occurrences of changedGroups.values()) {
 			const representative = occurrences[0];
 			const before = getPiFileVersion(representative.path);
-			const cached = before ? getCachedPiRawParse(before) : undefined;
-			let content = "";
-			let readSucceeded = false;
-			if (cached === undefined && before) {
-				try {
-					content = readFileSync(representative.path, "utf8");
-					readSucceeded = true;
-				} catch {}
+			const persistentResolutions = new Map<
+				PiRefreshOccurrence,
+				SessionSummaryCacheHit<PiSessionLogRecord>
+			>();
+			if (before && summaryCache) {
+				for (const occurrence of occurrences) {
+					const hit = summaryCache.read<PiSessionLogRecord>(
+						occurrence.source,
+						occurrence.key,
+						before,
+						PI_SUMMARY_CACHE_PARSER_VERSION,
+					);
+					if (
+						hit?.kind === "issue" ||
+						(hit?.kind === "value" &&
+							isCachedPiSessionLogRecord(hit.value, occurrence, before))
+					) {
+						persistentResolutions.set(occurrence, hit);
+					}
+				}
 			}
-			const after = getPiFileVersion(representative.path);
+
+			let after = before;
+			let parsed: PiParsedSessionContent | null | undefined;
+			if (persistentResolutions.size < occurrences.length) {
+				const cached = before ? getCachedPiRawParse(before) : undefined;
+				let content = "";
+				let readSucceeded = false;
+				if (cached === undefined && before) {
+					try {
+						content = readFileSync(representative.path, "utf8");
+						readSucceeded = true;
+					} catch {}
+				}
+				after = getPiFileVersion(representative.path);
+				if (
+					!before ||
+					!after ||
+					!arePiFileVersionsEqual(before, after) ||
+					(cached === undefined && !readSucceeded)
+				) {
+					for (const occurrence of occurrences) {
+						if (!occurrence.record) {
+							occurrence.issue = "JSONL session changed while being read.";
+						}
+					}
+					continue;
+				}
+
+				if (cached === undefined) {
+					parsed = parsePiSessionContent(content) ?? null;
+					cachePiRawParse(after, parsed);
+				} else {
+					parsed = cached;
+				}
+			}
+
+			const finalVersion = getPiFileVersion(representative.path);
 			if (
 				!before ||
-				!after ||
-				!arePiFileVersionsEqual(before, after) ||
-				(cached === undefined && !readSucceeded)
+				!finalVersion ||
+				!arePiFileVersionsEqual(before, finalVersion)
 			) {
 				for (const occurrence of occurrences) {
 					if (!occurrence.record) {
@@ -2120,31 +2208,56 @@ export const getPiOmpSnapshots = (
 				}
 				continue;
 			}
+			after = finalVersion;
 
-			let parsed: PiParsedSessionContent | null;
-			if (cached === undefined) {
-				parsed = parsePiSessionContent(content) ?? null;
-				cachePiRawParse(after, parsed);
-			} else {
-				parsed = cached;
-			}
 			for (const occurrence of occurrences) {
-				if (!parsed) {
+				const persistentResolution = persistentResolutions.get(occurrence);
+				if (persistentResolution?.kind === "value") {
+					occurrence.record = persistentResolution.value;
+					occurrence.issue = undefined;
+					occurrence.issueVersion = undefined;
+					occurrence.version = after;
+					continue;
+				}
+				if (persistentResolution?.kind === "issue") {
 					occurrence.record = undefined;
-					occurrence.issue = `Unable to parse ${getSessionSourceLabel(occurrence.source)} JSONL session.`;
+					occurrence.issue = persistentResolution.issue;
 					occurrence.issueVersion = after;
 					occurrence.version = after;
 					continue;
 				}
+				if (!parsed) {
+					const issue = `Unable to parse ${getSessionSourceLabel(occurrence.source)} JSONL session.`;
+					occurrence.record = undefined;
+					occurrence.issue = issue;
+					occurrence.issueVersion = after;
+					occurrence.version = after;
+					summaryCache?.writeIssue(
+						occurrence.source,
+						occurrence.key,
+						after,
+						PI_SUMMARY_CACHE_PARSER_VERSION,
+						issue,
+					);
+					continue;
+				}
 
-				occurrence.record = createPiCompactSessionLogRecord(
+				const record = createPiCompactSessionLogRecord(
 					parsed,
 					occurrence,
 					after,
 				);
+				occurrence.record = record;
 				occurrence.issue = undefined;
 				occurrence.issueVersion = undefined;
 				occurrence.version = after;
+				summaryCache?.writeValue(
+					occurrence.source,
+					occurrence.key,
+					after,
+					PI_SUMMARY_CACHE_PARSER_VERSION,
+					record,
+				);
 			}
 		}
 

@@ -31,6 +31,10 @@ import {
 	type SubagentSession,
 } from "../types";
 import { createQueryFailedDatabaseError, type DatabaseResult } from "./index";
+import {
+	getSessionSummaryCache,
+	getSessionSummaryFileIdentity,
+} from "./sessionSummaryCache";
 
 const CODEX_ROOT = `${homedir()}/.codex`;
 const DEFAULT_CODEX_SESSIONS_DIR = `${CODEX_ROOT}/sessions`;
@@ -906,6 +910,22 @@ interface CachedThreadLog {
 	issue?: string;
 }
 const threadLogSummaryCache = new Map<string, CachedThreadLog>();
+const CODEX_SUMMARY_CACHE_PARSER_VERSION = 2;
+
+const isCachedCodexSessionLogSummary = (
+	value: unknown,
+): value is CodexSessionLogSummary =>
+	isRecord(value) &&
+	typeof value.messageCount === "number" &&
+	(value.taskState === "running" ||
+		value.taskState === "completed" ||
+		value.taskState === "aborted" ||
+		value.taskState === "unknown");
+
+const isReusableCachedCodexSessionLogSummary = (
+	value: unknown,
+): value is CodexSessionLogSummary =>
+	isCachedCodexSessionLogSummary(value) && value.taskState !== "running";
 let codexStateDbCache: { path: string; resolvedAt: number } | null = null;
 
 const extractThreadIdFromLogPath = (path: string): string | null => {
@@ -1637,7 +1657,9 @@ export const buildCodexSessionSnapshot = (params: {
 export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 	const databasePath = resolveCodexStateDatabasePath();
 	const sessionsDirectory = resolveCodexSessionsDirectory();
+	const summaryCache = getSessionSummaryCache();
 	if (!existsSync(databasePath)) {
+		summaryCache?.pruneSource("codex", []);
 		return {
 			ok: false,
 			error: createQueryFailedDatabaseError(
@@ -1679,13 +1701,19 @@ export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 		const logSummaries: Partial<Record<string, CodexSessionLogSummary>> = {};
 		const logIssues: Partial<Record<string, string>> = {};
 		const liveThreadIds = new Set<string>();
+		const liveSummaryCacheKeys = new Set<string>();
 
 		for (const thread of threadRows) {
 			liveThreadIds.add(thread.id);
 			ensureCodexLogIndex(sessionsDirectory);
 			const logPath = logPathCache.get(thread.id);
-			const logMtimeMs =
-				logPath && existsSync(logPath) ? statSync(logPath).mtimeMs : null;
+			const logIdentity = logPath
+				? getSessionSummaryFileIdentity(logPath)
+				: undefined;
+			if (logIdentity) {
+				liveSummaryCacheKeys.add(thread.id);
+			}
+			const logMtimeMs = logIdentity?.mtimeMs ?? null;
 			const cached = threadLogSummaryCache.get(thread.id);
 			if (
 				cached &&
@@ -1701,7 +1729,37 @@ export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 				continue;
 			}
 
-			const logResult = readCodexLogSummary(thread.id, sessionsDirectory);
+			const persistent = logIdentity
+				? summaryCache?.read<CodexSessionLogSummary>(
+						"codex",
+						thread.id,
+						logIdentity,
+						CODEX_SUMMARY_CACHE_PARSER_VERSION,
+					)
+				: null;
+			const persistentSummary =
+				persistent?.kind === "value" &&
+				isReusableCachedCodexSessionLogSummary(persistent.value)
+					? persistent.value
+					: undefined;
+			const logResult = persistentSummary
+				? { summary: persistentSummary }
+				: readCodexLogSummary(thread.id, sessionsDirectory);
+			if (
+				!persistentSummary &&
+				logIdentity &&
+				logResult.summary &&
+				logResult.summary.taskState !== "running"
+			) {
+				summaryCache?.writeValue(
+					"codex",
+					thread.id,
+					logIdentity,
+					CODEX_SUMMARY_CACHE_PARSER_VERSION,
+					logResult.summary,
+				);
+			}
+
 			const entry: CachedThreadLog = {
 				updatedAtMs: thread.updated_at_ms,
 				logMtimeMs,
@@ -1716,6 +1774,7 @@ export const getCodexSnapshot = (): DatabaseResult<SessionSnapshot> => {
 			}
 			threadLogSummaryCache.set(thread.id, entry);
 		}
+		summaryCache?.pruneSource("codex", liveSummaryCacheKeys);
 
 		for (const id of threadLogSummaryCache.keys()) {
 			if (!liveThreadIds.has(id)) {

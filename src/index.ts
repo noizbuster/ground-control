@@ -2934,8 +2934,7 @@ const main = async () => {
 			lastRefreshRenderSignature = null;
 			render();
 			pendingSelectionRender = false;
-			startPolling();
-			refreshSessions();
+			void refreshSessionsAndWait().then(startPolling, startPolling);
 		} catch (error) {
 			if (instance === currentRefreshWorker && instance.status !== "retiring") {
 				void failCurrentWorker(
