@@ -96,6 +96,26 @@ export const deleteMissionControlSession = async (
 			}
 		}
 
+		// Bundled mc historically no-op'd with exit 0 and empty stdout when the
+		// Vite chunk broke isCliEntrypoint(). Treat missing confirmation as
+		// failure so Ground Control never claims a delete that did not run.
+		if (
+			deletedSessionIds.length === 0 ||
+			!deletedSessionIds.includes(sessionId)
+		) {
+			const rawMessage = (stderr || stdout).trim();
+			const base = `${executable} session delete exited 0 without confirming deletion of ${sessionId}.`;
+			const message =
+				rawMessage.length > 0 ? `${base} Output: ${rawMessage}` : base;
+			return {
+				ok: false,
+				error: {
+					code: "query_failed",
+					message,
+				},
+			};
+		}
+
 		return {
 			ok: true,
 			value: {

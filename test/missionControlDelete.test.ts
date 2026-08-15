@@ -58,6 +58,45 @@ echo "Deleted session mc-child (3 events)"
 		expect(result.value.stdout).toContain("Deleted session mc-root");
 	});
 
+	it("rejects exit 0 with empty stdout as a failed delete", async () => {
+		const root = createTempRoot();
+		const fakeMctrl = writeExecutable(
+			join(root, "mctrl"),
+			`${SHEBANG}exit 0
+`,
+		);
+
+		const result = await deleteMissionControlSession("mc-root", {
+			mcExecutable: fakeMctrl,
+		});
+
+		expect(result.ok).toBe(false);
+		if (result.ok) {
+			return;
+		}
+		expect(result.error.message).toContain("without confirming deletion");
+		expect(result.error.message).toContain("mc-root");
+	});
+
+	it("rejects exit 0 whose confirmation omits the target session id", async () => {
+		const root = createTempRoot();
+		const fakeMctrl = writeExecutable(
+			join(root, "mctrl"),
+			`${SHEBANG}echo "Deleted session mc-other (1 events)"
+`,
+		);
+
+		const result = await deleteMissionControlSession("mc-root", {
+			mcExecutable: fakeMctrl,
+		});
+
+		expect(result.ok).toBe(false);
+		if (result.ok) {
+			return;
+		}
+		expect(result.error.message).toContain("without confirming deletion");
+	});
+
 	it("surfaces live-lock failure with the stderr message", async () => {
 		const root = createTempRoot();
 		const fakeMctrl = writeExecutable(
