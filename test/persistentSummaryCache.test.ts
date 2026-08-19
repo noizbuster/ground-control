@@ -14,7 +14,7 @@ import {
 	getCodexSnapshot,
 	invalidateCodexSessionCaches,
 } from "../src/db/codex";
-import { getPiOmpSnapshots, invalidatePiSessionCaches } from "../src/db/pi";
+import { getPiFamilySnapshots, invalidatePiSessionCaches } from "../src/db/pi";
 import {
 	closeSessionSummaryCache,
 	resetSessionSummaryCacheForTesting,
@@ -76,7 +76,7 @@ afterEach(() => {
 });
 
 describe("persistent source summaries", () => {
-	it("reuses Pi and omp summaries after every in-memory cache is reset", () => {
+	it("reuses Pi, omp, and GJC summaries after every in-memory cache is reset", () => {
 		const root = createTempRoot();
 		const sessionsDirectory = join(root, "sessions");
 		mkdirSync(sessionsDirectory);
@@ -92,26 +92,28 @@ describe("persistent source summaries", () => {
 			].join("\n"),
 		);
 
-		const first = getPiOmpSnapshots({
+		const first = getPiFamilySnapshots({
 			nowMs: 0,
 			pi: { sessionRoots: [sessionsDirectory] },
 			omp: { sessionRoots: [sessionsDirectory] },
+			gjc: { sessionRoots: [sessionsDirectory] },
 		});
 		closeSessionSummaryCache();
 		invalidatePiSessionCaches();
 		resetSessionSummaryCacheForTesting();
 
 		const parseSpy = vi.spyOn(JSON, "parse");
-		const second = getPiOmpSnapshots({
+		const second = getPiFamilySnapshots({
 			nowMs: 0,
 			pi: { sessionRoots: [sessionsDirectory] },
 			omp: { sessionRoots: [sessionsDirectory] },
+			gjc: { sessionRoots: [sessionsDirectory] },
 		});
 		const parseCalls = parseSpy.mock.calls.length;
 		parseSpy.mockRestore();
 
 		expect(second).toEqual(first);
-		expect(parseCalls).toBeLessThanOrEqual(2);
+		expect(parseCalls).toBeLessThanOrEqual(3);
 	});
 
 	it("rejects Pi cache hits when the source disappears during refresh", () => {
@@ -127,10 +129,11 @@ describe("persistent source summaries", () => {
 				'{"type":"message","role":"user","content":"one"}',
 			].join("\n"),
 		);
-		getPiOmpSnapshots({
+		getPiFamilySnapshots({
 			nowMs: 0,
 			pi: { sessionRoots: [sessionsDirectory] },
 			omp: { sessionRoots: [sessionsDirectory] },
+			gjc: { sessionRoots: [sessionsDirectory] },
 		});
 		closeSessionSummaryCache();
 		invalidatePiSessionCaches();
@@ -144,15 +147,17 @@ describe("persistent source summaries", () => {
 				unlinkSync(sessionPath);
 				return result;
 			});
-		const refreshed = getPiOmpSnapshots({
+		const refreshed = getPiFamilySnapshots({
 			nowMs: 0,
 			pi: { sessionRoots: [sessionsDirectory] },
 			omp: { sessionRoots: [sessionsDirectory] },
+			gjc: { sessionRoots: [sessionsDirectory] },
 		});
 		readSpy.mockRestore();
 
 		expect(refreshed.pi.ok && refreshed.pi.value.sessions).toHaveLength(0);
 		expect(refreshed.omp.ok && refreshed.omp.value.sessions).toHaveLength(0);
+		expect(refreshed.gjc.ok && refreshed.gjc.value.sessions).toHaveLength(0);
 	});
 
 	it("reuses Codex summaries after its process-local caches are reset", () => {

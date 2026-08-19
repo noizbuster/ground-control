@@ -1,7 +1,7 @@
 {
   "name": "gctrl",
-  "version": "0.6.0",
-  "description": "Real-time OpenCode, Codex, Claude Code, and Mission Control session monitor CLI",
+  "version": "0.7.0",
+  "description": "Real-time coding-agent session monitor for OpenCode, Codex, Claude Code, Pi, omp, Gajae Code, and Mission Control",
   "type": "module",
   "scripts": {
     "start": "node bin/gctrl.js",
@@ -31,6 +31,10 @@
     "monitor",
     "codex",
     "claude-code",
+    "pi-coding-agent",
+    "omp",
+    "gajae-code",
+    "gjc",
     "mission-control",
     "mc",
     "mctrl",

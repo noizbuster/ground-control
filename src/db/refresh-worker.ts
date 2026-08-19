@@ -14,7 +14,7 @@ import {
 	type OpenCodeCacheState,
 	seedOpenCodeCacheState,
 } from "./opencode";
-import { getPiOmpSnapshots, invalidatePiSessionCaches } from "./pi";
+import { getPiFamilySnapshots, invalidatePiSessionCaches } from "./pi";
 import {
 	createErrorResponse,
 	createSuccessResponse,
@@ -95,12 +95,13 @@ const buildResponse = (request: RefreshRequest): RefreshResponse => {
 		sourceIssues.push(formatSourceIssue("OpenCode", openCodeResult.error));
 	}
 
-	const piOmpResults = getPiOmpSnapshots();
+	const piFamilyResults = getPiFamilySnapshots();
 	const otherResults = [
 		{ source: "Codex", result: getCodexSnapshot() },
 		{ source: "Claude Code", result: getClaudeSnapshot() },
-		{ source: "Pi", result: piOmpResults.pi },
-		{ source: "omp", result: piOmpResults.omp },
+		{ source: "Pi", result: piFamilyResults.pi },
+		{ source: "omp", result: piFamilyResults.omp },
+		{ source: "gjc", result: piFamilyResults.gjc },
 		{ source: "Mission Control", result: getMissionControlSnapshot() },
 	] as const;
 

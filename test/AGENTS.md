@@ -34,7 +34,7 @@ Flat Vitest suite (no subdirectories) for gctrl unit/integration coverage and a 
 | OpenCode / DB core | `opencodeSnapshot`, `opencodeIncremental`, `opencodeSessionStop`, `dbConnectionLifecycle`, `dbQueryHelpers`, `waitingSignalCandidates` |
 | Codex | `codexSnapshot`, `codexWaitingStatus`, `codexSubagentTitle`, `codexStatePath`, `codexDelete`, `codexChildAbort` |
 | Claude | `claudeSnapshot`, `claudeCache`, `claudeDelete` |
-| Pi / OMP | `piSnapshot`, `piCache`, `piDelete`, `ompSessionStop` |
+| Pi / omp / GJC | `piSnapshot`, `piCache`, `piDelete`, `jsonlSessionStop` |
 | Mission Control | `missionControlSnapshot`, `missionControlSqlite`, `missionControlCanonicalHierarchy`, `missionControlIdentitySnapshot`, `missionControlLeaseSnapshot`, `missionControlLifecycleSnapshot`, `missionControlRunOutcomeSnapshot`, `missionControlChildAbort`, `missionControlChildAbortValidation`, `missionControlAwaitedRefresh`, `missionControlStop`, `missionControlDelete` |
 | Session list / abort / refresh | `sessionSource`, `sessionList`, `sessionCard`, `sessionStopShortcut`, `abortTargets`, `attachedSessionSignals`, `hierarchyHelpers`, `orphanedRunning`, `stallDetection`, `refreshCoordinator`, `refreshRenderSignature`, `boundedCache` |
 | UI / OpenTUI | `detailTextSelection`, `scrollSectionBorders`, `gridScroll`, `gridColumnCount`, `colors` |

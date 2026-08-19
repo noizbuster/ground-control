@@ -4,7 +4,7 @@
 
 ## Purpose
 
-`gctrl` (package name `gctrl`, repo `ground-control`) is a Node.js terminal TUI that monitors OpenCode, Codex, Claude Code, Pi, omp, and Mission Control sessions in real time. It merges multi-source session snapshots on a 2s refresh cycle, renders a card grid + detail/hierarchy panes via `@opentui/core`, and supports source-native attach, delete, and child-stop flows. Published as the `gctrl` CLI (`bin/gctrl.js` → `dist/`).
+`gctrl` (package name `gctrl`, repo `ground-control`) is a Node.js terminal TUI that monitors OpenCode, Codex, Claude Code, Pi, omp, Gajae Code, and Mission Control sessions in real time. It merges multi-source session snapshots on a 2s refresh cycle, renders a card grid + detail/hierarchy panes via `@opentui/core`, and supports source-native attach, delete, and child-stop flows. Published as the `gctrl` CLI (`bin/gctrl.js` → `dist/`).
 
 ## Key Files
 

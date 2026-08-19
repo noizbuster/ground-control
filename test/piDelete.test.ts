@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	deleteGjcSession,
 	deleteOmpSession,
 	deletePiSession,
 	setOmpArtifactDeletionAfterQuarantineForTesting,
@@ -330,6 +331,50 @@ describe("deletePiSession", () => {
 	});
 });
 
+describe("deleteGjcSession", () => {
+	it("removes a GJC transcript and sibling artifacts without touching shared blobs", async () => {
+		const root = createTempRoot();
+		const projectDir = join(root, "v2-project");
+		mkdirSync(projectDir, { recursive: true });
+		const sessionPath = join(projectDir, "session.jsonl");
+		const artifactPath = join(projectDir, "session");
+		const blobStorePath = join(root, "blobs");
+		const unrelatedPath = join(projectDir, "unrelated.jsonl");
+		mkdirSync(artifactPath, { recursive: true });
+		mkdirSync(blobStorePath, { recursive: true });
+		writeFileSync(join(artifactPath, "tool-output.json"), "{}\n");
+		writeFileSync(join(blobStorePath, "blob.bin"), "blob");
+		writeSession(sessionPath, {
+			type: "session",
+			version: 4,
+			id: "gjc-session",
+			timestamp: "2026-08-19T09:00:00.000Z",
+			cwd: "/repo/app",
+		});
+		writeSession(unrelatedPath, {
+			type: "session",
+			version: 4,
+			id: "gjc-other",
+			timestamp: "2026-08-19T09:02:00.000Z",
+			cwd: "/repo/app",
+		});
+
+		const result = await deleteGjcSession("gjc-session", {
+			sessionRoots: [root],
+			sessionPath,
+		});
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.value.deletedSessionPaths).toEqual([sessionPath]);
+		expect(result.value.deletedArtifactPaths).toEqual([artifactPath]);
+		expect(existsSync(sessionPath)).toBe(false);
+		expect(existsSync(artifactPath)).toBe(false);
+		expect(existsSync(unrelatedPath)).toBe(true);
+		expect(existsSync(blobStorePath)).toBe(true);
+	});
+});
+
 describe("deleteOmpSession", () => {
 	it("removes omp JSONL and sibling artifact directories without touching blob storage", async () => {
 		const root = createTempRoot();
@@ -542,7 +587,7 @@ describe("deleteOmpSession", () => {
 			return;
 		}
 		expect(result.error.cause).toContain(
-			`OMP artifact ${childArtifactPath} appeared before deletion.`,
+			`Session artifact ${childArtifactPath} appeared before deletion.`,
 		);
 		expect(existsSync(parentPath)).toBe(true);
 		expect(existsSync(childPath)).toBe(true);
@@ -601,7 +646,7 @@ describe("deleteOmpSession", () => {
 			return;
 		}
 		expect(result.error.cause).toContain(
-			`OMP session ${childPath} reappeared while deleting its artifact.`,
+			`Session ${childPath} reappeared while deleting its artifact.`,
 		);
 		expect(readFileSync(childPath, "utf8")).toContain('"title":"replacement"');
 		expect(existsSync(parentPath)).toBe(true);

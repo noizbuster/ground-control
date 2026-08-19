@@ -6,13 +6,14 @@ import {
 } from "../src/lib/attachedSessionSignals";
 
 describe("parseAttachedSessionIdsFromProcessList", () => {
-	it("extracts explicit OpenCode, Codex, Claude, Pi, and omp session ids", () => {
+	it("extracts explicit OpenCode, Codex, Claude, Pi, omp, and GJC session ids", () => {
 		const processList = [
 			'101 MainThread node /usr/bin/opencode --session "ses_123"',
 			"202 MainThread node /usr/bin/codex resume 019db4b3-fb8c-7290-8308-a04afb48001b",
 			"303 claude claude --resume 3a3d1d4d-06cc-4fba-ad8f-511a9381f82e",
 			"304 pi pi --session pi-session-id",
 			"305 omp omp --resume=omp-session-id",
+			"306 gjc gjc --resume=gjc-session-id",
 		].join("\n");
 
 		const result = parseAttachedSessionIdsFromProcessList(
@@ -23,6 +24,7 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		expect([...result.sessionIds].sort()).toEqual([
 			"019db4b3-fb8c-7290-8308-a04afb48001b",
 			"3a3d1d4d-06cc-4fba-ad8f-511a9381f82e",
+			"gjc-session-id",
 			"omp-session-id",
 			"pi-session-id",
 			"ses_123",
@@ -57,11 +59,12 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		expect(result.directoryProcessCounts.size).toBe(1);
 	});
 
-	it("keeps Pi and omp directory slots isolated from other sources", () => {
+	it("keeps Pi, omp, and GJC directory slots isolated from other sources", () => {
 		const processList = [
 			"301 MainThread node /usr/bin/opencode",
 			"801 pi pi --session /tmp/pi-session.jsonl",
 			"802 MainThread node /usr/bin/omp --resume /tmp/omp-session.jsonl",
+			"803 bun bun /usr/lib/gajae-code/bin/gjc.js --resume /tmp/gjc-session.jsonl",
 		].join("\n");
 
 		const result = parseAttachedSessionIdsFromProcessList(
@@ -79,6 +82,9 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		expect(getExternalAttachedDirectoryKey("pi", "/repo/shared")).not.toBe(
 			getExternalAttachedDirectoryKey("omp", "/repo/shared"),
 		);
+		expect(getExternalAttachedDirectoryKey("omp", "/repo/shared")).not.toBe(
+			getExternalAttachedDirectoryKey("gjc", "/repo/shared"),
+		);
 		expect(
 			result.directoryProcessCounts.get(
 				getExternalAttachedDirectoryKey("opencode", "/repo/shared"),
@@ -94,7 +100,30 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 				getExternalAttachedDirectoryKey("omp", "/repo/shared"),
 			),
 		).toBe(1);
-		expect(result.directoryProcessCounts.size).toBe(3);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("gjc", "/repo/shared"),
+			),
+		).toBe(1);
+		expect(result.directoryProcessCounts.size).toBe(4);
+	});
+
+	it("does not reclassify GJC prompts that mention Pi", () => {
+		const result = parseAttachedSessionIdsFromProcessList(
+			"803 gjc gjc explain pi session compatibility",
+			() => "/repo/gjc",
+		);
+
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("gjc", "/repo/gjc"),
+			),
+		).toBe(1);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("pi", "/repo/gjc"),
+			),
+		).toBeUndefined();
 	});
 
 	it("ignores internal opencode and codex helper binaries for slot counting", () => {
@@ -154,13 +183,24 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 		).toBe(1);
 	});
 
-	it("treats interactive Pi and omp invocations as session-bearing and ignores machine modes", () => {
+	it("treats interactive Pi, omp, and GJC invocations as session-bearing and ignores machine modes", () => {
 		const processList = [
 			"801 pi pi --session /tmp/pi-session.jsonl",
 			"802 MainThread node /usr/bin/omp --resume /tmp/omp-session.jsonl",
-			"803 pi pi --print summarize",
-			"804 omp omp export",
-			"805 omp omp --json",
+			"803 gjc gjc",
+			"804 pi pi --print summarize",
+			"805 omp omp export",
+			"806 omp omp --json",
+			"807 gjc gjc --json",
+			"808 gjc gjc session list",
+			"809 gjc gjc setup",
+			"810 gjc gjc state list",
+			"811 gjc gjc stats --summary",
+			"812 gjc gjc notify status",
+			"813 gjc gjc daemon status",
+			"814 gjc gjc gc",
+			"815 gjc gjc accounts list",
+			"816 gjc gjc harness status",
 		].join("\n");
 
 		const result = parseAttachedSessionIdsFromProcessList(
@@ -179,7 +219,12 @@ describe("parseAttachedSessionIdsFromProcessList", () => {
 				getExternalAttachedDirectoryKey("omp", "/repo/pi"),
 			),
 		).toBe(1);
-		expect(result.directoryProcessCounts.size).toBe(2);
+		expect(
+			result.directoryProcessCounts.get(
+				getExternalAttachedDirectoryKey("gjc", "/repo/pi"),
+			),
+		).toBe(1);
+		expect(result.directoryProcessCounts.size).toBe(3);
 	});
 
 	it("does not add fallback directory slots for internal codex vendor children of resumed sessions", () => {
@@ -343,6 +388,7 @@ describe("mission-control process detection", () => {
 		expect(getExternalAttachedDirectoryKey("opencode", "/dir")).toBe("/dir");
 		expect(getExternalAttachedDirectoryKey("pi", "/dir")).toBe("pi:/dir");
 		expect(getExternalAttachedDirectoryKey("omp", "/dir")).toBe("omp:/dir");
+		expect(getExternalAttachedDirectoryKey("gjc", "/dir")).toBe("gjc:/dir");
 		expect(getExternalAttachedDirectoryKey("mission-control", "/dir")).not.toBe(
 			getExternalAttachedDirectoryKey("opencode", "/dir"),
 		);
@@ -356,6 +402,7 @@ describe("isSessionProcessComm", () => {
 		expect(isSessionProcessComm("claude")).toBe(true);
 		expect(isSessionProcessComm("pi")).toBe(true);
 		expect(isSessionProcessComm("omp")).toBe(true);
+		expect(isSessionProcessComm("gjc")).toBe(true);
 		expect(isSessionProcessComm("mctrl")).toBe(true);
 		expect(isSessionProcessComm("mc")).toBe(true);
 	});

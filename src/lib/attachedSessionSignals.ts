@@ -92,6 +92,67 @@ const NON_SESSION_PI_FAMILY_SUBCOMMANDS = new Set([
 	"acp",
 ]);
 
+const GJC_COMMAND_NAME = "gjc";
+const GJC_SCRIPT_NAME = "gjc.js";
+const NON_SESSION_GJC_SUBCOMMANDS: Record<string, true> = {
+	accounts: true,
+	acp: true,
+	agent: true,
+	agents: true,
+	auth: true,
+	"auth-broker": true,
+	"auth-gateway": true,
+	"codex-native-hook": true,
+	completion: true,
+	config: true,
+	"contribute-pr": true,
+	"contribution-prep": true,
+	coordinator: true,
+	crash: true,
+	customize: true,
+	daemon: true,
+	"deep-interview": true,
+	doctor: true,
+	export: true,
+	gc: true,
+	harness: true,
+	help: true,
+	import: true,
+	init: true,
+	install: true,
+	"local-provider": true,
+	login: true,
+	logout: true,
+	mcp: true,
+	"mcp-serve": true,
+	migrate: true,
+	model: true,
+	models: true,
+	notify: true,
+	plugin: true,
+	plugins: true,
+	q: true,
+	"quick-lane": true,
+	ralplan: true,
+	read: true,
+	rlm: true,
+	rpc: true,
+	sdk: true,
+	session: true,
+	setup: true,
+	skill: true,
+	skills: true,
+	state: true,
+	stats: true,
+	team: true,
+	ultragoal: true,
+	uninstall: true,
+	update: true,
+	upgrade: true,
+	version: true,
+	"web-search": true,
+};
+
 const MCTRL_COMMAND_NAME = "mctrl";
 const MC_COMMAND_NAME = "mc";
 const MISSION_CONTROL_COMMAND_NAMES = new Set([
@@ -196,6 +257,7 @@ const SESSION_PROCESS_COMMS = new Set<string>([
 	CODEX_COMMAND_NAME,
 	CLAUDE_COMMAND_NAME,
 	...PI_FAMILY_COMMAND_NAMES,
+	GJC_COMMAND_NAME,
 	MC_COMMAND_NAME,
 	...[...MISSION_CONTROL_COMMAND_NAMES].map((name) => name.slice(0, 15)),
 	"node",
@@ -858,7 +920,7 @@ const tryReadPiFamilySessionId = (
 	return undefined;
 };
 
-const isPiFamilyPrintOrMachineMode = (
+const isJsonlHarnessPrintOrMachineMode = (
 	argumentTokens: readonly string[],
 ): boolean => {
 	return argumentTokens.some((token) => {
@@ -934,6 +996,154 @@ const isPiFamilySessionBearingInvocation = (
 	}
 
 	return true;
+};
+
+const getGjcExecutableTokenIndex = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): number => {
+	const directTokenIndex = argumentTokens.findIndex(
+		(token) => getBasename(normalizeCommandToken(token)) === GJC_COMMAND_NAME,
+	);
+	if (directTokenIndex >= 0) {
+		return directTokenIndex;
+	}
+
+	const runtimeScriptToken = getRuntimeScriptToken(
+		commandBasename,
+		argumentTokens,
+	);
+	if (
+		runtimeScriptToken &&
+		getBasename(normalizeCommandToken(runtimeScriptToken)) === GJC_SCRIPT_NAME
+	) {
+		return argumentTokens.findIndex(
+			(token) => normalizeCommandToken(token) === runtimeScriptToken,
+		);
+	}
+
+	return commandBasename === GJC_COMMAND_NAME ? 0 : -1;
+};
+
+const isRuntimeWrappedGjcCommand = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	const runtimeScriptToken = getRuntimeScriptToken(
+		commandBasename,
+		argumentTokens,
+	);
+	const runtimeEntryPoint = runtimeScriptToken
+		? getBasename(normalizeCommandToken(runtimeScriptToken))
+		: "";
+	return (
+		runtimeEntryPoint === GJC_COMMAND_NAME ||
+		runtimeEntryPoint === GJC_SCRIPT_NAME
+	);
+};
+
+const tryReadGjcSessionId = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): string | undefined => {
+	const executableTokenIndex = getGjcExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return undefined;
+	}
+
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken || normalizedToken === "--") {
+			continue;
+		}
+
+		if (normalizedToken === "--resume" || normalizedToken === "-r") {
+			const nextToken = normalizeCommandToken(
+				argumentTokens[tokenIndex + 1] ?? "",
+			);
+			return nextToken && !looksLikePathSessionReference(nextToken)
+				? nextToken
+				: undefined;
+		}
+
+		if (normalizedToken.startsWith("--resume=")) {
+			const value = normalizeCommandToken(
+				normalizedToken.slice("--resume=".length),
+			);
+			return value && !looksLikePathSessionReference(value) ? value : undefined;
+		}
+	}
+
+	return undefined;
+};
+
+const isNonSessionGjcInvocation = (
+	commandBasename: string,
+	argumentTokens: readonly string[],
+): boolean => {
+	const executableTokenIndex = getGjcExecutableTokenIndex(
+		commandBasename,
+		argumentTokens,
+	);
+	if (executableTokenIndex < 0) {
+		return true;
+	}
+	if (isJsonlHarnessPrintOrMachineMode(argumentTokens)) {
+		return true;
+	}
+
+	let hasPendingFlagValue = false;
+	let hasOnlyHelpOrVersionFlag = false;
+	for (
+		let tokenIndex = executableTokenIndex + 1;
+		tokenIndex < argumentTokens.length;
+		tokenIndex += 1
+	) {
+		const normalizedToken = normalizeCommandToken(argumentTokens[tokenIndex]);
+		if (!normalizedToken || normalizedToken === "--") {
+			continue;
+		}
+
+		if (hasPendingFlagValue) {
+			hasPendingFlagValue = false;
+			continue;
+		}
+
+		if (
+			normalizedToken === "--resume" ||
+			normalizedToken === "-r" ||
+			normalizedToken === "--model" ||
+			normalizedToken === "-m" ||
+			normalizedToken === "--provider" ||
+			normalizedToken === "--config" ||
+			normalizedToken === "--config-dir" ||
+			normalizedToken === "--session-dir" ||
+			normalizedToken === "--cwd"
+		) {
+			hasPendingFlagValue = true;
+			continue;
+		}
+
+		if (HELP_OR_VERSION_FLAGS.has(normalizedToken)) {
+			hasOnlyHelpOrVersionFlag = true;
+			continue;
+		}
+
+		if (normalizedToken.startsWith("-")) {
+			continue;
+		}
+
+		return NON_SESSION_GJC_SUBCOMMANDS[getBasename(normalizedToken)] === true;
+	}
+
+	return hasOnlyHelpOrVersionFlag;
 };
 
 const isMctrlToken = (token: string): boolean => {
@@ -1134,7 +1344,7 @@ export const getExternalAttachedDirectoryKey = (
 	source: SessionSource,
 	directory: string,
 ): string => {
-	if (source === "pi" || source === "omp") {
+	if (source === "pi" || source === "omp" || source === "gjc") {
 		return `${source}:${directory}`;
 	}
 
@@ -1258,12 +1468,17 @@ export const parseAttachedSessionIdsFromProcessList = (
 			continue;
 		}
 
+		const isGjcInvocation =
+			commandBasename === GJC_COMMAND_NAME ||
+			firstArgumentBasename === GJC_COMMAND_NAME ||
+			isRuntimeWrappedGjcCommand(commandBasename, argumentTokens);
 		const isPiFamilyInvocation =
-			isDirectPiFamilyCommand(commandBasename, firstArgumentBasename) ||
-			isRuntimeWrappedPiFamilyCommand(commandBasename, argumentTokens) ||
-			containsPiFamilyToken(argumentTokens);
+			!isGjcInvocation &&
+			(isDirectPiFamilyCommand(commandBasename, firstArgumentBasename) ||
+				isRuntimeWrappedPiFamilyCommand(commandBasename, argumentTokens) ||
+				containsPiFamilyToken(argumentTokens));
 		if (isPiFamilyInvocation) {
-			if (isPiFamilyPrintOrMachineMode(argumentTokens)) {
+			if (isJsonlHarnessPrintOrMachineMode(argumentTokens)) {
 				continue;
 			}
 
@@ -1295,6 +1510,29 @@ export const parseAttachedSessionIdsFromProcessList = (
 			incrementDirectoryProcessCount(
 				externalAttachedSignals.directoryProcessCounts,
 				directoryKey,
+			);
+			continue;
+		}
+
+		if (isGjcInvocation) {
+			if (isNonSessionGjcInvocation(commandBasename, argumentTokens)) {
+				continue;
+			}
+
+			const gjcSessionId = tryReadGjcSessionId(commandBasename, argumentTokens);
+			if (gjcSessionId) {
+				externalAttachedSignals.sessionIds.add(gjcSessionId);
+				continue;
+			}
+
+			const processCwd = readProcessCwd(pid);
+			if (!processCwd) {
+				continue;
+			}
+
+			incrementDirectoryProcessCount(
+				externalAttachedSignals.directoryProcessCounts,
+				getExternalAttachedDirectoryKey("gjc", processCwd),
 			);
 			continue;
 		}

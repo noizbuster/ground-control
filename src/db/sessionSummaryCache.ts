@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
-export type SessionSummaryCacheSource = "pi" | "omp" | "codex";
+export type SessionSummaryCacheSource = "pi" | "omp" | "gjc" | "codex";
 
 export interface SessionSummaryFileIdentity {
 	readonly canonicalPath: string;

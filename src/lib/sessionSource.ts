@@ -51,6 +51,7 @@ const SESSION_SOURCE_LABELS: Record<SessionSource, string> = {
 	claude: "Claude Code",
 	pi: "Pi",
 	omp: "omp",
+	gjc: "gjc",
 	"mission-control": "Mission Control",
 };
 
@@ -60,6 +61,7 @@ const SESSION_SOURCE_COLORS: Record<SessionSource, `#${string}`> = {
 	claude: "#D97706",
 	pi: "#A78BFA",
 	omp: "#F472B6",
+	gjc: "#FB7185",
 	"mission-control": "#22D3EE",
 };
 
@@ -76,6 +78,7 @@ export const getDefaultSessionCapabilities = (
 		case "pi":
 			return { ...PI_FAMILY_CAPABILITIES };
 		case "omp":
+		case "gjc":
 			return { ...OMP_CAPABILITIES };
 		case "mission-control":
 			return { ...MISSION_CONTROL_CAPABILITIES };
@@ -167,10 +170,6 @@ const getPiAttachTarget = (
 	return session.sourceMetadata?.sessionPath ?? session.id;
 };
 
-const getOmpAttachTarget = (
-	session: Pick<Session, "id" | "sourceMetadata">,
-): string => session.sourceMetadata?.sessionPath ?? session.id;
-
 export const getAttachLaunchSpec = (
 	session: Pick<
 		Session,
@@ -231,7 +230,22 @@ export const getAttachLaunchSpec = (
 
 	if (session.sessionSource === "omp") {
 		return {
-			cmd: [resolveCommand("omp"), "--resume", getOmpAttachTarget(session)],
+			cmd: [
+				resolveCommand("omp"),
+				"--resume",
+				session.sourceMetadata?.sessionPath ?? session.id,
+			],
+			cwd,
+		};
+	}
+
+	if (session.sessionSource === "gjc") {
+		return {
+			cmd: [
+				resolveCommand("gjc"),
+				"--resume",
+				session.sourceMetadata?.sessionPath ?? session.id,
+			],
 			cwd,
 		};
 	}

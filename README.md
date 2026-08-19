@@ -4,19 +4,20 @@
 
 # Ground Control
 
-`gctrl` is a terminal TUI for monitoring OpenCode, Codex, Claude Code, Pi, omp, and Mission Control sessions in real time. It presents session status, active agents, subagent activity, richer source metadata, and recent updates in one card-based interface, while also supporting source-native session deletion flows where the upstream CLI exposes them and conservative local cleanup for file-backed sources.
+`gctrl` is a terminal TUI for monitoring OpenCode, Codex, Claude Code, Pi, omp, Gajae Code (`gjc`), and Mission Control sessions in real time. It presents session status, active agents, subagent activity, richer source metadata, and recent updates in one card-based interface, while also supporting source-native session deletion flows where the upstream CLI exposes them and conservative local cleanup for file-backed sources.
 
 ## Quick Start
 
 Make sure these are available before running `gctrl`:
 
 - Node.js 24 or later
-- OpenCode, Codex, Claude Code, Pi, omp, and/or Mission Control installed on the same machine
+- OpenCode, Codex, Claude Code, Pi, omp, Gajae Code, and/or Mission Control installed on the same machine
 - `~/.local/share/opencode/opencode.db` exists for OpenCode monitoring
 - `~/.codex/state_*.sqlite` and `~/.codex/sessions/` exist for Codex monitoring
 - `~/.claude/projects/` and/or `~/.claude/sessions/` exist for Claude Code monitoring
 - `~/.pi/agent/sessions/` exists for Pi monitoring
 - `~/.omp/agent/sessions/` exists for omp monitoring
+- `~/.gjc/agent/sessions/` exists for Gajae Code monitoring
 - `~/.local/share/mission-control/mission-control.db` exists for Mission Control monitoring
 
 ### Run with `npx`
@@ -35,7 +36,7 @@ npx gctrl
 
 ## Overview
 
-- Displays OpenCode, Codex, Claude Code, Pi, omp, and Mission Control sessions in a live terminal list
+- Displays OpenCode, Codex, Claude Code, Pi, omp, Gajae Code, and Mission Control sessions in a live terminal list
 - Refreshes automatically every 2 seconds
 - Shows status, source, project label, session ID, update time, and richer source metadata
 - Supports source-aware actions, copy ID, refresh, and keyboard navigation
@@ -72,9 +73,9 @@ Press `Ctrl+K` from the main grid, detail, or sideview to stop stuck or still-ac
 
 - **OpenCode / Codex**: stops every non-terminal child/descendant, and also stops the selected parent when the parent itself is non-terminal (running/waiting/pending/unknown/idle). This covers unfinished compaction, zombie busy roots, and mid-stream hangs.
 - **Mission Control**: stops abortable children only. The selected Mission Control parent is never stopped (existing contract).
-- **omp**: sends `SIGINT` to every non-terminal child/descendant whose running OMP process explicitly resumed the exact session JSONL path. OMP handles this as graceful teardown and records a signal exit; Ground Control shows the child as Interrupted. The selected root is not signaled because a reliable OMP process identity requires an explicit `--resume` path. If no exact process match is found, session history is left untouched.
+- **omp / Gajae Code**: on Linux, sends `SIGINT` to every non-terminal child/descendant whose running `omp` or `gjc` process explicitly resumed the exact session JSONL path. The selected root is not signaled because a reliable process identity requires an explicit `--resume` path. If no exact process match is found, session history is left untouched.
 
-Codex, Claude Code, Pi, and omp sessions support attach/inspect/copy/hierarchy/delete flows. Session-stop is supported for OpenCode, Codex, omp, and Mission Control sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, and omp attach uses `omp --resume <session-jsonl-path>` when the JSONL path is known, falling back to the session ID only when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mc --session <session-id>` (`mctrl` is honored as a legacy alias/fallback).
+Codex, Claude Code, Pi, omp, and Gajae Code sessions support attach/inspect/copy/hierarchy/delete flows. Session-stop is supported for OpenCode, Codex, omp, Gajae Code, and Mission Control sessions. Codex attach uses `codex resume <session-id>`, Claude Code attach uses `claude --resume <session-id>`, Pi attach uses `pi --session <session-id>` for roots and the exact session JSONL path for child artifacts, omp attach uses `omp --resume <session-jsonl-path>`, and Gajae Code attach uses `gjc --resume <session-jsonl-path>`; both harnesses fall back to the session ID when no path is available. Attach falls back to the current monitor directory if the original session directory no longer exists. Claude Code subagent attach resolves back to the root session because the upstream CLI resumes root conversations by ID. Mission Control attach uses `mc --session <session-id>` (`mctrl` is honored as a legacy alias/fallback).
 
 OpenCode uses a three-stage stop flow per target:
 
@@ -115,19 +116,22 @@ Press `c` on a selected session to open the agent hierarchy view, or press `t` t
 - The monitor reads Claude Code session state from `~/.claude/sessions/*.json` and enriches it with `~/.claude/projects/**/*.jsonl`.
 - The monitor reads Pi JSONL sessions from `~/.pi/agent/sessions/**/*.jsonl`.
 - The monitor reads omp JSONL sessions from `~/.omp/agent/sessions/**/*.jsonl`.
+- The monitor reads Gajae Code JSONL sessions from `~/.gjc/agent/sessions/**/*.jsonl`, or `$XDG_DATA_HOME/gjc/sessions/**/*.jsonl` when Gajae Code uses its XDG data root.
 - The monitor reads Mission Control session state from the SQLite store at `~/.local/share/mission-control/mission-control.db`. If that database is missing or unreadable, Mission Control sessions are not shown.
 - Override the OpenCode database path with `GCTRL_DB_PATH=/custom/path/opencode.db`.
 - Override Codex paths with `GCTRL_CODEX_STATE_DB_PATH=/custom/path/state.sqlite`, `GCTRL_CODEX_SESSIONS_DIR=/custom/path/sessions`, `GCTRL_CODEX_ARCHIVED_SESSIONS_DIR=/custom/path/archived_sessions`, and `GCTRL_CODEX_SESSION_INDEX_PATH=/custom/path/session_index.jsonl`.
 - Override Claude Code paths with `GCTRL_CLAUDE_PROJECTS_DIR=/custom/path/projects` and `GCTRL_CLAUDE_SESSIONS_DIR=/custom/path/sessions`.
 - Override Pi sessions with `GCTRL_PI_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are also honored.
 - Override omp sessions with `GCTRL_OMP_SESSIONS_DIR=/custom/path/sessions`; `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`, and XDG omp candidates are also honored.
+- Override Gajae Code sessions with `GCTRL_GJC_SESSIONS_DIR=/custom/path/sessions`; `GJC_CODING_AGENT_DIR` and `GJC_CONFIG_DIR` are also honored. Ground Control does not use Gajae Code's legacy `PI_*` aliases for GJC discovery because those paths already identify Pi/omp sources.
 - Override the Mission Control SQLite database with `GCTRL_MC_DB_PATH=/custom/path/mission-control.db` (primary); `MCTRL_DATA_DIR=/custom/path` is also honored and resolves to `<MCTRL_DATA_DIR>/mission-control.db`, and `XDG_DATA_HOME` is honored for the default `~/.local/share/mission-control/mission-control.db` location.
-- Ground Control stores compact Pi/omp/Codex summaries in `${XDG_CACHE_HOME:-~/.cache}/gctrl/session-summaries.sqlite` to accelerate later starts. The cache is pruned against live sessions, capped at 64 MiB, and recreated if corrupt. Override its location with `GCTRL_SESSION_SUMMARY_CACHE_PATH=/custom/path/session-summaries.sqlite`.
+- Ground Control stores compact Pi/omp/Gajae Code/Codex summaries in `${XDG_CACHE_HOME:-~/.cache}/gctrl/session-summaries.sqlite` to accelerate later starts. The cache is pruned against live sessions, capped at 64 MiB, and recreated if corrupt. Override its location with `GCTRL_SESSION_SUMMARY_CACHE_PATH=/custom/path/session-summaries.sqlite`.
 - OpenCode attach/delete/child-abort actions use the `opencode` CLI.
 - Codex attach/delete/child-abort actions use the local `codex` CLI and app-server protocol.
 - Claude Code attach actions use the local `claude` CLI.
 - Pi attach actions use the local `pi` CLI; Pi delete removes the selected JSONL session and any loaded descendant JSONL sessions.
 - omp attach actions use the local `omp` CLI; omp delete removes the selected JSONL session, loaded descendant JSONL sessions, and sibling artifact directories, but not shared blob storage.
+- Gajae Code attach actions use the local `gjc` CLI. Delete performs conservative local cleanup of the selected JSONL transcript, loaded descendants, and sibling artifact directories without deleting the shared blob store; `gjc session remove` is not used because that command manages tagged tmux sessions, not transcripts.
 - Mission Control attach actions use the local `mc` CLI (`mctrl` is honored as a legacy alias/fallback). Mission Control delete removes a canonical descendant subtree and is destructive. Ground Control sends `mc session delete <id> --expected-tree-token <sha256>` only after the two-refresh confirmation flow; a changed tree or live lease refuses the non-force delete.
 - Codex delete uses the local `codex app-server` archive flow plus cleanup of archived rollout files and local index/state entries.
 - Claude Code delete intentionally refuses live sessions, then removes matching `projects/`, `file-history/`, `session-env/`, `tasks/`, and stale `sessions/*.json` artifacts from local `.claude/` storage. This follows the official `.claude` storage guidance: Claude Code does not expose a delete subcommand, but its local session data can be removed directly.
@@ -162,7 +166,7 @@ The current Linux implementation verification is local: the isolated cross-repos
 
 ```text
 bin/          CLI wrapper
-src/db/       OpenCode + Codex + Claude Code + Pi/omp + Mission Control data adapters
+src/db/       OpenCode + Codex + Claude Code + Pi/omp/GJC + Mission Control data adapters
 src/ui/       TUI components
 src/config/   color and agent configuration
 src/lib/      status detection logic
@@ -171,7 +175,7 @@ dist/         compiled output
 
 ## Session Status Detection
 
-OpenCode status is derived from the latest message in the OpenCode SQLite database. The detection pipeline reads the most recent `message` row per session, parses its JSON `data` column, and applies status detectors in priority order. Codex status is mapped conservatively from thread/task events plus `thread_spawn_edges`, Claude Code status is mapped from local session registries plus JSONL conversation logs and subagent transcripts, and Pi/omp status is mapped conservatively from JSONL message/model/thinking events. Richer raw detail is surfaced separately in the UI.
+OpenCode status is derived from the latest message in the OpenCode SQLite database. The detection pipeline reads the most recent `message` row per session, parses its JSON `data` column, and applies status detectors in priority order. Codex status is mapped conservatively from thread/task events plus `thread_spawn_edges`, Claude Code status is mapped from local session registries plus JSONL conversation logs and subagent transcripts, and Pi/omp/Gajae Code status is mapped conservatively from JSONL message/model/thinking events. Richer raw detail is surfaced separately in the UI.
 
 ### Status Priority
 

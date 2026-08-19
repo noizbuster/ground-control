@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	buildPiSessionSnapshot,
@@ -118,6 +119,46 @@ describe("buildPiSessionSnapshot", () => {
 		);
 	});
 
+	it("matches Gajae Code XDG and home-relative config-root precedence", () => {
+		const xdgHome = mkdtempSync(join(tmpdir(), "gctrl-gjc-xdg-"));
+		try {
+			mkdirSync(join(xdgHome, "gjc"), { recursive: true });
+			withEnvironment(
+				{
+					GCTRL_GJC_SESSIONS_DIR: undefined,
+					GJC_CODING_AGENT_DIR: undefined,
+					GJC_CONFIG_DIR: ".custom-gjc",
+					PI_CODING_AGENT_DIR: "/tmp/pi-agent",
+					PI_CONFIG_DIR: ".custom-omp",
+					XDG_DATA_HOME: xdgHome,
+				},
+				() => {
+					expect(resolvePiSessionRoots("gjc")).toEqual([
+						join(xdgHome, "gjc", "sessions"),
+					]);
+				},
+			);
+		} finally {
+			rmSync(xdgHome, { recursive: true, force: true });
+		}
+
+		withEnvironment(
+			{
+				GCTRL_GJC_SESSIONS_DIR: undefined,
+				GJC_CODING_AGENT_DIR: undefined,
+				GJC_CONFIG_DIR: "/custom-gjc",
+				PI_CODING_AGENT_DIR: "/tmp/pi-agent",
+				PI_CONFIG_DIR: ".custom-omp",
+				XDG_DATA_HOME: undefined,
+			},
+			() => {
+				expect(resolvePiSessionRoots("gjc")).toEqual([
+					join(homedir(), "custom-gjc", "agent", "sessions"),
+				]);
+			},
+		);
+	});
+
 	it("builds Pi sessions with metadata, model, reasoning, and completed status", () => {
 		const snapshot = buildPiSessionSnapshot({
 			source: "pi",
@@ -143,6 +184,143 @@ describe("buildPiSessionSnapshot", () => {
 		});
 		expect(snapshot.messageCountBySessionId["pi-root"]).toBe(2);
 		expect(snapshot.statusBySessionId["pi-root"]).toBe(SessionStatus.completed);
+	});
+
+	it("builds current Gajae Code sessions with header patches and harness models", () => {
+		const sessionPath =
+			"/tmp/gjc-sessions/v2-project/gjc-current-session.jsonl";
+		const snapshot = buildPiSessionSnapshot({
+			source: "gjc",
+			logs: [
+				{
+					source: "gjc",
+					root: "/tmp/gjc-sessions",
+					path: sessionPath,
+					mtimeMs: 1_700_000_010_000,
+					header: {
+						type: "session",
+						version: 4,
+						id: "gjc-current-session",
+						timestamp: "2026-08-19T08:00:00.000Z",
+						cwd: "/repo/old",
+						title: "Initial title",
+					},
+					entries: [
+						{
+							type: "model_change",
+							id: "model",
+							parentId: null,
+							timestamp: "2026-08-19T08:00:00.100Z",
+							model: "anthropic/claude-opus-4-1",
+							role: "default",
+						},
+						{
+							type: "message",
+							id: "user",
+							parentId: "model",
+							timestamp: "2026-08-19T08:00:01.000Z",
+							message: {
+								role: "user",
+								content: [{ type: "text", text: "support gjc" }],
+							},
+						},
+						{
+							type: "header_patch",
+							patch: {
+								title: "Patched GJC title",
+								cwd: "/repo/current",
+							},
+						},
+						{
+							type: "message",
+							id: "assistant",
+							parentId: "user",
+							timestamp: "2026-08-19T08:00:02.000Z",
+							message: {
+								role: "assistant",
+								content: [{ type: "text", text: "ready" }],
+								stopReason: "end_turn",
+							},
+						},
+					],
+				},
+			],
+		});
+
+		expect(snapshot.sessions).toHaveLength(1);
+		const [session] = snapshot.sessions;
+		expect(session.sessionSource).toBe("gjc");
+		expect(session.title).toBe("Patched GJC title");
+		expect(session.directory).toBe("/repo/current");
+		expect(session.project_label).toBe("current");
+		expect(session.status).toBe(SessionStatus.waiting);
+		expect(session.statusDetail).toBe("Idle between prompts");
+		expect(session.currentModelID).toBe("claude-opus-4-1");
+		expect(session.providerID).toBe("anthropic");
+		expect(session.sourceMetadata?.sourceCategory).toBe("gjc");
+		expect(session.sourceMetadata?.sessionPath).toBe(sessionPath);
+		expect(session.capabilities).toEqual({
+			attach: true,
+			delete: true,
+			abortChildren: true,
+			hierarchy: true,
+		});
+	});
+
+	it("clears Gajae Code default models without reviving message fallbacks", () => {
+		const snapshot = buildPiSessionSnapshot({
+			source: "gjc",
+			logs: [
+				{
+					source: "gjc",
+					root: "/tmp/gjc-sessions",
+					path: "/tmp/gjc-sessions/v2-project/model-cleared.jsonl",
+					mtimeMs: 1_700_000_011_000,
+					header: {
+						type: "session",
+						version: 4,
+						id: "gjc-model-cleared",
+						timestamp: "2026-08-19T08:00:00.000Z",
+						cwd: "/repo/current",
+					},
+					entries: [
+						{
+							type: "model_change",
+							id: "model-set",
+							parentId: null,
+							timestamp: "2026-08-19T08:00:00.100Z",
+							model: "anthropic/claude-opus-4-1",
+							role: "default",
+						},
+						{
+							type: "model_change",
+							id: "model-clear",
+							parentId: "model-set",
+							timestamp: "2026-08-19T08:00:00.200Z",
+							role: "default",
+							cleared: true,
+						},
+						{
+							type: "message",
+							id: "assistant",
+							parentId: "model-clear",
+							timestamp: "2026-08-19T08:00:01.000Z",
+							message: {
+								role: "assistant",
+								model: "openai/gpt-5.4",
+								provider: "openai",
+								content: [{ type: "text", text: "ready" }],
+								stopReason: "end_turn",
+							},
+						},
+					],
+				},
+			],
+		});
+
+		expect(snapshot.sessions[0]?.currentModelID).toBeUndefined();
+		expect(snapshot.sessions[0]?.providerID).toBeUndefined();
+		expect(snapshot.sessions[0]?.currentVariant).toBeUndefined();
 	});
 
 	it("builds omp hierarchy and marks roots with active children as running", () => {
@@ -635,6 +813,38 @@ describe("buildPiSessionSnapshot", () => {
 			expect(snapshot.statusBySessionId["omp-plan-review"]).toBe(
 				SessionStatus.waiting,
 			);
+		});
+
+		it("recognizes the Gajae Code silent-abort marker", () => {
+			const entries = [...(planReviewLog.entries ?? [])];
+			const abortedEntry = entries[3];
+			entries[3] = {
+				...abortedEntry,
+				message: {
+					...((abortedEntry?.message as Record<string, unknown>) ?? {}),
+					errorMessage: "__gjc.silent_abort__",
+				},
+			};
+			const snapshot = buildPiSessionSnapshot({
+				source: "gjc",
+				logs: [
+					{
+						...planReviewLog,
+						source: "gjc",
+						root: "/tmp/gjc-sessions",
+						path: "/tmp/gjc-sessions/v2-project/plan-review.jsonl",
+						header: {
+							...planReviewLog.header,
+							id: "gjc-plan-review",
+						},
+						entries,
+					},
+				],
+			});
+
+			expect(snapshot.sessions[0]?.status).toBe(SessionStatus.waiting);
+			expect(snapshot.sessions[0]?.finishReason).toBe("awaiting_user");
+			expect(snapshot.sessions[0]?.statusDetail).toBe("Awaiting user input");
 		});
 
 		it("marks the planning session completed after approval exits plan mode", () => {

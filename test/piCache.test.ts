@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseResult } from "../src/db";
 import {
-	getPiOmpSnapshots,
+	getPiFamilySnapshots,
 	getPiRawParseCacheKeysForTesting,
 	getPiRawParseCacheStateForTesting,
 	invalidatePiSessionCaches,
@@ -39,11 +39,18 @@ const EXTENDED_JSONL = [
 	'{"type":"message","role":"user","content":"another"}',
 ].join("\n");
 
+const GJC_V4_JSONL = [
+	'{"type":"session","version":4,"id":"gjc-v4","timestamp":"2026-08-19T09:00:00Z","cwd":"/repo/old","title":"Initial title"}',
+	'{"type":"header_patch","patch":{"cwd":"/repo/current","title":"Patched title"}}',
+	'{"type":"message","id":"assistant","parentId":null,"timestamp":"2026-08-19T09:00:01Z","message":{"role":"assistant","content":"ready","stopReason":"end_turn"}}',
+].join("\n");
+
 const readSnapshots = (root: string, nowMs: number) =>
-	getPiOmpSnapshots({
+	getPiFamilySnapshots({
 		nowMs,
 		pi: { sessionRoots: [root] },
 		omp: { sessionRoots: [root] },
+		gjc: { sessionRoots: [root] },
 	});
 
 const getMessageCount = (
@@ -67,15 +74,16 @@ afterEach(() => {
 	invalidatePiSessionCaches();
 });
 
-describe("Pi/omp compact refresh state", () => {
-	it("preserves separate Pi and omp snapshots for one shared physical log", () => {
+describe("Pi/omp/GJC compact refresh state", () => {
+	it("preserves separate source snapshots for one shared physical log", () => {
 		const root = createTempRoot();
 		writeFileSync(join(root, "session.jsonl"), VALID_JSONL);
 
 		const snapshots = readSnapshots(root, 0);
 		expect(snapshots.pi.ok).toBe(true);
 		expect(snapshots.omp.ok).toBe(true);
-		if (!snapshots.pi.ok || !snapshots.omp.ok) return;
+		expect(snapshots.gjc.ok).toBe(true);
+		if (!snapshots.pi.ok || !snapshots.omp.ok || !snapshots.gjc.ok) return;
 
 		expect(snapshots.pi.value.sessions[0]?.sourceMetadata?.sourceCategory).toBe(
 			"Pi",
@@ -83,8 +91,30 @@ describe("Pi/omp compact refresh state", () => {
 		expect(
 			snapshots.omp.value.sessions[0]?.sourceMetadata?.sourceCategory,
 		).toBe("omp");
+		expect(
+			snapshots.gjc.value.sessions[0]?.sourceMetadata?.sourceCategory,
+		).toBe("gjc");
 		expect(snapshots.pi.value.sessions[0]?.id).toBe("test-session-1");
 		expect(snapshots.omp.value.sessions[0]?.id).toBe("test-session-1");
+		expect(snapshots.gjc.value.sessions[0]?.id).toBe("test-session-1");
+	});
+
+	it("applies GJC v4 header patches in compact and persistent summaries", () => {
+		const root = createTempRoot();
+		writeFileSync(join(root, "session.jsonl"), GJC_V4_JSONL);
+
+		const first = readSnapshots(root, 0).gjc;
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+		expect(first.value.sessions[0]?.title).toBe("Patched title");
+		expect(first.value.sessions[0]?.directory).toBe("/repo/current");
+
+		invalidatePiSessionCaches();
+		const cached = readSnapshots(root, 2_000).gjc;
+		expect(cached.ok).toBe(true);
+		if (!cached.ok) return;
+		expect(cached.value.sessions[0]?.title).toBe("Patched title");
+		expect(cached.value.sessions[0]?.directory).toBe("/repo/current");
 	});
 
 	it("reparses a changed known file on the two-second cadence", () => {

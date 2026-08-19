@@ -34,10 +34,10 @@ import {
 import { deleteClaudeSession } from "./db/claude";
 import { deleteCodexSession } from "./db/codex";
 import { abortCodexChildSession } from "./db/codex-child-abort";
+import { stopJsonlSession } from "./db/jsonl-session-stop";
 import { deleteMissionControlSession } from "./db/missionControl";
-import { stopOmpSession } from "./db/omp-session-stop";
 import { stopOpencodeSession } from "./db/opencode-session-stop";
-import { deleteOmpSession, deletePiSession } from "./db/pi";
+import { deleteGjcSession, deleteOmpSession, deletePiSession } from "./db/pi";
 import {
 	createRefreshResetRequest,
 	createRefreshWorkerReadyRequest,
@@ -176,7 +176,7 @@ const ROOT_PADDING_X = 2;
 const ROOT_CONTENT_GAP = 1;
 const FOOTER_INLINE_GAP = 1;
 const FRESHNESS_DISCLOSURE =
-	"agent values update independently | known Pi/omp files: 2s | new/removed-path discovery: 10s";
+	"agent values update independently | known Pi/omp/gjc files: 2s | new/removed-path discovery: 10s";
 // Emitted synchronously to fd 1 right before process.exit on shutdown.
 // opentui 0.3.x wrapped every render frame in Synchronized Updates
 // (?2026h...?2026l) but never emitted a closing ?2026l on teardown, so Kitty
@@ -715,7 +715,15 @@ const createStatsModalContent = (state: AppState, modalWidth: number) => {
 		statusCounts[s] = (statusCounts[s] ?? 0) + 1;
 	}
 	const sourceRows = (
-		["opencode", "codex", "claude", "pi", "omp", "mission-control"] as const
+		[
+			"opencode",
+			"codex",
+			"claude",
+			"pi",
+			"omp",
+			"gjc",
+			"mission-control",
+		] as const
 	)
 		.map((sourceKey) => {
 			const count = sourceCounts[sourceKey] ?? 0;
@@ -2965,11 +2973,11 @@ const main = async () => {
 		return recoveryPromise;
 	}
 
-	const resetWorkerForPiOmpDelete = async (): Promise<void> => {
+	const resetWorkerForJsonlDelete = async (): Promise<void> => {
 		const instance = currentRefreshWorker;
 		if (instance?.status !== "usable") {
 			throw new Error(
-				"Refresh worker is not available for the Pi/omp delete reset.",
+				"Refresh worker is not available for the Pi/omp/gjc delete reset.",
 			);
 		}
 
@@ -2980,7 +2988,7 @@ const main = async () => {
 		pendingSelectionRender = false;
 		refreshCoordinator.cancel(
 			new RefreshCompletionError(
-				"Refresh canceled for Pi/omp session deletion.",
+				"Refresh canceled for Pi/omp/gjc session deletion.",
 			),
 		);
 		instance.status = "resetting";
@@ -3449,7 +3457,10 @@ const main = async () => {
 
 		const source = selectedSession.sessionSource;
 		const sessionPath = selectedSession.sourceMetadata?.sessionPath;
-		if ((source === "pi" || source === "omp") && !sessionPath) {
+		if (
+			(source === "pi" || source === "omp" || source === "gjc") &&
+			!sessionPath
+		) {
 			showToast(`${getSessionSourceLabel(source)} session path is unavailable`);
 			return;
 		}
@@ -3484,9 +3495,11 @@ const main = async () => {
 
 		const target = state.pendingDeleteTarget;
 		const sessionId = target.id;
-		const requiresPiOmpReset =
-			target.source === "pi" || target.source === "omp";
-		let piOmpResetComplete = false;
+		const requiresJsonlSessionReset =
+			target.source === "pi" ||
+			target.source === "omp" ||
+			target.source === "gjc";
+		let jsonlSessionResetComplete = false;
 		state.isDeletingSession = true;
 		state.deleteConfirmationError = null;
 		stopPolling();
@@ -3494,9 +3507,9 @@ const main = async () => {
 		renderer.intermediateRender();
 
 		try {
-			if (requiresPiOmpReset) {
-				await resetWorkerForPiOmpDelete();
-				piOmpResetComplete = true;
+			if (requiresJsonlSessionReset) {
+				await resetWorkerForJsonlDelete();
+				jsonlSessionResetComplete = true;
 			}
 
 			if (target.source === "codex") {
@@ -3547,6 +3560,21 @@ const main = async () => {
 							? `${deleteResult.error.message}: ${deleteResult.error.cause}`
 							: deleteResult.error.message,
 						"omp session delete failed.",
+					);
+					render();
+					return;
+				}
+			} else if (target.source === "gjc") {
+				const deleteResult = await deleteGjcSession(sessionId, {
+					sessionPath: target.sessionPath,
+				});
+				if (!deleteResult.ok) {
+					state.isDeletingSession = false;
+					state.deleteConfirmationError = sanitizeText(
+						deleteResult.error.cause
+							? `${deleteResult.error.message}: ${deleteResult.error.cause}`
+							: deleteResult.error.message,
+						"gjc session delete failed.",
 					);
 					render();
 					return;
@@ -3603,7 +3631,7 @@ const main = async () => {
 			state.pendingDeleteTarget = null;
 			state.deleteConfirmationError = null;
 			state.gridFollowSelectionOnRender = true;
-			if (!requiresPiOmpReset) {
+			if (!requiresJsonlSessionReset) {
 				refreshSessions();
 			}
 		} catch (error) {
@@ -3615,8 +3643,8 @@ const main = async () => {
 			render();
 		} finally {
 			if (
-				requiresPiOmpReset &&
-				piOmpResetComplete &&
+				requiresJsonlSessionReset &&
+				jsonlSessionResetComplete &&
 				currentRefreshWorker?.status === "usable" &&
 				!isShuttingDown
 			) {
@@ -3624,7 +3652,7 @@ const main = async () => {
 				refreshDispatchGateOpen = true;
 				refreshSessions();
 				startPolling();
-			} else if (!requiresPiOmpReset) {
+			} else if (!requiresJsonlSessionReset) {
 				startPolling();
 			}
 		}
@@ -3700,8 +3728,8 @@ const main = async () => {
 			return abortCodexChildSession(session);
 		}
 
-		if (session.sessionSource === "omp") {
-			return stopOmpSession({
+		if (session.sessionSource === "omp" || session.sessionSource === "gjc") {
+			return stopJsonlSession(session.sessionSource, {
 				sessionPath: session.sourceMetadata?.sessionPath,
 			});
 		}
@@ -3801,9 +3829,13 @@ const main = async () => {
 				.map((target) => target.id);
 			const successCount = targets.length - failedIds.length;
 
-			if (selectedSession.sessionSource === "omp" && failedIds.length > 0) {
+			if (
+				(selectedSession.sessionSource === "omp" ||
+					selectedSession.sessionSource === "gjc") &&
+				failedIds.length > 0
+			) {
 				state.isKillingChildren = false;
-				state.killChildrenError = `Could not stop OMP session${failedIds.length === 1 ? "" : "s"}: ${failedIds.join(", ")}. Session history was not deleted.`;
+				state.killChildrenError = `Could not stop ${getSessionSourceLabel(selectedSession.sessionSource)} session${failedIds.length === 1 ? "" : "s"}: ${failedIds.join(", ")}. Session history was not deleted.`;
 				startPolling();
 				render();
 				return;

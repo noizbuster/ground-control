@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Multi-source session backend for gctrl. Owns read snapshots, the refresh worker thread, and destructive control (stop/delete/abort) for OpenCode, Codex, Claude Code, Pi, omp, and Mission Control. Does **not** own UI. Common result type: `DatabaseResult<T> = { ok:true, value } | { ok:false, error }` with codes `missing_database | database_access_denied | query_failed`.
+Multi-source session backend for gctrl. Owns read snapshots, the refresh worker thread, and destructive control (stop/delete/abort) for OpenCode, Codex, Claude Code, Pi, omp, Gajae Code, and Mission Control. Does **not** own UI. Common result type: `DatabaseResult<T> = { ok:true, value } | { ok:false, error }` with codes `missing_database | database_access_denied | query_failed`.
 
 ## Key Files
 
@@ -15,8 +15,8 @@ Multi-source session backend for gctrl. Owns read snapshots, the refresh worker 
 | `opencode.ts` | Incremental OpenCode snapshot: `MAX(time_updated)` probe, hard-delete via live IDs, non-terminal re-poll, cache seed/merge |
 | `opencode-session-stop.ts` | Staged OpenCode stop: discover servers → POST abort → ephemeral `serve` → CLI `run --session stop`; settle against DB status |
 | `waitingSignalCandidates.ts` | Non-terminal session IDs eligible for waiting-signal queries |
-| `pi.ts` | Pi + OMP JSONL adapters: root resolution, parse/cache, hierarchy/status, quarantine-safe recursive delete |
-| `omp-session-stop.ts` | Linux `/proc` matcher; SIGINT only OMP processes resumed on the exact session JSONL path |
+| `pi.ts` | Pi + omp + GJC JSONL adapters: root resolution, parse/cache, hierarchy/status, quarantine-safe recursive delete |
+| `jsonl-session-stop.ts` | Linux `/proc` matcher; exact-path SIGINT for omp/GJC processes |
 | `claude.ts` | Claude snapshot from project JSONL + live `sessions/` PIDs; refuse delete while active; artifact rm |
 | `codex.ts` | Codex threads/edges from state SQLite + rollouts; status; tree-recursive delete (DB + rollouts + index) |
 | `codex-child-abort.ts` | Codex `app-server` JSON-RPC: initialize → thread/resume → turn/interrupt |
@@ -55,10 +55,10 @@ _None._
 - Part-table waiting signals do not bump `time_updated` → pass `nonTerminalSessionIds` every tick.
 - Stop stages: live abort → ephemeral serve abort → CLI stop-message; always settle via latest-message status.
 
-**Pi / OMP**
-- Shared dialect (`"pi" | "omp"`) with separate roots/entrypoints.
-- OMP stop is path-exact only (never session-id-only); Linux `/proc`; SIGINT.
-- Delete: quarantine-then-unlink with identity checks; OMP also quarantines sibling artifact dirs.
+**Pi / omp / GJC**
+- Shared dialect (`"pi" | "omp" | "gjc"`) with separate roots/entrypoints.
+- omp/GJC stop is path-exact only (never session-id-only); Linux `/proc`; SIGINT.
+- Delete: quarantine-then-unlink with identity checks; omp/GJC also quarantine sibling artifact dirs.
 
 **Claude**
 - Status prefers live PID; `AskUserQuestion` → waiting.
@@ -81,7 +81,7 @@ _None._
 
 **Refresh worker**
 - Serial queue (`isProcessing`).
-- `refresh-reset` clears OpenCode cache + Pi caches.
+- `refresh-reset` clears OpenCode cache + Pi/omp/GJC caches.
 - OpenCode alone is incremental; all other sources full-read each tick.
 
 ### Env path overrides
@@ -91,9 +91,10 @@ _None._
 | `GCTRL_DB_PATH` | OpenCode SQLite |
 | `GCTRL_MC_DB_PATH` | MC DB (highest precedence) |
 | `MCTRL_DATA_DIR` | MC data dir → `mission-control.db`; injected on stop/delete |
-| `XDG_DATA_HOME` / `XDG_CONFIG_HOME` | Default roots for MC/OMP candidates |
+| `XDG_DATA_HOME` / `XDG_CONFIG_HOME` | Default roots for MC/omp/GJC candidates |
 | `GCTRL_PI_SESSIONS_DIR`, `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` | Pi roots |
-| `GCTRL_OMP_SESSIONS_DIR`, `PI_CONFIG_DIR` | OMP roots |
+| `GCTRL_OMP_SESSIONS_DIR`, `PI_CONFIG_DIR` | omp roots |
+| `GCTRL_GJC_SESSIONS_DIR`, `GJC_CODING_AGENT_DIR`, `GJC_CONFIG_DIR` | GJC roots |
 | `GCTRL_CLAUDE_PROJECTS_DIR`, `GCTRL_CLAUDE_SESSIONS_DIR` | Claude roots |
 | `GCTRL_CODEX_STATE_DB_PATH`, `GCTRL_CODEX_SESSIONS_DIR`, `GCTRL_CODEX_ARCHIVED_SESSIONS_DIR`, `GCTRL_CODEX_SESSION_INDEX_PATH` | Codex paths |
 

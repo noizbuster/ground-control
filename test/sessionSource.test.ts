@@ -9,6 +9,7 @@ import {
 	getDefaultSessionCapabilities,
 	getSessionCapabilitySummary,
 	getSessionSourceLabel,
+	getSessionSourceColor,
 } from "../src/lib/sessionSource";
 
 describe("sessionSource helpers", () => {
@@ -38,6 +39,12 @@ describe("sessionSource helpers", () => {
 			hierarchy: true,
 		});
 		expect(getDefaultSessionCapabilities("omp")).toEqual({
+			attach: true,
+			delete: true,
+			abortChildren: true,
+			hierarchy: true,
+		});
+		expect(getDefaultSessionCapabilities("gjc")).toEqual({
 			attach: true,
 			delete: true,
 			abortChildren: true,
@@ -240,6 +247,25 @@ describe("sessionSource helpers", () => {
 			cmd: ["/usr/bin/omp", "--resume", "/sessions/omp-child.jsonl"],
 			cwd: existingDirectory,
 		});
+
+		expect(
+			getAttachLaunchSpec(
+				{
+					id: "gjc-session",
+					parent_id: null,
+					directory: existingDirectory,
+					sessionSource: "gjc",
+					sourceMetadata: { sessionPath: "/sessions/gjc-session.jsonl" },
+				},
+				{
+					resolveExecutable,
+					fallbackDirectory: "/fallback",
+				},
+			),
+		).toEqual({
+			cmd: ["/usr/bin/gjc", "--resume", "/sessions/gjc-session.jsonl"],
+			cwd: existingDirectory,
+		});
 	});
 
 	it("falls back to the current directory and root session id for Claude attach", () => {
@@ -291,6 +317,8 @@ describe("sessionSource helpers", () => {
 		expect(getSessionSourceLabel("claude")).toBe("Claude Code");
 		expect(getSessionSourceLabel("pi")).toBe("Pi");
 		expect(getSessionSourceLabel("omp")).toBe("omp");
+		expect(getSessionSourceLabel("gjc")).toBe("gjc");
+		expect(getSessionSourceColor("gjc")).toBe("#FB7185");
 		expect(
 			countSessionsBySource([
 				{ sessionSource: "opencode" },
@@ -300,6 +328,7 @@ describe("sessionSource helpers", () => {
 				{ sessionSource: "pi" },
 				{ sessionSource: "omp" },
 				{ sessionSource: "omp" },
+				{ sessionSource: "gjc" },
 			]),
 		).toEqual({
 			opencode: 1,
@@ -307,6 +336,7 @@ describe("sessionSource helpers", () => {
 			claude: 1,
 			pi: 1,
 			omp: 2,
+			gjc: 1,
 		});
 	});
 });

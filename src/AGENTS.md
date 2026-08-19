@@ -36,14 +36,14 @@ Entire gctrl application source. Entry is `index.ts` (`void main()`), launched v
   5. Render signature skip — unchanged `createRefreshRenderSignature` must not force full re-render.
   6. Stable DOM IDs — `createStaticLayout` once; `render()` mutates existing nodes via `replaceChildren`.
   7. Selection stickiness — re-resolve `selectedIndex` by `selectedSessionId` after every snapshot.
-  8. Pi/omp delete — reset worker caches before delete; reopen gate only after usable ack.
+  8. Pi/omp/GJC delete — reset worker caches before delete; reopen gate only after usable ack.
   9. Poll pause on mutate — delete/kill/attach stop polling; always restart in `finally`.
   10. Terminal teardown — write `RESTORE_PRIMARY_SCREEN_SEQUENCE` before `process.exit`.
   11. Worker URL — `new Worker(new URL("./db/refresh-worker", import.meta.url), { execArgv: ["--experimental-sqlite", ...] })` (URL object required).
   12. Protocol clone-safety — refresh payloads must be structured-clone-safe (no DB handles/Maps/Sets/functions).
   13. Partial source failure — worker succeeds if ≥1 source ok; all-fail clears sessions.
 - Main thread does **not** import snapshot readers; only the worker does. Index imports mutation/stop APIs and protocol types.
-- Capability gates: `canAbortSessionChildren` is false for claude/pi; true for opencode/codex/omp/mission-control.
+- Capability gates: `canAbortSessionChildren` is false for claude/pi; true for opencode/codex/omp/gjc/mission-control.
 
 ### Testing Requirements
 - No direct unit tests for `index.ts`. Cover behavior via `test/` on lib/db/ui modules.

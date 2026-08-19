@@ -14,6 +14,7 @@ export type SessionSource =
 	| "claude"
 	| "pi"
 	| "omp"
+	| "gjc"
 	| "mission-control";
 
 export interface SessionCapabilities {
